@@ -1,0 +1,14 @@
+# 개인 데이터 / 대용량 파일
+*.xlsx
+*.csv
+config.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# OS
+.DS_Store
+Thumbs.db

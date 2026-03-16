@@ -1,0 +1,739 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import math
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
+import json
+from pathlib import Path
+
+_CONFIG = Path(__file__).parent / "config.json"
+
+def load_config():
+    if _CONFIG.exists():
+        try:
+            return json.loads(_CONFIG.read_text(encoding="utf-8"))
+        except:
+            return {}
+    return {}
+
+def save_config(data: dict):
+    try:
+        cfg = load_config()
+        cfg.update(data)
+        _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except:
+        pass
+
+st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
+st.title("📈 종가평균매매 백테스트 (LOC)")
+
+# ──────────────────────────────────────────────
+# 사이드바 공통 설정
+# ──────────────────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ 공통 설정")
+
+    ticker = st.text_input("종목코드 (Ticker)", "SOXL")
+
+    st.markdown("---")
+    st.subheader("전략 파라미터")
+    a_buy      = st.number_input("매수기준 (a값)", value=-0.005, step=0.001, format="%.4f")
+    a_sell     = st.number_input("매도기준 (a값)", value= 0.009, step=0.001, format="%.4f")
+    sell_ratio = st.number_input("매도비율 (%)", value=100.0, step=10.0, min_value=0.0, max_value=100.0)
+    divisions  = st.number_input("분할수", value=5, min_value=1, step=1)
+
+    st.markdown("---")
+    st.subheader("백테스트 설정")
+    col1, col2 = st.columns(2)
+    start_date = col1.date_input("시작 일", datetime(2014, 1, 1).date())
+    end_date   = col2.date_input("종료 일", datetime.today().date())
+    initial_capital = st.number_input("초기 투자금 ($)", value=10000.0, step=1000.0)
+    st.info(f"1회 분할 금액: ${initial_capital / divisions:,.2f}")
+
+    st.markdown("---")
+    data_source = st.radio(
+        "📂 종가 데이터 소스",
+        ["야후 파이낸스 (yfinance)", "엑셀 Daily_Close 시트"],
+        index=0,
+    )
+    excel_file = None
+    if data_source == "엑셀 Daily_Close 시트":
+        excel_file = st.file_uploader("엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
+        st.caption("엑셀 내 **Daily_Close** 시트의 날짜/종가 두 컬럼이 사용됩니다.")
+
+
+# ──────────────────────────────────────────────
+# 핵심 함수
+# ──────────────────────────────────────────────
+def buy_limit_price(p1, p2, a):
+    return (p1 + p2) * (1 + a) / (2 - a)
+
+
+def scalar(v):
+    if isinstance(v, (pd.Series, np.ndarray)):
+        return float(v.iloc[0] if isinstance(v, pd.Series) else v.flat[0])
+    return float(v)
+
+
+@st.cache_data(show_spinner=False)
+def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
+    start = pd.to_datetime(start_str).date()
+    end   = pd.to_datetime(end_str).date()
+    raw = yf.download(
+        ticker,
+        start=start - timedelta(days=15),
+        end=end + timedelta(days=2),
+        progress=False, auto_adjust=True,
+    )
+    if isinstance(raw.columns, pd.MultiIndex):
+        try:    raw = raw.xs(ticker, axis=1, level="Ticker")
+        except: raw.columns = raw.columns.droplevel(1)
+    df = raw[["Close"]].copy()
+    df.index = pd.to_datetime(df.index)
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    return df.dropna()
+
+
+def load_price_data(ticker, start, end, data_source, excel_file):
+    if data_source == "엑셀 Daily_Close 시트" and excel_file is not None:
+        xl = pd.ExcelFile(excel_file)
+        df = xl.parse("Daily_Close")
+        df.columns = ["Date", "Close"]
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.set_index("Date").sort_index()
+        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+        return df.dropna()
+    return _download_price(ticker, str(start), str(end))
+
+
+def run_backtest(
+    price_df, start_date, end_date,
+    a_buy, a_sell, sell_ratio, divisions, initial_capital,
+    return_history=False,
+):
+    sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+    sim_raw["p1"] = sim_raw["Close"].shift(1)
+    sim_raw["p2"] = sim_raw["Close"].shift(2)
+    sim = sim_raw.dropna(subset=["p1", "p2"])
+    if sim.empty:
+        return None
+
+    closes   = sim["Close"].values.astype(float)
+    p1s      = sim["p1"].values.astype(float)
+    p2s      = sim["p2"].values.astype(float)
+    tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
+    tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+
+    cash       = float(initial_capital)
+    shares     = 0
+    prev_asset = float(initial_capital)
+    assets     = np.empty(len(closes))
+    buy_count  = sell_count = 0
+    history    = [] if return_history else None
+
+    for i in range(len(closes)):
+        x  = closes[i]
+        tb = tgt_buy[i]
+        ts = tgt_sell[i]
+        current_chunk = prev_asset / divisions
+        action = "-"; trade_shares = 0; trade_amount = 0.0
+
+        if shares > 0 and x >= ts:
+            sell_qty = math.floor(shares * (sell_ratio / 100.0))
+            if sell_qty > 0:
+                action = "SELL"; trade_shares = -sell_qty; trade_amount = sell_qty * x
+                cash += trade_amount; shares -= sell_qty; sell_count += 1
+        elif x <= tb:
+            buy_qty = min(math.floor(current_chunk / x + 1e-9), math.floor(cash / x + 1e-9))
+            if buy_qty > 0:
+                action = "BUY"; trade_shares = buy_qty; trade_amount = buy_qty * x
+                cash -= trade_amount; shares += buy_qty; buy_count += 1
+
+        asset = cash + shares * x
+        prev_asset = asset
+        assets[i]  = asset
+
+        if return_history:
+            history.append({
+                "날짜": sim.index[i].date(), "종가(x)": x,
+                "전날(p1)": p1s[i], "전전날(p2)": p2s[i],
+                "매수경계가": tb, "매도경계가": ts,
+                "매매": action, "거래주수": trade_shares,
+                "거래금액($)": trade_amount, "보유주수": shares,
+                "현금($)": cash, "총자산($)": asset,
+            })
+
+    final_asset  = float(assets[-1])
+    peak         = np.maximum.accumulate(assets)
+    mdd          = float(((assets - peak) / peak).min())
+    years        = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
+    total_return = (final_asset / initial_capital) - 1.0
+    cagr         = ((final_asset / initial_capital) ** (1.0 / years) - 1.0) if years > 0 else 0.0
+    calmar       = cagr / abs(mdd) if mdd != 0 else 0.0
+
+    out = dict(
+        final_asset=final_asset, total_return=total_return,
+        cagr=cagr, mdd=mdd, calmar=calmar,
+        buy_count=buy_count, sell_count=sell_count,
+        assets=assets, dates=sim.index,
+    )
+    if return_history:
+        out["history"] = pd.DataFrame(history)
+    return out
+
+
+def run_portfolio_for_ordersheet(
+    price_df, start_date, ticker_name,
+    a_buy, a_sell, sell_ratio, divisions, initial_capital,
+):
+    """백테스트를 오늘까지 실행하며 평균단가·티어·매도이력을 추적."""
+    today = datetime.today().date()
+    sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(today)].copy()
+    sim_raw["p1"] = sim_raw["Close"].shift(1)
+    sim_raw["p2"] = sim_raw["Close"].shift(2)
+    sim = sim_raw.dropna(subset=["p1", "p2"])
+
+    # p1/p2 계산에는 최소 2개 종가 필요
+    all_closes = sim_raw["Close"].dropna().values.astype(float)
+    if len(all_closes) < 2:
+        return None
+
+    cash        = float(initial_capital)
+    shares      = 0
+    prev_asset  = float(initial_capital)
+    peak_asset  = float(initial_capital)
+    avg_cost    = 0.0
+    open_tiers  = []   # [{'date': Timestamp, 'price': float, 'qty': int}]
+    sell_trades = []
+
+    if not sim.empty:
+        closes   = sim["Close"].values.astype(float)
+        p1s      = sim["p1"].values.astype(float)
+        p2s      = sim["p2"].values.astype(float)
+        tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
+        tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+    else:
+        closes = np.array([])  # 거래 없음, 빈 배열
+
+    for i in range(len(closes)):
+        x    = closes[i]
+        tb   = tgt_buy[i]
+        ts   = tgt_sell[i]
+        date = sim.index[i]
+        current_chunk = prev_asset / divisions
+
+        if shares > 0 and x >= ts:
+            sell_qty = math.floor(shares * (sell_ratio / 100.0))
+            if sell_qty > 0:
+                oldest_date  = open_tiers[0]["date"] if open_tiers else date
+                holding_days = (date - oldest_date).days
+                factor       = x / avg_cost if avg_cost > 0 else 0.0
+
+                sell_trades.append({
+                    "구분":    "매도",
+                    "티커":    ticker_name,
+                    "주문가":  x,
+                    "avg_cost": avg_cost,
+                    "수량":    sell_qty,
+                    "금액":    sell_qty * x,
+                    "보유기간": holding_days,
+                    "비고":    f"평단 ${avg_cost:.2f} × {factor:.4f} = ${x:.2f}",
+                })
+
+                cash   += sell_qty * x
+                shares -= sell_qty
+
+                # FIFO 티어 차감
+                remaining = sell_qty
+                while remaining > 0 and open_tiers:
+                    if open_tiers[0]["qty"] <= remaining:
+                        remaining -= open_tiers[0]["qty"]
+                        open_tiers.pop(0)
+                    else:
+                        open_tiers[0]["qty"] -= remaining
+                        remaining = 0
+
+                # 평균단가 재계산
+                if shares > 0 and open_tiers:
+                    total_inv = sum(t["price"] * t["qty"] for t in open_tiers)
+                    total_qty = sum(t["qty"] for t in open_tiers)
+                    avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
+                else:
+                    avg_cost   = 0.0
+                    open_tiers = []
+
+        elif x <= tb:
+            buy_qty = min(
+                math.floor(current_chunk / x + 1e-9),
+                math.floor(cash / x + 1e-9),
+            )
+            if buy_qty > 0:
+                total_inv = avg_cost * shares + x * buy_qty
+                shares   += buy_qty
+                avg_cost  = total_inv / shares
+                cash     -= buy_qty * x
+                open_tiers.append({"date": date, "price": x, "qty": buy_qty})
+
+        asset      = cash + shares * x
+        prev_asset = asset
+        peak_asset = max(peak_asset, asset)
+
+    latest_price  = float(all_closes[-1])
+    current_asset = cash + shares * latest_price
+    total_return  = (current_asset - initial_capital) / initial_capital
+    current_dd    = (current_asset - peak_asset) / peak_asset  # <= 0
+    stock_weight  = (shares * latest_price / current_asset) if current_asset > 0 else 0.0
+    years         = (today - pd.to_datetime(start_date).date()).days / 365.25
+    cagr          = ((current_asset / initial_capital) ** (1.0 / years) - 1.0) if years > 0 else 0.0
+
+    # 오늘 LOC 기준: 가장 최근 2개 종가
+    p1_now = float(all_closes[-1])
+    p2_now = float(all_closes[-2])
+    next_buy_primary   = buy_limit_price(p1_now, p2_now, a_buy)
+    next_buy_secondary = next_buy_primary * 0.95
+    next_sell_target   = buy_limit_price(p1_now, p2_now, a_sell)
+
+    min_tier_price = min(t["price"] for t in open_tiers) if open_tiers else 0.0
+    chunk_now      = current_asset / divisions
+    qty_primary    = math.floor(chunk_now / next_buy_primary + 1e-9) if next_buy_primary > 0 else 0
+    min_str        = f"{min_tier_price:.2f}" if open_tiers else "-"
+
+    pending_buys = [
+        {
+            "구분":   "매수", "티커": ticker_name,
+            "주문가": next_buy_primary,
+            "수량":   qty_primary,
+            "금액":   qty_primary * next_buy_primary,
+            "비고":   (f"LOC {next_buy_primary:.2f} - "
+                       f"보유 티어 최저가({min_str}) "
+                       f"목표매도가({next_sell_target:.2f})"),
+        },
+    ]
+
+    return {
+        "initial_capital":    initial_capital,
+        "current_asset":      current_asset,
+        "total_return":       total_return,
+        "current_dd":         current_dd,
+        "stock_weight":       stock_weight,
+        "avg_cost":           avg_cost,
+        "shares":             shares,
+        "cash":               cash,
+        "sell_trades":        sell_trades,
+        "pending_buys":       pending_buys,
+        "open_tiers":         open_tiers,
+        "latest_price":       latest_price,
+        "p1_now":             p1_now,
+        "p2_now":             p2_now,
+        "next_sell_target": next_sell_target,
+        "next_buy_primary": next_buy_primary,
+        "cagr":             cagr,
+        "start_date":       start_date,
+        "end_date":         today,
+    }
+
+
+# ──────────────────────────────────────────────
+# 탭 구성
+# ──────────────────────────────────────────────
+tab1, tab2, tab3 = st.tabs(["📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표"])
+
+
+# ══════════════════════════════════════════════
+# TAB 1 – 백테스트
+# ══════════════════════════════════════════════
+with tab1:
+    if st.button("▶ 백테스트 실행", type="primary", key="run_bt"):
+        with st.spinner("데이터 로드 및 시뮬레이션 중..."):
+            price_df = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+
+        if price_df.empty:
+            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.stop()
+
+        result = run_backtest(
+            price_df, start_date, end_date,
+            a_buy, a_sell, sell_ratio, divisions, initial_capital,
+            return_history=True,
+        )
+        if result is None:
+            st.warning("선택된 기간 내 거래 데이터가 없습니다.")
+            st.stop()
+
+        # 성과 요약
+        st.subheader("📊 성과 요약")
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("최종 자산 ($)",  f"${result['final_asset']:,.2f}", f"{result['total_return']*100:+.2f}%")
+        m2.metric("CAGR",           f"{result['cagr']*100:.2f}%")
+        m3.metric("MDD",            f"{result['mdd']*100:.2f}%")
+        m4.metric("Calmar Ratio",   f"{result['calmar']:.3f}")
+        m5.metric("총 매수 횟수",   f"{result['buy_count']} 회")
+        m6.metric("총 매도 횟수",   f"{result['sell_count']} 회")
+
+        # 당일 LOC 기준가
+        st.subheader("📌 당일 (내일) LOC 예약 기준가")
+        st.caption("백테스트 기간과 무관하게, 가장 최근의 실제 시장 종가 데이터를 기준으로 계산합니다.")
+        if data_source == "엑셀 Daily_Close 시트" and excel_file is not None:
+            today_p1 = scalar(price_df["Close"].iloc[-1])
+            today_p2 = scalar(price_df["Close"].iloc[-2])
+            today_ref = price_df.index[-1]
+        else:
+            recent_raw = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
+            if isinstance(recent_raw.columns, pd.MultiIndex):
+                try:    recent_raw = recent_raw.xs(ticker, axis=1, level="Ticker")
+                except: recent_raw.columns = recent_raw.columns.droplevel(1)
+            today_p1  = scalar(recent_raw["Close"].iloc[-1])
+            today_p2  = scalar(recent_raw["Close"].iloc[-2])
+            today_ref = recent_raw.index[-1]
+
+        next_date = today_ref + pd.Timedelta(days=1)
+        if   next_date.weekday() == 5: next_date += pd.Timedelta(days=2)
+        elif next_date.weekday() == 6: next_date += pd.Timedelta(days=1)
+
+        st.dataframe(pd.DataFrame([{
+            "예상 거래일":      next_date.date(),
+            "p1 (전날 종가)":   today_p1,
+            "p2 (전전날 종가)": today_p2,
+            "당일 매수경계가":  buy_limit_price(today_p1, today_p2, a_buy),
+            "당일 매도경계가":  buy_limit_price(today_p1, today_p2, a_sell),
+        }]).style.format({
+            "p1 (전날 종가)":   "${:,.5f}",
+            "p2 (전전날 종가)": "${:,.5f}",
+            "당일 매수경계가":  "${:,.5f}",
+            "당일 매도경계가":  "${:,.5f}",
+        }), hide_index=True, use_container_width=True)
+
+        # 자산 추이
+        st.subheader("📈 자산 추이")
+        hist_df = result["history"]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=hist_df["날짜"], y=hist_df["총자산($)"],
+                                  mode="lines", name="총자산", line=dict(color="#2196F3", width=2)))
+        buy_pts  = hist_df[hist_df["매매"] == "BUY"]
+        sell_pts = hist_df[hist_df["매매"] == "SELL"]
+        if not buy_pts.empty:
+            fig.add_trace(go.Scatter(x=buy_pts["날짜"], y=buy_pts["총자산($)"],
+                                      mode="markers", name="매수",
+                                      marker=dict(color="red", size=7, symbol="triangle-up")))
+        if not sell_pts.empty:
+            fig.add_trace(go.Scatter(x=sell_pts["날짜"], y=sell_pts["총자산($)"],
+                                      mode="markers", name="매도",
+                                      marker=dict(color="green", size=7, symbol="triangle-down")))
+        fig.update_layout(
+            xaxis_title="Date", yaxis_title="Asset Value ($)",
+            hovermode="x unified", height=450,
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 일별 상세표
+        st.subheader("🗓️ 일별 매매 상세표")
+        colored = hist_df.style.format({
+            "종가(x)": "${:,.4f}", "전날(p1)": "${:,.4f}",
+            "전전날(p2)": "${:,.4f}", "매수경계가": "${:,.4f}",
+            "매도경계가": "${:,.4f}", "거래주수": "{:,}",
+            "거래금액($)": "${:,.2f}", "보유주수": "{:,}",
+            "현금($)": "${:,.2f}", "총자산($)": "${:,.2f}",
+        }).apply(
+            lambda row: [
+                "background-color: #ffdddd" if row["매매"] == "BUY"
+                else ("background-color: #ddffdd" if row["매매"] == "SELL" else "")
+                for _ in row
+            ], axis=1,
+        )
+        st.dataframe(colored, use_container_width=True, height=500)
+
+        csv = hist_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("💾 결과 CSV 다운로드", data=csv,
+                           file_name=f"backtest_{ticker}.csv", mime="text/csv")
+
+
+# ══════════════════════════════════════════════
+# TAB 2 – 파라미터 최적화
+# ══════════════════════════════════════════════
+with tab2:
+    st.subheader("🔍 파라미터 그리드 탐색")
+    st.caption("a_buy / a_sell 구간을 격자 탐색하여 최적 파라미터 조합을 찾습니다.")
+
+    with st.expander("파라미터 범위 설정", expanded=True):
+        st.markdown("**매수 a값 범위 (a_buy)**")
+        rc1, rc2, rc3 = st.columns(3)
+        ab_min  = rc1.number_input("최솟값", value=-0.020, step=0.001, format="%.3f", key="ab_min")
+        ab_max  = rc2.number_input("최댓값", value=-0.001, step=0.001, format="%.3f", key="ab_max")
+        ab_step = rc3.number_input("간격",   value= 0.001, min_value=0.0001, step=0.001, format="%.4f", key="ab_step")
+
+        st.markdown("**매도 a값 범위 (a_sell)**")
+        rc4, rc5, rc6 = st.columns(3)
+        as_min  = rc4.number_input("최솟값", value= 0.001, step=0.001, format="%.3f", key="as_min")
+        as_max  = rc5.number_input("최댓값", value= 0.020, step=0.001, format="%.3f", key="as_max")
+        as_step = rc6.number_input("간격",   value= 0.001, min_value=0.0001, step=0.001, format="%.4f", key="as_step")
+
+        st.markdown("**분할수 / 매도비율**")
+        rc7, rc8 = st.columns(2)
+        div_opts       = rc7.multiselect("분할수",      options=[1,2,3,4,5,6,7,8,10], default=[5])
+        sellratio_opts = rc8.multiselect("매도비율 (%)", options=[50,60,70,80,90,100],  default=[100])
+
+        metric_key = st.selectbox("최적화 기준 지표", [
+            "Calmar Ratio (CAGR / MDD)",
+            "CAGR (%)",
+            "총수익률 (%)",
+            "MDD 최소화 (작을수록 좋음)",
+        ])
+
+    ab_vals = np.round(np.arange(ab_min, ab_max + ab_step * 0.5, ab_step), 6).tolist()
+    as_vals = np.round(np.arange(as_min, as_max + as_step * 0.5, as_step), 6).tolist()
+    dv_list = div_opts       if div_opts       else [5]
+    sr_list = sellratio_opts if sellratio_opts else [100]
+    n_total = len(ab_vals) * len(as_vals) * len(dv_list) * len(sr_list)
+
+    info_msg = (f"예상 조합 수: **{n_total:,}개** "
+                f"(a_buy {len(ab_vals)} × a_sell {len(as_vals)} "
+                f"× 분할수 {len(dv_list)} × 매도비율 {len(sr_list)})")
+    if n_total > 10000:
+        st.error(info_msg + "  \n조합이 10,000개를 초과합니다. 범위를 줄이거나 간격을 늘려주세요.")
+    elif n_total > 3000:
+        st.warning(info_msg + "  \n조합이 많아 다소 시간이 걸릴 수 있습니다.")
+    else:
+        st.info(info_msg)
+
+    if st.button("▶ 최적화 실행", type="primary", key="run_opt",
+                 disabled=(n_total > 10000 or n_total == 0)):
+        with st.spinner("가격 데이터 로드 중..."):
+            price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+        if price_df_opt.empty:
+            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.stop()
+
+        progress     = st.progress(0.0, text="최적화 실행 중...")
+        update_every = max(1, n_total // 100)
+        rows  = []
+        count = 0
+
+        for ab in ab_vals:
+            for as_ in as_vals:
+                for dv in dv_list:
+                    for sr in sr_list:
+                        r = run_backtest(price_df_opt, start_date, end_date,
+                                         ab, as_, sr, dv, initial_capital)
+                        if r:
+                            rows.append({
+                                "a_buy": ab, "a_sell": as_,
+                                "분할수": dv, "매도비율": sr,
+                                "CAGR(%)":     round(r["cagr"]         * 100, 2),
+                                "MDD(%)":      round(r["mdd"]          * 100, 2),
+                                "Calmar":      round(r["calmar"],             4),
+                                "총수익(%)":   round(r["total_return"] * 100, 2),
+                                "최종자산($)": round(r["final_asset"],        2),
+                                "매수횟수":    r["buy_count"],
+                                "매도횟수":    r["sell_count"],
+                            })
+                        count += 1
+                        if count % update_every == 0:
+                            progress.progress(min(count / n_total, 1.0),
+                                              text=f"최적화 실행 중... {count:,} / {n_total:,}")
+
+        progress.progress(1.0, text="완료!")
+        if not rows:
+            st.error("유효한 결과가 없습니다.")
+            st.stop()
+
+        res_df = pd.DataFrame(rows)
+        if "Calmar" in metric_key:   sort_col, asc = "Calmar",    False
+        elif "CAGR" in metric_key:   sort_col, asc = "CAGR(%)",   False
+        elif "총수익률" in metric_key: sort_col, asc = "총수익(%)", False
+        else:                         sort_col, asc = "MDD(%)",    False
+        res_df = res_df.sort_values(sort_col, ascending=asc).reset_index(drop=True)
+
+        st.subheader(f"🏆 상위 20개 결과  ({sort_col} 기준)")
+        st.dataframe(res_df.head(20).style.format({
+            "a_buy": "{:.4f}", "a_sell": "{:.4f}",
+            "CAGR(%)": "{:.2f}%", "MDD(%)": "{:.2f}%",
+            "Calmar": "{:.4f}", "총수익(%)": "{:.2f}%",
+            "최종자산($)": "${:,.2f}",
+        }), use_container_width=True)
+
+        st.subheader(f"🗺️ 히트맵: a_buy × a_sell  →  {sort_col}")
+        hmap_data = (
+            res_df.groupby(["a_buy", "a_sell"])[sort_col].max().reset_index()
+            .pivot(index="a_sell", columns="a_buy", values=sort_col)
+        )
+        show_text = (len(ab_vals) * len(as_vals)) <= 400
+        fig_hmap = px.imshow(hmap_data, color_continuous_scale="RdYlGn",
+                              labels={"x": "a_buy", "y": "a_sell", "color": sort_col},
+                              aspect="auto", text_auto=".2f" if show_text else False)
+        fig_hmap.update_layout(height=520)
+        st.plotly_chart(fig_hmap, use_container_width=True)
+
+        st.subheader("📊 리스크-수익 분포  (CAGR vs MDD)")
+        fig_sc = px.scatter(res_df, x="MDD(%)", y="CAGR(%)", color=sort_col,
+                             hover_data=["a_buy", "a_sell", "분할수", "매도비율", "Calmar"],
+                             color_continuous_scale="RdYlGn")
+        fig_sc.update_layout(height=450)
+        st.plotly_chart(fig_sc, use_container_width=True)
+
+        opt_csv = res_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("💾 최적화 결과 CSV 다운로드", data=opt_csv,
+                           file_name=f"optimization_{ticker}.csv", mime="text/csv")
+
+
+# ══════════════════════════════════════════════
+# TAB 3 – 오늘의 주문표
+# ══════════════════════════════════════════════
+with tab3:
+    st.subheader("📋 오늘의 주문표")
+    st.caption("시뮬레이션 시작일부터 오늘까지 포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
+
+    _cfg = load_config()
+    _saved_start   = _cfg.get("os_start",   "2024-01-01")
+    _saved_capital = float(_cfg.get("os_capital", initial_capital))
+
+    c1, c2 = st.columns(2)
+    os_start = c1.date_input(
+        "시작일",
+        value=datetime.strptime(_saved_start, "%Y-%m-%d").date(),
+        min_value=datetime(2000, 1, 1).date(),
+        max_value=datetime.today().date(),
+        key="os_start",
+    )
+    os_capital = c2.number_input("시작 자본 ($)", value=_saved_capital,
+                                  step=1000.0, key="os_capital")
+
+    if st.button("📋 주문표 로드", type="primary", key="run_os"):
+        save_config({"os_start": str(os_start), "os_capital": os_capital})
+        today = datetime.today().date()
+        with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
+            price_df_os = load_price_data(ticker, os_start, today, data_source, excel_file)
+
+        if price_df_os.empty:
+            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.stop()
+
+        res = run_portfolio_for_ordersheet(
+            price_df_os, os_start, ticker,
+            a_buy, a_sell, sell_ratio, divisions, os_capital,
+        )
+        if res is None:
+            st.warning("시뮬레이션 데이터가 없습니다.")
+            st.stop()
+
+        # ── 날짜 헤더 ──
+        st.markdown(f"**{res['start_date']} ~ {res['end_date']}**")
+
+        # ── 요약 카드 ──
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}")
+        m2.metric("현재 자산",  f"${res['current_asset']:,.0f}",
+                  delta=f"{res['total_return']*100:+.2f}%")
+        m3.metric("수익률",     f"{res['total_return']*100:+.2f}%",
+                  delta=f"CAGR {res['cagr']*100:.2f}%")
+        m4.metric("현재 DD",    f"{abs(res['current_dd'])*100:.2f}%",
+                  delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
+        m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
+
+        # ── 오늘의 LOC 주문 ──
+        lp   = res["latest_price"]
+        p1   = res["p1_now"]
+        p2   = res["p2_now"]
+        st.subheader("📑 오늘의 LOC 주문")
+        st.caption(
+            f"기준: p1(전일 종가) = **${p1:,.2f}** · "
+            f"p2(전전일 종가) = **${p2:,.2f}** · "
+            f"최근 확인 가격 = **${lp:,.2f}**"
+        )
+
+        today_orders = []
+
+        # 매도 LOC (보유 시)
+        if res["shares"] > 0:
+            sell_qty_today = math.floor(res["shares"] * (sell_ratio / 100.0))
+            sell_tgt       = res["next_sell_target"]
+            vs_lp_sell     = (sell_tgt / lp - 1) * 100 if lp > 0 else 0
+            vs_avg_sell    = (sell_tgt / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
+            today_orders.append({
+                "구분":         "매도",
+                "티커":         ticker,
+                "LOC 기준가":   f"${sell_tgt:,.2f}",
+                "1회매수금":    "-",
+                "예상수량":     f"{sell_qty_today:,}주",
+                "예상금액":     f"${sell_qty_today * sell_tgt:,.2f}",
+                "전일종가 대비": f"{vs_lp_sell:+.2f}%",
+                "비고":         (f"평단 ${res['avg_cost']:.2f} 대비 {vs_avg_sell:+.2f}%  |  "
+                                  f"보유 {res['shares']:,}주 × {sell_ratio:.0f}%"),
+            })
+
+        # 매수 LOC
+        buy_p    = res["next_buy_primary"]
+        qty_p    = res["pending_buys"][0]["수량"]
+        chunk    = res["current_asset"] / divisions
+        vs_lp_bp = (buy_p / lp - 1) * 100 if lp > 0 else 0
+        today_orders.append({
+            "구분":         "매수",
+            "티커":         ticker,
+            "LOC 기준가":   f"${buy_p:,.2f}",
+            "1회매수금":    f"${chunk:,.2f}",
+            "예상수량":     f"{qty_p:,}주",
+            "예상금액":     f"${qty_p * buy_p:,.2f}",
+            "전일종가 대비": f"{vs_lp_bp:+.2f}%",
+            "비고":         res["pending_buys"][0]["비고"],
+        })
+
+        df_order = pd.DataFrame(today_orders)
+
+        def style_gubun(row):
+            styles = [""] * len(row)
+            col_list = list(row.index)
+            if "구분" in col_list:
+                idx = col_list.index("구분")
+                if row["구분"] == "매도":
+                    styles[idx] = "color: #1565C0; font-weight: bold"
+                elif row["구분"] == "매수":
+                    styles[idx] = "color: #C62828; font-weight: bold"
+            return styles
+
+        st.dataframe(
+            df_order.style.apply(style_gubun, axis=1),
+            use_container_width=True,
+            hide_index=True,
+            height=38 + 35 * len(today_orders),
+        )
+
+        # ── 현재 보유 현황 ──
+        st.subheader("📦 현재 보유 현황")
+        if res["shares"] > 0:
+            lp       = res["latest_price"]
+            avg_c    = res["avg_cost"]
+            unrealized = (lp - avg_c) * res["shares"]
+            hold_cols = st.columns(6)
+            hold_cols[0].metric("보유주수",  f"{res['shares']:,}주")
+            hold_cols[1].metric("평균단가",  f"${avg_c:.2f}")
+            hold_cols[2].metric("현재가",    f"${lp:.2f}")
+            hold_cols[3].metric("평가금액",  f"${res['shares']*lp:,.2f}")
+            hold_cols[4].metric("평가손익",  f"${unrealized:,.2f}",
+                                delta=f"{(lp/avg_c-1)*100:+.2f}%" if avg_c > 0 else "")
+            hold_cols[5].metric("보유현금",  f"${res['cash']:,.2f}")
+
+            # 티어 상세
+            if res["open_tiers"]:
+                with st.expander(f"보유 티어 상세  ({len(res['open_tiers'])}개 배치)"):
+                    tiers_rows = []
+                    for t in res["open_tiers"]:
+                        buy_date = t["date"].date() if hasattr(t["date"], "date") else t["date"]
+                        holding  = (datetime.today().date() - buy_date).days
+                        pnl_pct  = (lp / t["price"] - 1) * 100 if t["price"] > 0 else 0
+                        tiers_rows.append({
+                            "매수일":    str(buy_date),
+                            "매수가":    f"${t['price']:.2f}",
+                            "수량":      f"{t['qty']:,}주",
+                            "매수금액":  f"${t['price']*t['qty']:,.2f}",
+                            "현재손익률": f"{pnl_pct:+.2f}%",
+                            "보유일수":  f"{holding}일",
+                        })
+                    st.dataframe(pd.DataFrame(tiers_rows),
+                                 hide_index=True, use_container_width=True)
+        else:
+            st.info("현재 보유 주식 없음 (전량 현금)")
+            st.metric("보유현금", f"${res['cash']:,.2f}")
