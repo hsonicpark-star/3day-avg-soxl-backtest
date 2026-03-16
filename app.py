@@ -369,9 +369,49 @@ def run_portfolio_for_ordersheet(
 
 
 # ──────────────────────────────────────────────
+# 연도별 / 월별 성과 계산 (Tab 4 용)
+# ──────────────────────────────────────────────
+def compute_annual_stats(history_df, initial_capital):
+    df = history_df.copy()
+    df["날짜"] = pd.to_datetime(df["날짜"])
+    df["Year"] = df["날짜"].dt.year
+    rows = []
+    prev_end = float(initial_capital)
+    for yr in sorted(df["Year"].unique()):
+        assets = df[df["Year"] == yr]["총자산($)"].values.astype(float)
+        end_asset = float(assets[-1])
+        annual_ret = (end_asset / prev_end - 1) * 100 if prev_end > 0 else 0.0
+        all_a = np.concatenate([[prev_end], assets])
+        peak  = np.maximum.accumulate(all_a)
+        mdd   = float(((all_a - peak) / peak).min() * 100)
+        rows.append({"연도": yr, "연간수익률(%)": round(annual_ret, 2), "MDD(%)": round(mdd, 2)})
+        prev_end = end_asset
+    return pd.DataFrame(rows)
+
+
+def compute_monthly_pivot(history_df, initial_capital):
+    df = history_df.copy()
+    df["날짜"] = pd.to_datetime(df["날짜"])
+    df["YM"] = df["날짜"].dt.to_period("M")
+    monthly = []
+    prev = float(initial_capital)
+    for ym in sorted(df["YM"].unique()):
+        end = float(df[df["YM"] == ym]["총자산($)"].iloc[-1])
+        ret = (end / prev - 1) * 100 if prev > 0 else 0.0
+        monthly.append({"Year": ym.year, "Month": ym.month, "Return": round(ret, 2)})
+        prev = end
+    mdf = pd.DataFrame(monthly)
+    pivot = mdf.pivot(index="Year", columns="Month", values="Return")
+    month_kr = {1:"1월",2:"2월",3:"3월",4:"4월",5:"5월",6:"6월",
+                7:"7월",8:"8월",9:"9월",10:"10월",11:"11월",12:"12월"}
+    pivot.columns = [month_kr.get(c, c) for c in pivot.columns]
+    return pivot
+
+
+# ──────────────────────────────────────────────
 # 탭 구성
 # ──────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표", "📖 전략 소개 & 성과"])
 
 
 # ══════════════════════════════════════════════
@@ -769,3 +809,140 @@ with tab3:
         else:
             st.info("현재 보유 주식 없음 (전량 현금)")
             st.metric("보유현금", f"${res['cash']:,.2f}")
+
+
+# ══════════════════════════════════════════════
+# TAB 4 – 전략 소개 & 성과
+# ══════════════════════════════════════════════
+with tab4:
+    # ── 전략 설명 ──────────────────────────────
+    st.subheader("📖 종가평균매매법 (3-Day LOC 전략) 이란?")
+
+    left, right = st.columns([3, 2])
+
+    with left:
+        st.markdown("""
+#### 전략 개요
+**종가평균매매법**은 직전 2거래일의 종가(p1, p2)를 기준으로
+당일 매수/매도 **LOC(Limit-On-Close)** 주문 기준가를 계산하는 퀀트 전략입니다.
+
+주가가 최근 평균보다 **충분히 낮으면** 매수,
+**충분히 높으면** 매도하는 평균 회귀 방식으로 작동합니다.
+
+---
+
+#### 매수 룰
+- 당일 종가 **≤ 매수경계가** 이면 LOC 매수 체결
+- 1회 매수금액 = 현재 총자산 ÷ 분할수(N)
+- 매수 금액만큼 최대 가능한 정수 주수 매수
+
+#### 매도 룰
+- 보유 중이고 당일 종가 **≥ 매도경계가** 이면 LOC 매도 체결
+- 보유 수량 × 매도비율(%) 만큼 매도
+
+#### 포지션 관리
+| 파라미터 | 설명 |
+|---|---|
+| a_buy | 매수경계가 조정값 (음수 → 평균 이하에서 매수) |
+| a_sell | 매도경계가 조정값 (양수 → 평균 이상에서 매도) |
+| 분할수 N | 자산을 N등분하여 1회 매수 금액 결정 |
+| 매도비율 | 보유 수량 중 몇 %를 한 번에 매도할지 |
+        """)
+
+    with right:
+        st.info("""
+**경계가 공식**
+
+```
+p1  = 전일(D-1) 종가
+p2  = 전전일(D-2) 종가
+a   = 파라미터값
+
+경계가 = (p1 + p2) × (1 + a)
+              ÷ (2 - a)
+```
+
+- a < 0 → 평균보다 낮은 가격 (매수)
+- a > 0 → 평균보다 높은 가격 (매도)
+- |a| 클수록 경계가가 평균에서 더 멀어짐
+        """)
+        st.info("""
+**LOC 주문이란?**
+
+장 마감 직전 일정 가격 이하/이상이면
+종가로 체결되는 조건부 시장가 주문입니다.
+
+당일 오후 3시 55분(미국 기준) 이전에
+기준가 조건을 확인 후 주문을 넣습니다.
+        """)
+
+    st.divider()
+
+    # ── 성과 분석 ──────────────────────────────
+    st.subheader("📊 전략 성과 분석")
+    st.caption("사이드바의 공통 설정(티커 · 파라미터 · 기간 · 초기 자본)을 기준으로 분석합니다.")
+
+    if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
+        with st.spinner("데이터 로드 및 분석 중..."):
+            price_df_perf = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+
+        if price_df_perf.empty:
+            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.stop()
+
+        res_p = run_backtest(
+            price_df_perf, start_date, end_date,
+            a_buy, a_sell, sell_ratio, divisions, initial_capital,
+            return_history=True,
+        )
+        if res_p is None:
+            st.warning("선택된 기간 내 거래 데이터가 없습니다.")
+            st.stop()
+
+        hist = res_p["history"]
+
+        # 전체 요약
+        sm1, sm2, sm3, sm4 = st.columns(4)
+        sm1.metric("전체 CAGR",    f"{res_p['cagr']*100:.2f}%")
+        sm2.metric("전체 수익률",  f"{res_p['total_return']*100:+.2f}%")
+        sm3.metric("최대 MDD",     f"{res_p['mdd']*100:.2f}%")
+        sm4.metric("Calmar Ratio", f"{res_p['calmar']:.3f}")
+
+        st.divider()
+
+        # 연도별 성과 테이블
+        st.subheader("📅 연도별 성과")
+        annual_df = compute_annual_stats(hist, initial_capital)
+
+        def _color_ret(val):
+            if isinstance(val, (int, float)):
+                if val > 0:  return "color: #2e7d32; font-weight:bold"
+                if val < 0:  return "color: #c62828; font-weight:bold"
+            return ""
+
+        st.dataframe(
+            annual_df.style
+                .applymap(_color_ret, subset=["연간수익률(%)"])
+                .format({"연간수익률(%)": "{:+.2f}%", "MDD(%)": "{:.2f}%"}),
+            hide_index=True, use_container_width=True,
+        )
+
+        st.divider()
+
+        # 월별 수익률 히트맵
+        st.subheader("🗓️ 월별 수익률 히트맵")
+        monthly_pivot = compute_monthly_pivot(hist, initial_capital)
+
+        fig_m = px.imshow(
+            monthly_pivot,
+            color_continuous_scale="RdYlGn",
+            color_continuous_midpoint=0,
+            text_auto=".1f",
+            labels={"x": "월", "y": "연도", "color": "수익률(%)"},
+            aspect="auto",
+        )
+        fig_m.update_layout(
+            height=max(320, len(monthly_pivot) * 38 + 120),
+            coloraxis_colorbar=dict(title="수익률(%)"),
+        )
+        st.plotly_chart(fig_m, use_container_width=True)
