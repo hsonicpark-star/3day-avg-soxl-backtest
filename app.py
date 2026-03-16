@@ -659,23 +659,34 @@ with tab3:
     st.subheader("📋 오늘의 주문표")
     st.caption("시뮬레이션 시작일부터 오늘까지 포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
 
+    # URL 파라미터 > config.json > 기본값 순으로 초기값 결정
+    _qp  = st.query_params
     _cfg = load_config()
-    _saved_start   = _cfg.get("os_start",   "2024-01-01")
-    _saved_capital = float(_cfg.get("os_capital", initial_capital))
+
+    _raw_start   = _qp.get("start")   or _cfg.get("os_start",   "2024-01-01")
+    _raw_capital = _qp.get("capital") or str(_cfg.get("os_capital", initial_capital))
+    try:    _default_start = datetime.strptime(_raw_start, "%Y-%m-%d").date()
+    except: _default_start = datetime(2024, 1, 1).date()
+    try:    _default_capital = float(_raw_capital)
+    except: _default_capital = float(initial_capital)
 
     c1, c2 = st.columns(2)
     os_start = c1.date_input(
         "시작일",
-        value=datetime.strptime(_saved_start, "%Y-%m-%d").date(),
+        value=_default_start,
         min_value=datetime(2000, 1, 1).date(),
         max_value=datetime.today().date(),
         key="os_start",
     )
-    os_capital = c2.number_input("시작 자본 ($)", value=_saved_capital,
+    os_capital = c2.number_input("시작 자본 ($)", value=_default_capital,
                                   step=1000.0, key="os_capital")
 
     if st.button("📋 주문표 로드", type="primary", key="run_os"):
+        # URL 파라미터 & config.json 동시 저장
+        st.query_params["start"]   = str(os_start)
+        st.query_params["capital"] = str(int(os_capital))
         save_config({"os_start": str(os_start), "os_capital": os_capital})
+        st.info(f"🔗 설정이 URL에 저장되었습니다. 주소창 URL을 즐겨찾기에 추가하면 다음에 같은 설정으로 바로 접속됩니다.\n\n`?start={os_start}&capital={int(os_capital)}`")
         today = datetime.today().date()
         with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
             price_df_os = load_price_data(ticker, os_start, today, data_source, excel_file)
