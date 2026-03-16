@@ -82,19 +82,51 @@ def scalar(v):
 def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     start = pd.to_datetime(start_str).date()
     end   = pd.to_datetime(end_str).date()
-    raw = yf.download(
-        ticker,
-        start=start - timedelta(days=15),
-        end=end + timedelta(days=2),
-        progress=False, auto_adjust=True,
-    )
-    if isinstance(raw.columns, pd.MultiIndex):
-        try:    raw = raw.xs(ticker, axis=1, level="Ticker")
-        except: raw.columns = raw.columns.droplevel(1)
-    df = raw[["Close"]].copy()
-    df.index = pd.to_datetime(df.index)
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-    return df.dropna()
+
+    def _to_close_df(raw):
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        if isinstance(raw.columns, pd.MultiIndex):
+            try:    raw = raw.xs(ticker, axis=1, level="Ticker")
+            except: raw.columns = raw.columns.droplevel(1)
+        if "Close" not in raw.columns:
+            return pd.DataFrame()
+        df = raw[["Close"]].copy()
+        df.index = pd.to_datetime(df.index)
+        df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+        return df.dropna()
+
+    # 방법 1: yf.download
+    try:
+        raw = yf.download(
+            ticker,
+            start=start - timedelta(days=15),
+            end=end + timedelta(days=2),
+            progress=False, auto_adjust=True,
+        )
+        df = _to_close_df(raw)
+        if not df.empty:
+            return df
+    except Exception:
+        pass
+
+    # 방법 2: yf.Ticker.history (fallback)
+    try:
+        t = yf.Ticker(ticker)
+        raw2 = t.history(
+            start=start - timedelta(days=15),
+            end=end + timedelta(days=2),
+            auto_adjust=True,
+        )
+        if not raw2.empty and "Close" in raw2.columns:
+            df2 = raw2[["Close"]].copy()
+            df2.index = pd.to_datetime(df2.index).tz_localize(None)
+            df2["Close"] = pd.to_numeric(df2["Close"], errors="coerce")
+            return df2.dropna()
+    except Exception:
+        pass
+
+    return pd.DataFrame()
 
 
 def load_price_data(ticker, start, end, data_source, excel_file):
