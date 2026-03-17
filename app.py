@@ -12,11 +12,7 @@ import requests
 import os
 from streamlit_cookies_controller import CookieController
 
-@st.cache_resource
-def _get_cookie_manager():
-    return CookieController()
-
-_cookie_mgr = _get_cookie_manager()
+_cookie_mgr = CookieController()
 
 # ── 실행 환경 감지 ──────────────────────────────────────────
 # Streamlit Cloud는 HOME=/home/appuser 또는 환경변수로 식별
