@@ -8,6 +8,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
+import requests
 
 _CONFIG = Path(__file__).parent / "config.json"
 
@@ -411,7 +412,7 @@ def compute_monthly_pivot(history_df, initial_capital):
 # ──────────────────────────────────────────────
 # 탭 구성
 # ──────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs(["📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표", "📖 전략 소개 & 성과"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표", "📖 전략 소개 & 성과", "⚙️ 개인 설정"])
 
 
 # ══════════════════════════════════════════════
@@ -957,3 +958,182 @@ a   = 파라미터값
             coloraxis_colorbar=dict(title="수익률(%)"),
         )
         st.plotly_chart(fig_m, use_container_width=True)
+
+
+# ══════════════════════════════════════════════
+# TAB 5 – 개인 설정
+# ══════════════════════════════════════════════
+def _send_telegram(token: str, chat_id: str, text: str) -> dict:
+    """텔레그램 Bot API로 메시지 전송. 결과 dict 반환."""
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
+
+
+def _build_order_text(ticker: str = "SOXL") -> str:
+    """오늘의 주문표를 텔레그램용 텍스트로 변환."""
+    try:
+        raw = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw = raw.xs(ticker, axis=1, level="Ticker")
+        closes = raw["Close"].dropna().astype(float)
+        if len(closes) < 2:
+            return f"[{ticker}] 데이터 부족으로 주문표를 생성할 수 없습니다."
+        p1, p2 = float(closes.iloc[-1]), float(closes.iloc[-2])
+        a_buy, a_sell = -0.005, 0.009
+        tgt_buy  = (p1 + p2) * (1 + a_buy)  / (2 - a_buy)
+        tgt_sell = (p1 + p2) * (1 + a_sell) / (2 - a_sell)
+        today = datetime.today().strftime("%Y-%m-%d")
+        lines = [
+            f"📋 <b>오늘의 주문표</b> ({today})",
+            f"종목: {ticker}",
+            f"직전 종가(p1): ${p1:.2f}",
+            f"전전 종가(p2): ${p2:.2f}",
+            "─────────────────",
+            f"🟢 LOC 매수 기준가: <b>${tgt_buy:.2f}</b>",
+            f"🔴 LOC 매도 기준가: <b>${tgt_sell:.2f}</b>",
+            "─────────────────",
+            "※ 종가 LOC 주문 기준입니다.",
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"주문표 생성 오류: {e}"
+
+
+with tab5:
+    st.subheader("⚙️ 개인 설정")
+
+    _cfg5 = load_config()
+
+    # ── 텔레그램 알림 설정 ─────────────────────────────────
+    with st.container(border=True):
+        col_title, col_help = st.columns([3, 1])
+        with col_title:
+            st.markdown("#### 💬 텔레그램 알림 설정")
+            st.caption("포트폴리오 알림 및 주문 신호를 텔레그램으로 받을 수 있습니다.")
+        with col_help:
+            with st.popover("❓ Chat ID & Bot Token 확인 방법", use_container_width=True):
+                st.markdown("""
+**① Bot Token 발급**
+1. 텔레그램에서 `@BotFather` 검색
+2. `/newbot` 명령어 입력
+3. 봇 이름 & 아이디 설정 후 **Token** 수령
+
+**② Chat ID 확인**
+1. 생성한 봇에 메시지 아무거나 전송
+2. 브라우저에서 아래 URL 접속:
+   `https://api.telegram.org/bot{TOKEN}/getUpdates`
+3. `"chat":{"id": 숫자}` 부분이 Chat ID
+""")
+
+        c1, c2 = st.columns(2)
+        tg_chat_id = c1.text_input(
+            "텔레그램 Chat ID",
+            value=_cfg5.get("tg_chat_id", ""),
+            placeholder="예: 1234567890",
+            key="tg_chat_id_input",
+        )
+        tg_token = c2.text_input(
+            "Bot Token",
+            value=_cfg5.get("tg_token", ""),
+            placeholder="예: 123456789:AAF...",
+            type="password",
+            key="tg_token_input",
+        )
+
+        st.caption("📅 주문표는 매주 월~금 오후 3:00 (KST)에 텔레그램으로 자동 발송됩니다")
+
+        btn_col1, btn_col2, spacer = st.columns([1, 1, 4])
+        with btn_col1:
+            if st.button("📨 주문표 테스트 발송", use_container_width=True, key="tg_test"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
+                else:
+                    with st.spinner("발송 중..."):
+                        msg  = _build_order_text(ticker)
+                        result = _send_telegram(tg_token, tg_chat_id, msg)
+                    if result.get("ok"):
+                        st.success("✅ 텔레그램 발송 성공!")
+                    else:
+                        st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
+        with btn_col2:
+            if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
+                else:
+                    save_config({"tg_chat_id": tg_chat_id, "tg_token": tg_token})
+                    st.success("✅ 텔레그램 설정이 저장되었습니다.")
+
+    st.write("")
+
+    # ── 구글 스프레드시트 연동 ──────────────────────────────
+    with st.container(border=True):
+        col_title2, col_help2 = st.columns([3, 1])
+        with col_title2:
+            st.markdown("#### 🗂️ 구글 스프레드시트 연동")
+            st.caption("포트폴리오 정보와 주문 신호를 구글 스프레드시트로 전송합니다.")
+        with col_help2:
+            with st.popover("❓ 시트 URL 확인 & 권한 부여", use_container_width=True):
+                st.markdown("""
+**① 스프레드시트 URL 복사**
+- 구글 스프레드시트를 열고 주소창 URL 전체를 복사해 붙여넣기
+
+**② 서비스 계정 이메일 공유**
+- 스프레드시트 우측 상단 **공유** 클릭
+- 아래 이메일을 **편집자**로 추가:
+
+```
+soxl-bot@soxl-backtest.iam.gserviceaccount.com
+```
+
+**③ 저장 후 테스트**
+- URL 저장 → "시트 연결 테스트" 버튼으로 확인
+""")
+
+        gs_url = st.text_input(
+            "스프레드시트 URL",
+            value=_cfg5.get("gs_url", ""),
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            key="gs_url_input",
+        )
+        st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
+
+        btn_col3, btn_col4, spacer2 = st.columns([1, 1, 4])
+        with btn_col3:
+            if st.button("🔗 시트 연결 테스트", use_container_width=True, key="gs_test"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 먼저 입력해주세요.")
+                else:
+                    try:
+                        import gspread
+                        from google.oauth2.service_account import Credentials
+                        _SCOPES = ["https://spreadsheets.google.com/feeds",
+                                   "https://www.googleapis.com/auth/drive"]
+                        # Streamlit Cloud: st.secrets / 로컬: secrets.json
+                        if "gcp_service_account" in st.secrets:
+                            creds = Credentials.from_service_account_info(
+                                st.secrets["gcp_service_account"], scopes=_SCOPES)
+                        else:
+                            _key_path = Path(__file__).parent / "secrets.json"
+                            creds = Credentials.from_service_account_file(
+                                str(_key_path), scopes=_SCOPES)
+                        gc = gspread.authorize(creds)
+                        sh = gc.open_by_url(gs_url)
+                        st.success(f"✅ 연결 성공! 시트명: **{sh.title}**")
+                    except ImportError:
+                        st.error("❌ gspread 패키지가 설치되지 않았습니다. requirements.txt 확인 후 재시작해주세요.")
+                    except Exception as e:
+                        st.error(f"❌ 연결 실패: {e}")
+        with btn_col4:
+            if st.button("💾 저장하기 ", use_container_width=True, key="gs_save", type="primary"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 입력해주세요.")
+                else:
+                    save_config({"gs_url": gs_url})
+                    st.success("✅ 구글시트 URL이 저장되었습니다.")
