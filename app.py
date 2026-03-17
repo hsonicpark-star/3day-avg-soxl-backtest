@@ -1240,10 +1240,12 @@ with tab5:
 **① Bot Token 발급**
 1. 텔레그램에서 `@BotFather` 검색
 2. `/newbot` 명령어 입력
-3. 봇 이름 & 아이디 설정 후 **Token** 수령
+3. 봇 이름 입력 (예: `3days avg bot`)
+4. 봇 아이디 입력 (예: `@3days-avg_bot`)
+5. BotFather가 발급한 **Token** 복사
 
 **② Chat ID 확인**
-1. 생성한 봇에 메시지 아무거나 전송
+1. 생성한 봇 `@3days-avg_bot` 에 메시지 아무거나 전송
 2. 브라우저에서 아래 URL 접속:
    `https://api.telegram.org/bot{TOKEN}/getUpdates`
 3. `"chat":{"id": 숫자}` 부분이 Chat ID
