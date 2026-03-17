@@ -58,6 +58,32 @@ def save_config(data: dict, sensitive: bool = False):
     except:
         pass
 
+# ── 주문 히스토리 경로 ──────────────────────────────────────
+if _IS_CLOUD:
+    _HISTORY_FILE = Path(__file__).parent / "order_history.csv"
+else:
+    _HISTORY_FILE = Path.home() / ".soxl" / "order_history.csv"
+
+def load_order_history() -> "pd.DataFrame":
+    if _HISTORY_FILE.exists():
+        try:
+            return pd.read_csv(_HISTORY_FILE, encoding="utf-8-sig")
+        except:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+def append_order_history(rows: list):
+    """오늘 주문 내역을 히스토리 CSV에 누적 저장."""
+    import io as _io
+    df_new = pd.DataFrame(rows)
+    if _HISTORY_FILE.exists():
+        df_old = load_order_history()
+        df_combined = pd.concat([df_old, df_new], ignore_index=True)
+    else:
+        df_combined = df_new
+    _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    df_combined.to_csv(_HISTORY_FILE, index=False, encoding="utf-8-sig")
+
 # 클라우드 서버에 혹시 남은 민감 정보 제거
 if _IS_CLOUD:
     try:
@@ -977,6 +1003,103 @@ with tab3:
         else:
             st.info("현재 보유 주식 없음 (전량 현금)")
             st.metric("보유현금", f"${res['cash']:,.2f}")
+
+        # ── 오늘 주문 기록 저장 버튼 ──
+        st.divider()
+        _today_str = str(datetime.today().date())
+        _save_col, _ = st.columns([2, 5])
+        if _save_col.button("📌 오늘 주문 기록하기", key="save_history", use_container_width=True):
+            _hist_rows = []
+            for _o in today_orders:
+                _hist_rows.append({
+                    "기록일":       _today_str,
+                    "구분":         _o["구분"],
+                    "티커":         _o["티커"],
+                    "LOC기준가":    _o["LOC 기준가"],
+                    "수량":         _o["예상수량"],
+                    "예상금액":     _o["예상금액"],
+                    "전일종가대비": _o["전일종가 대비"],
+                    "비고":         _o["비고"],
+                    "시작자본":     f"${res['initial_capital']:,.0f}",
+                    "현재자산":     f"${res['current_asset']:,.0f}",
+                    "수익률":       f"{res['total_return']*100:+.2f}%",
+                    "현재DD":       f"{res['current_dd']*100:.2f}%",
+                    "보유주수":     res["shares"],
+                    "보유현금":     f"${res['cash']:,.2f}",
+                })
+            append_order_history(_hist_rows)
+            st.success(f"✅ {len(_hist_rows)}건 기록 완료! ({_today_str})")
+            st.rerun()
+
+    # ── 주문 히스토리 (버튼 블록 밖 – 항상 표시) ──
+    st.divider()
+    st.subheader("📜 주문 히스토리")
+    _df_hist = load_order_history()
+    if not _df_hist.empty:
+        # 최신 날짜 먼저 정렬
+        if "기록일" in _df_hist.columns:
+            _df_hist = _df_hist.sort_values("기록일", ascending=False).reset_index(drop=True)
+
+        st.caption(f"총 {len(_df_hist)}건 · 최근 기록일: {_df_hist['기록일'].iloc[0] if '기록일' in _df_hist.columns else '-'}")
+
+        # 구분 컬럼 색상 (매수=빨강, 매도=파랑)
+        def _style_hist(row):
+            styles = [""] * len(row)
+            if "구분" in row.index:
+                idx = list(row.index).index("구분")
+                if row["구분"] == "매수":
+                    styles[idx] = "color: #C62828; font-weight: bold"
+                elif row["구분"] == "매도":
+                    styles[idx] = "color: #1565C0; font-weight: bold"
+            return styles
+
+        st.dataframe(
+            _df_hist.style.apply(_style_hist, axis=1),
+            hide_index=True,
+            use_container_width=True,
+            height=min(38 + 35 * len(_df_hist), 500),
+        )
+
+        # ── 다운로드 버튼 ──
+        import io as _io
+        _today_dl = str(datetime.today().date()).replace("-", "")
+        _dl1, _dl2, _ = st.columns([1, 1, 4])
+
+        # CSV
+        _csv_data = _df_hist.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        _dl1.download_button(
+            "📥 CSV 다운로드",
+            data=_csv_data,
+            file_name=f"soxl_order_history_{_today_dl}.csv",
+            mime="text/csv",
+            key="dl_csv",
+            use_container_width=True,
+        )
+
+        # 엑셀
+        _buf = _io.BytesIO()
+        with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+            _df_hist.to_excel(_writer, index=False, sheet_name="주문히스토리")
+        _dl2.download_button(
+            "📥 엑셀 다운로드",
+            data=_buf.getvalue(),
+            file_name=f"soxl_order_history_{_today_dl}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_xlsx",
+            use_container_width=True,
+        )
+
+        # ── 히스토리 삭제 ──
+        with st.expander("⚠️ 히스토리 관리"):
+            if st.button("🗑️ 전체 히스토리 삭제", type="secondary", key="del_history"):
+                try:
+                    _HISTORY_FILE.unlink()
+                    st.success("히스토리가 삭제되었습니다.")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"삭제 실패: {_e}")
+    else:
+        st.info("📭 아직 기록된 주문이 없습니다. '주문표 로드' 후 '📌 오늘 주문 기록하기' 버튼으로 저장하세요.")
 
 
 # ══════════════════════════════════════════════
