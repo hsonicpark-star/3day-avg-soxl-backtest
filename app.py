@@ -22,11 +22,19 @@ _IS_CLOUD = (
 # ── config 경로 ──────────────────────────────────────────────
 # 로컬: C:\Users\{이름}\.soxl\config.json  (각자 PC에 독립 저장)
 # 클라우드: 앱 디렉토리 (비민감 정보만, 공유 서버)
+_OLD_CONFIG = Path(__file__).parent / "config.json"   # 이전 경로 (마이그레이션용)
 if _IS_CLOUD:
-    _CONFIG = Path(__file__).parent / "config.json"
+    _CONFIG = _OLD_CONFIG
 else:
     _CONFIG = Path.home() / ".soxl" / "config.json"
     _CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    # 이전 경로(앱 폴더)에 config가 있고 새 경로에 아직 없으면 자동 마이그레이션
+    if _OLD_CONFIG.exists() and not _CONFIG.exists():
+        try:
+            import shutil
+            shutil.copy2(_OLD_CONFIG, _CONFIG)
+        except:
+            pass
 
 _SENSITIVE_KEYS = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
 
