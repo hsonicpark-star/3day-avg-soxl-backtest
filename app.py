@@ -423,6 +423,7 @@ def run_portfolio_for_ordersheet(
     avg_cost    = 0.0
     open_tiers  = []   # [{'date': Timestamp, 'price': float, 'qty': int}]
     sell_trades = []
+    buy_trades  = []
 
     if not sim.empty:
         closes   = sim["Close"].values.astype(float)
@@ -447,15 +448,17 @@ def run_portfolio_for_ordersheet(
                 holding_days = (date - oldest_date).days
                 factor       = x / avg_cost if avg_cost > 0 else 0.0
 
+                _date_val = date.date() if hasattr(date, "date") else date
                 sell_trades.append({
+                    "날짜":    str(_date_val),
                     "구분":    "매도",
                     "티커":    ticker_name,
-                    "주문가":  x,
+                    "체결가":  x,
                     "avg_cost": avg_cost,
                     "수량":    sell_qty,
-                    "금액":    sell_qty * x,
-                    "보유기간": holding_days,
-                    "비고":    f"평단 ${avg_cost:.2f} × {factor:.4f} = ${x:.2f}",
+                    "금액($)": round(sell_qty * x, 2),
+                    "보유기간(일)": holding_days,
+                    "비고":    f"평단 ${avg_cost:.2f} → 수익률 {(x/avg_cost-1)*100:+.2f}%",
                 })
 
                 cash   += sell_qty * x
@@ -491,6 +494,16 @@ def run_portfolio_for_ordersheet(
                 avg_cost  = total_inv / shares
                 cash     -= buy_qty * x
                 open_tiers.append({"date": date, "price": x, "qty": buy_qty})
+                _date_val = date.date() if hasattr(date, "date") else date
+                buy_trades.append({
+                    "날짜":    str(_date_val),
+                    "구분":    "매수",
+                    "티커":    ticker_name,
+                    "체결가":  x,
+                    "수량":    buy_qty,
+                    "금액($)": round(buy_qty * x, 2),
+                    "비고":    f"평단 ${avg_cost:.2f} | 보유 {shares}주",
+                })
 
         asset      = cash + shares * x
         prev_asset = asset
@@ -538,6 +551,7 @@ def run_portfolio_for_ordersheet(
         "shares":             shares,
         "cash":               cash,
         "sell_trades":        sell_trades,
+        "trade_history":      sorted(buy_trades + sell_trades, key=lambda r: r["날짜"]),
         "pending_buys":       pending_buys,
         "open_tiers":         open_tiers,
         "latest_price":       latest_price,
@@ -1004,102 +1018,62 @@ with tab3:
             st.info("현재 보유 주식 없음 (전량 현금)")
             st.metric("보유현금", f"${res['cash']:,.2f}")
 
-        # ── 오늘 주문 기록 저장 버튼 ──
+        # ── 매매 히스토리 (시작일 ~ 오늘 전체) ──
         st.divider()
-        _today_str = str(datetime.today().date())
-        _save_col, _ = st.columns([2, 5])
-        if _save_col.button("📌 오늘 주문 기록하기", key="save_history", use_container_width=True):
-            _hist_rows = []
-            for _o in today_orders:
-                _hist_rows.append({
-                    "기록일":       _today_str,
-                    "구분":         _o["구분"],
-                    "티커":         _o["티커"],
-                    "LOC기준가":    _o["LOC 기준가"],
-                    "수량":         _o["예상수량"],
-                    "예상금액":     _o["예상금액"],
-                    "전일종가대비": _o["전일종가 대비"],
-                    "비고":         _o["비고"],
-                    "시작자본":     f"${res['initial_capital']:,.0f}",
-                    "현재자산":     f"${res['current_asset']:,.0f}",
-                    "수익률":       f"{res['total_return']*100:+.2f}%",
-                    "현재DD":       f"{res['current_dd']*100:.2f}%",
-                    "보유주수":     res["shares"],
-                    "보유현금":     f"${res['cash']:,.2f}",
-                })
-            append_order_history(_hist_rows)
-            st.success(f"✅ {len(_hist_rows)}건 기록 완료! ({_today_str})")
-            st.rerun()
+        st.subheader("📜 매매 히스토리")
+        _th = res.get("trade_history", [])
+        if _th:
+            _df_hist = pd.DataFrame(_th)
+            # 최신 날짜 먼저
+            _df_hist = _df_hist.sort_values("날짜", ascending=False).reset_index(drop=True)
+            # 표시용 컬럼 정리 (avg_cost 컬럼 숨김)
+            _show_cols = [c for c in ["날짜","구분","티커","체결가","수량","금액($)","보유기간(일)","비고"] if c in _df_hist.columns]
+            _df_show = _df_hist[_show_cols].copy()
+            _df_show["체결가"] = _df_show["체결가"].apply(lambda v: f"${v:,.2f}")
+            _df_show["금액($)"] = _df_show["금액($)"].apply(lambda v: f"${v:,.2f}")
 
-    # ── 주문 히스토리 (버튼 블록 밖 – 항상 표시) ──
-    st.divider()
-    st.subheader("📜 주문 히스토리")
-    _df_hist = load_order_history()
-    if not _df_hist.empty:
-        # 최신 날짜 먼저 정렬
-        if "기록일" in _df_hist.columns:
-            _df_hist = _df_hist.sort_values("기록일", ascending=False).reset_index(drop=True)
+            _buy_cnt  = (_df_hist["구분"] == "매수").sum()
+            _sell_cnt = (_df_hist["구분"] == "매도").sum()
+            st.caption(f"시작일 {res['start_date']} ~ 오늘 | 총 {len(_df_hist)}건 (매수 {_buy_cnt}회 · 매도 {_sell_cnt}회)")
 
-        st.caption(f"총 {len(_df_hist)}건 · 최근 기록일: {_df_hist['기록일'].iloc[0] if '기록일' in _df_hist.columns else '-'}")
+            def _style_hist(row):
+                styles = [""] * len(row)
+                if "구분" in row.index:
+                    idx = list(row.index).index("구분")
+                    if row["구분"] == "매수":
+                        styles[idx] = "color: #C62828; font-weight: bold"
+                    elif row["구분"] == "매도":
+                        styles[idx] = "color: #1565C0; font-weight: bold"
+                return styles
 
-        # 구분 컬럼 색상 (매수=빨강, 매도=파랑)
-        def _style_hist(row):
-            styles = [""] * len(row)
-            if "구분" in row.index:
-                idx = list(row.index).index("구분")
-                if row["구분"] == "매수":
-                    styles[idx] = "color: #C62828; font-weight: bold"
-                elif row["구분"] == "매도":
-                    styles[idx] = "color: #1565C0; font-weight: bold"
-            return styles
+            st.dataframe(
+                _df_show.style.apply(_style_hist, axis=1),
+                hide_index=True,
+                use_container_width=True,
+                height=min(38 + 35 * len(_df_show), 500),
+            )
 
-        st.dataframe(
-            _df_hist.style.apply(_style_hist, axis=1),
-            hide_index=True,
-            use_container_width=True,
-            height=min(38 + 35 * len(_df_hist), 500),
-        )
-
-        # ── 다운로드 버튼 ──
-        import io as _io
-        _today_dl = str(datetime.today().date()).replace("-", "")
-        _dl1, _dl2, _ = st.columns([1, 1, 4])
-
-        # CSV
-        _csv_data = _df_hist.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-        _dl1.download_button(
-            "📥 CSV 다운로드",
-            data=_csv_data,
-            file_name=f"soxl_order_history_{_today_dl}.csv",
-            mime="text/csv",
-            key="dl_csv",
-            use_container_width=True,
-        )
-
-        # 엑셀
-        _buf = _io.BytesIO()
-        with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
-            _df_hist.to_excel(_writer, index=False, sheet_name="주문히스토리")
-        _dl2.download_button(
-            "📥 엑셀 다운로드",
-            data=_buf.getvalue(),
-            file_name=f"soxl_order_history_{_today_dl}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="dl_xlsx",
-            use_container_width=True,
-        )
-
-        # ── 히스토리 삭제 ──
-        with st.expander("⚠️ 히스토리 관리"):
-            if st.button("🗑️ 전체 히스토리 삭제", type="secondary", key="del_history"):
-                try:
-                    _HISTORY_FILE.unlink()
-                    st.success("히스토리가 삭제되었습니다.")
-                    st.rerun()
-                except Exception as _e:
-                    st.error(f"삭제 실패: {_e}")
-    else:
-        st.info("📭 아직 기록된 주문이 없습니다. '주문표 로드' 후 '📌 오늘 주문 기록하기' 버튼으로 저장하세요.")
+            # ── 다운로드 버튼 ──
+            import io as _io
+            _today_dl = str(datetime.today().date()).replace("-", "")
+            _dl1, _dl2, _ = st.columns([1, 1, 4])
+            _csv_data = _df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            _dl1.download_button(
+                "📥 CSV 다운로드", data=_csv_data,
+                file_name=f"soxl_trade_history_{_today_dl}.csv",
+                mime="text/csv", key="dl_csv", use_container_width=True,
+            )
+            _buf = _io.BytesIO()
+            with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+                _df_show.to_excel(_writer, index=False, sheet_name="매매히스토리")
+            _dl2.download_button(
+                "📥 엑셀 다운로드", data=_buf.getvalue(),
+                file_name=f"soxl_trade_history_{_today_dl}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_xlsx", use_container_width=True,
+            )
+        else:
+            st.info("📭 시작일부터 오늘까지 체결된 매매 내역이 없습니다.")
 
 
 # ══════════════════════════════════════════════
