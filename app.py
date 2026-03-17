@@ -69,7 +69,77 @@ if _IS_CLOUD:
     except:
         pass
 
+# ── 인증 함수 ──────────────────────────────────────────────────
+def _get_users_ws():
+    """서비스 계정으로 users 시트 접근."""
+    gc = _get_gspread_client()
+    url = st.secrets.get("admin_sheet_url", "")
+    if not url:
+        raise RuntimeError("Streamlit Secrets에 admin_sheet_url이 설정되지 않았습니다.")
+    return gc.open_by_url(url).worksheet("users")
+
+def _authenticate(username: str, password: str):
+    """인증 성공 시 사용자 정보 dict 반환, 실패 시 None."""
+    import bcrypt
+    ws = _get_users_ws()
+    for row in ws.get_all_records():
+        if row.get("username") == username:
+            stored = row.get("password_hash", "")
+            if stored and bcrypt.checkpw(password.encode(), stored.encode()):
+                return dict(row)
+    return None
+
+def _save_user_settings_to_sheet(username: str, settings: dict):
+    """users 시트에서 해당 유저 행의 설정 컬럼 업데이트."""
+    ws = _get_users_ws()
+    headers = ws.row_values(1)
+    for i, row in enumerate(ws.get_all_records(), start=2):
+        if row.get("username") == username:
+            for key, val in settings.items():
+                if key in headers and key not in ("username", "password_hash"):
+                    ws.update_cell(i, headers.index(key) + 1, str(val))
+            return
+
+def _hash_password(plain: str) -> str:
+    """bcrypt 해시 생성 (관리자 도구용)."""
+    import bcrypt
+    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+
+# ── 앱 초기화 ──────────────────────────────────────────────────
 st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
+
+# ── 클라우드: 로그인 게이트 ────────────────────────────────────
+if _IS_CLOUD:
+    if not st.session_state.get("logged_in", False):
+        st.title("📈 종가평균매매 백테스트")
+        st.markdown("---")
+        with st.container():
+            _, center, _ = st.columns([1, 1.2, 1])
+            with center:
+                st.subheader("🔐 로그인")
+                with st.form("login_form"):
+                    _u = st.text_input("아이디")
+                    _p = st.text_input("비밀번호", type="password")
+                    _ok = st.form_submit_button("로그인", type="primary", use_container_width=True)
+                if _ok:
+                    if not _u or not _p:
+                        st.warning("아이디와 비밀번호를 입력해주세요.")
+                    else:
+                        with st.spinner("인증 중..."):
+                            try:
+                                _user = _authenticate(_u, _p)
+                            except Exception as e:
+                                _user = None
+                                st.error(f"인증 서버 오류: {e}")
+                        if _user:
+                            st.session_state.logged_in      = True
+                            st.session_state.username        = _u
+                            st.session_state.user_settings   = _user
+                            st.rerun()
+                        else:
+                            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+        st.stop()
+
 st.title("📈 종가평균매매 백테스트 (LOC)")
 
 # ──────────────────────────────────────────────
@@ -105,6 +175,15 @@ with st.sidebar:
     if data_source == "엑셀 Daily_Close 시트":
         excel_file = st.file_uploader("엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
         st.caption("엑셀 내 **Daily_Close** 시트의 날짜/종가 두 컬럼이 사용됩니다.")
+
+    # ── 사용자 정보 (클라우드 로그인 시) ──────────────
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        st.markdown("---")
+        st.caption(f"👤 **{st.session_state.username}** 으로 로그인 중")
+        if st.button("🚪 로그아웃", use_container_width=True):
+            for k in ("logged_in", "username", "user_settings"):
+                st.session_state.pop(k, None)
+            st.rerun()
 
 
 # ──────────────────────────────────────────────
@@ -1124,11 +1203,13 @@ with tab5:
     st.subheader("⚙️ 개인 설정")
 
     _cfg5 = load_config()
+    # 클라우드 로그인 시 Google Sheets에서 사용자 설정 가져오기
+    _usercfg = st.session_state.get("user_settings", {}) if _IS_CLOUD else {}
 
     if _IS_CLOUD:
-        st.info("☁️ **Streamlit Cloud 접속 중** — 보안을 위해 민감 정보(텔레그램·구글시트)는 서버에 저장되지 않습니다. 접속할 때마다 입력해주세요.")
+        st.info(f"☁️ **{st.session_state.get('username','')}** 으로 로그인 중 — 설정을 저장하면 다음 로그인 시 자동으로 불러옵니다.")
     else:
-        st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_CONFIG}` 에 저장됩니다. 다음 실행 시 자동으로 불러옵니다.")
+        st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_CONFIG}` 에 저장됩니다.")
 
     # ── 텔레그램 알림 설정 ─────────────────────────────────
     with st.container(border=True):
@@ -1155,13 +1236,13 @@ with tab5:
         # 로컬이면 저장된 값 불러오기, 클라우드면 빈칸
         tg_chat_id = c1.text_input(
             "텔레그램 Chat ID",
-            value=_cfg5.get("tg_chat_id", "") if not _IS_CLOUD else "",
+            value=_cfg5.get("tg_chat_id", "") if not _IS_CLOUD else _usercfg.get("tg_chat_id", ""),
             placeholder="예: 1234567890",
             key="tg_chat_id_input",
         )
         tg_token = c2.text_input(
             "Bot Token",
-            value=_cfg5.get("tg_token", "") if not _IS_CLOUD else "",
+            value=_cfg5.get("tg_token", "") if not _IS_CLOUD else _usercfg.get("tg_token", ""),
             placeholder="예: 123456789:AAF...",
             type="password",
             key="tg_token_input",
@@ -1191,15 +1272,23 @@ with tab5:
                     else:
                         st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
         with btn_col2:
-            if not _IS_CLOUD:
-                if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
-                    if not tg_chat_id or not tg_token:
-                        st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
-                    else:
-                        save_config({"tg_chat_id": tg_chat_id, "tg_token": tg_token}, sensitive=True)
-                        st.success(f"✅ 저장 완료!\n`{_CONFIG}`")
-            else:
-                st.caption("⚠️ 클라우드 환경: 저장 불가")
+            if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
+                elif _IS_CLOUD:
+                    with st.spinner("저장 중..."):
+                        try:
+                            _save_user_settings_to_sheet(
+                                st.session_state.username,
+                                {"tg_chat_id": tg_chat_id, "tg_token": tg_token})
+                            st.session_state.user_settings.update(
+                                {"tg_chat_id": tg_chat_id, "tg_token": tg_token})
+                            st.success("✅ Google Sheets에 저장 완료!")
+                        except Exception as e:
+                            st.error(f"❌ 저장 실패: {e}")
+                else:
+                    save_config({"tg_chat_id": tg_chat_id, "tg_token": tg_token}, sensitive=True)
+                    st.success(f"✅ 저장 완료! `{_CONFIG}`")
 
     st.write("")
 
@@ -1230,13 +1319,13 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
         uc1, uc2 = st.columns([3, 1])
         gs_url = uc1.text_input(
             "스프레드시트 URL",
-            value=_cfg5.get("gs_url", "") if not _IS_CLOUD else "",
+            value=_cfg5.get("gs_url", "") if not _IS_CLOUD else _usercfg.get("gs_url", ""),
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="gs_url_input",
         )
         gs_sheet = uc2.text_input(
             "시트 이름",
-            value=_cfg5.get("gs_sheet", "종가평균") if not _IS_CLOUD else "종가평균",
+            value=_cfg5.get("gs_sheet", "종가평균") if not _IS_CLOUD else _usercfg.get("gs_sheet", "종가평균"),
             placeholder="종가평균",
             key="gs_sheet_input",
         )
@@ -1282,12 +1371,33 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
                             st.error(f"❌ 전송 실패: {e}")
 
         with btn_col5:
-            if not _IS_CLOUD:
-                if st.button("💾 저장하기 ", use_container_width=True, key="gs_save", type="primary"):
-                    if not gs_url:
-                        st.warning("스프레드시트 URL을 입력해주세요.")
-                    else:
-                        save_config({"gs_url": gs_url, "gs_sheet": gs_sheet}, sensitive=True)
-                        st.success(f"✅ 저장 완료!\n`{_CONFIG}`")
+            if st.button("💾 저장하기 ", use_container_width=True, key="gs_save", type="primary"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 입력해주세요.")
+                elif _IS_CLOUD:
+                    with st.spinner("저장 중..."):
+                        try:
+                            _save_user_settings_to_sheet(
+                                st.session_state.username,
+                                {"gs_url": gs_url, "gs_sheet": gs_sheet})
+                            st.session_state.user_settings.update(
+                                {"gs_url": gs_url, "gs_sheet": gs_sheet})
+                            st.success("✅ Google Sheets에 저장 완료!")
+                        except Exception as e:
+                            st.error(f"❌ 저장 실패: {e}")
+                else:
+                    save_config({"gs_url": gs_url, "gs_sheet": gs_sheet}, sensitive=True)
+                    st.success(f"✅ 저장 완료! `{_CONFIG}`")
+
+    # ── 관리자 도구: 비밀번호 해시 생성 ───────────────────────
+    st.write("")
+    with st.expander("🔧 관리자 도구 — 비밀번호 해시 생성 (users 시트 등록용)"):
+        st.caption("새 사용자를 추가할 때 비밀번호를 bcrypt 해시로 변환하여 Google Sheets에 붙여넣으세요.")
+        _admin_pw_input = st.text_input("등록할 비밀번호 입력", type="password", key="admin_pw_input")
+        if st.button("🔑 해시 생성", key="gen_hash"):
+            if _admin_pw_input:
+                _hashed = _hash_password(_admin_pw_input)
+                st.code(_hashed, language=None)
+                st.caption("👆 위 해시를 복사해서 users 시트의 password_hash 컬럼에 붙여넣으세요.")
             else:
-                st.caption("⚠️ 클라우드 환경: 저장 불가")
+                st.warning("비밀번호를 입력해주세요.")
