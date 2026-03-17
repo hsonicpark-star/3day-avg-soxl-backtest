@@ -157,6 +157,18 @@ if _IS_CLOUD:
                             st.rerun()
                         else:
                             st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+
+        # ── 관리자 해시 생성 도구 (로그인 없이 접근 가능) ──
+        st.markdown("---")
+        with st.expander("🔧 관리자 도구 — 비밀번호 해시 생성"):
+            st.caption("users 시트에 등록할 bcrypt 해시를 생성합니다.")
+            _admin_pw = st.text_input("등록할 비밀번호", type="password", key="login_admin_pw")
+            if st.button("🔑 해시 생성", key="login_gen_hash"):
+                if _admin_pw:
+                    st.code(_hash_password(_admin_pw), language=None)
+                    st.caption("👆 복사 후 users 시트 password_hash 컬럼에 붙여넣기")
+                else:
+                    st.warning("비밀번호를 입력해주세요.")
         st.stop()
 
 st.title("📈 종가평균매매 백테스트 (LOC)")
