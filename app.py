@@ -92,9 +92,14 @@ def _get_gspread_client():
 def _get_users_ws():
     """서비스 계정으로 users 시트 접근."""
     gc = _get_gspread_client()
-    url = st.secrets.get("admin_sheet_url", "")
+    # st.secrets 키 직접 접근 (더 안전)
+    try:
+        url = st.secrets["admin_sheet_url"]
+    except (KeyError, Exception):
+        url = ""
     if not url:
-        raise RuntimeError("Streamlit Secrets에 admin_sheet_url이 설정되지 않았습니다.")
+        available = list(st.secrets.keys()) if hasattr(st.secrets, "keys") else "확인불가"
+        raise RuntimeError(f"admin_sheet_url 없음. 현재 Secrets 키: {available}")
     return gc.open_by_url(url).worksheet("users")
 
 def _authenticate(username: str, password: str):
