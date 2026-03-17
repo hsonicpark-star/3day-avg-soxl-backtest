@@ -143,9 +143,14 @@ def _authenticate(username: str, password: str):
     return None
 
 def _save_user_settings_to_sheet(username: str, settings: dict):
-    """users 시트에서 해당 유저 행의 설정 컬럼 업데이트."""
+    """users 시트에서 해당 유저 행의 설정 컬럼 업데이트. 없는 컬럼은 자동 추가."""
     ws = _get_users_ws()
     headers = ws.row_values(1)
+    # 없는 컬럼 자동 추가
+    for key in settings:
+        if key not in ("username", "password_hash") and key not in headers:
+            ws.update_cell(1, len(headers) + 1, key)
+            headers.append(key)
     for i, row in enumerate(ws.get_all_records(), start=2):
         if row.get("username") == username:
             for key, val in settings.items():
@@ -178,7 +183,10 @@ if _IS_CLOUD:
                     st.session_state.logged_in    = True
                     st.session_state.username     = str(_cookie_user).strip()
                     st.session_state.user_settings = {
-                        k: _row.get(k, "") for k in ("tg_chat_id", "tg_token", "gs_url", "gs_sheet")
+                        k: _row.get(k, "") for k in (
+                            "tg_chat_id", "tg_token", "gs_url", "gs_sheet",
+                            "a_buy", "a_sell", "sell_ratio", "divisions"
+                        )
                     }
                     st.rerun()
             except Exception:
@@ -243,10 +251,45 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("전략 파라미터")
-    a_buy      = st.number_input("매수기준 (a값)", value=-0.005, step=0.001, format="%.4f")
-    a_sell     = st.number_input("매도기준 (a값)", value= 0.009, step=0.001, format="%.4f")
-    sell_ratio = st.number_input("매도비율 (%)", value=100.0, step=10.0, min_value=0.0, max_value=100.0)
-    divisions  = st.number_input("분할수", value=5, min_value=1, step=1)
+
+    # ── 저장된 파라미터 기본값 로드 ──
+    def _sfloat(v, d):
+        try: return float(v) if v not in ("", None) else d
+        except: return d
+    def _sint(v, d):
+        try: return int(float(v)) if v not in ("", None) else d
+        except: return d
+
+    _cfg_sb = load_config()
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        _usercfg_sb = st.session_state.get("user_settings", {})
+    else:
+        _usercfg_sb = _cfg_sb
+
+    _def_a_buy  = _sfloat(_usercfg_sb.get("a_buy"),      -0.005)
+    _def_a_sell = _sfloat(_usercfg_sb.get("a_sell"),       0.009)
+    _def_sr     = _sfloat(_usercfg_sb.get("sell_ratio"),  100.0)
+    _def_div    = _sint  (_usercfg_sb.get("divisions"),   5)
+
+    a_buy      = st.number_input("매수기준 (a값)", value=_def_a_buy,  step=0.001, format="%.4f")
+    a_sell     = st.number_input("매도기준 (a값)", value=_def_a_sell, step=0.001, format="%.4f")
+    sell_ratio = st.number_input("매도비율 (%)", value=_def_sr, step=10.0, min_value=0.0, max_value=100.0)
+    divisions  = st.number_input("분할수", value=_def_div, min_value=1, step=1)
+
+    # ── 파라미터 저장 버튼 ──
+    if st.button("💾 파라미터 저장", use_container_width=True):
+        _param_data = {
+            "a_buy": float(a_buy), "a_sell": float(a_sell),
+            "sell_ratio": float(sell_ratio), "divisions": int(divisions)
+        }
+        save_config(_param_data)
+        if _IS_CLOUD and st.session_state.get("logged_in"):
+            try:
+                _save_user_settings_to_sheet(st.session_state.username, _param_data)
+                st.session_state.user_settings.update(_param_data)
+            except Exception as _e:
+                st.warning(f"시트 저장 실패: {_e}")
+        st.success("✅ 파라미터가 저장되었습니다!")
 
     st.markdown("---")
     st.subheader("백테스트 설정")
