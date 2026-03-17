@@ -982,12 +982,12 @@ def _get_gspread_client():
         raise RuntimeError(f"인증 실패: {e}")
 
 
-def _write_orders_to_sheet(gs_url: str, res: dict, _sell_ratio: float,
-                           _divisions: int, ticker_name: str):
-    """시뮬레이션 결과를 구글시트 '종가평균' 탭 L4부터 기록."""
+def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
+                           _sell_ratio: float, _divisions: int, ticker_name: str):
+    """시뮬레이션 결과를 구글시트 지정 탭 L4부터 기록."""
     gc = _get_gspread_client()
     sh = gc.open_by_url(gs_url)
-    ws = sh.worksheet("종가평균")
+    ws = sh.worksheet(gs_sheet)
 
     # L4:O 범위 초기화 (최대 10행)
     ws.batch_clear(["L4:O13"])
@@ -1177,11 +1177,18 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
 - URL 저장 → "시트 연결 테스트" 버튼으로 확인
 """)
 
-        gs_url = st.text_input(
+        uc1, uc2 = st.columns([3, 1])
+        gs_url = uc1.text_input(
             "스프레드시트 URL",
             value=_cfg5.get("gs_url", ""),
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="gs_url_input",
+        )
+        gs_sheet = uc2.text_input(
+            "시트 이름",
+            value=_cfg5.get("gs_sheet", "종가평균"),
+            placeholder="종가평균",
+            key="gs_sheet_input",
         )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
@@ -1219,8 +1226,8 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
                             if _res is None:
                                 st.error("시뮬레이션 데이터가 없습니다.")
                             else:
-                                n = _write_orders_to_sheet(gs_url, _res, sell_ratio, divisions, ticker)
-                                st.success(f"✅ 구글시트 '종가평균' 탭 L4에 {n}건 전송 완료!")
+                                n = _write_orders_to_sheet(gs_url, gs_sheet, _res, sell_ratio, divisions, ticker)
+                                st.success(f"✅ 구글시트 '{gs_sheet}' 탭 L4에 {n}건 전송 완료!")
                         except Exception as e:
                             st.error(f"❌ 전송 실패: {e}")
 
@@ -1229,5 +1236,5 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
                 if not gs_url:
                     st.warning("스프레드시트 URL을 입력해주세요.")
                 else:
-                    save_config({"gs_url": gs_url})
-                    st.success("✅ 구글시트 URL이 저장되었습니다.")
+                    save_config({"gs_url": gs_url, "gs_sheet": gs_sheet})
+                    st.success(f"✅ 저장 완료! (URL + 시트명: '{gs_sheet}')")
