@@ -10,11 +10,11 @@ import json
 from pathlib import Path
 import requests
 import os
-import extra_streamlit_components as stx
+from streamlit_cookies_controller import CookieController
 
 @st.cache_resource
 def _get_cookie_manager():
-    return stx.CookieManager(key="soxl_cm")
+    return CookieController()
 
 _cookie_mgr = _get_cookie_manager()
 
@@ -276,7 +276,7 @@ with st.sidebar:
         st.markdown("---")
         st.caption(f"👤 **{st.session_state.username}** 으로 로그인 중")
         if st.button("🚪 로그아웃", use_container_width=True):
-            _cookie_mgr.delete("soxl_user")
+            _cookie_mgr.remove("soxl_user")
             for k in ("logged_in", "username", "user_settings"):
                 st.session_state.pop(k, None)
             st.rerun()
