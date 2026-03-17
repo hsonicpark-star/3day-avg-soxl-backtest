@@ -1028,7 +1028,6 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         lines += [
             f"🔴 <b>LOC 매수</b>",
             f"   기준가: <b>${buy_tgt:,.2f}</b>  ({vs_lp_b:+.2f}% vs 전일종가)",
-            f"   1회 매수금: ${chunk:,.2f}",
             f"   예상수량: {buy_qty:,}주  |  예상금액: ${buy_qty * buy_tgt:,.2f}",
             f"   {tier_no}",
             "─────────────────────────",
