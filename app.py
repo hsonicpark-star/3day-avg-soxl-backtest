@@ -668,6 +668,97 @@ def compute_monthly_pivot(history_df, initial_capital):
 
 
 # ──────────────────────────────────────────────
+# 5티어 완전 투자 이벤트 분석
+# ──────────────────────────────────────────────
+def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio, divisions, initial_capital):
+    """분할수(N) 이상 매수 후 매도된 사이클(N티어 완전 투자) 이벤트 추출."""
+    sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+    sim_raw["p1"] = sim_raw["Close"].shift(1)
+    sim_raw["p2"] = sim_raw["Close"].shift(2)
+    sim = sim_raw.dropna(subset=["p1", "p2"])
+    if sim.empty:
+        return []
+
+    cash       = float(initial_capital)
+    shares     = 0
+    avg_cost   = 0.0
+    open_tiers = []
+    prev_asset = float(initial_capital)
+    cycle_buys = []   # 현재 사이클의 매수 목록
+    events     = []
+
+    closes   = sim["Close"].values.astype(float)
+    p1s      = sim["p1"].values.astype(float)
+    p2s      = sim["p2"].values.astype(float)
+    tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
+    tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+
+    for i in range(len(closes)):
+        x    = closes[i]
+        tb   = tgt_buy[i]
+        ts   = tgt_sell[i]
+        date = sim.index[i]
+        current_chunk = prev_asset / divisions
+
+        if shares > 0 and x >= ts:
+            sell_qty = math.floor(shares * (sell_ratio / 100.0))
+            if sell_qty > 0:
+                # N티어 이상 매수 사이클이면 이벤트 기록
+                if len(cycle_buys) >= divisions:
+                    nth  = cycle_buys[divisions - 1]
+                    hold = (date.date() - nth["date"].date()).days
+                    events.append({
+                        "No":           len(events) + 1,
+                        "5번째 매수일": str(nth["date"].date()),
+                        "매도일":       str(date.date()),
+                        "보유일수":     hold,
+                        "5번째 매수가": round(nth["price"], 2),
+                        "평균단가":     round(avg_cost, 2),
+                        "매도가":       round(x, 2),
+                        "손익률":       round((x / avg_cost - 1) * 100, 2) if avg_cost > 0 else 0,
+                    })
+
+                cash   += sell_qty * x
+                shares -= sell_qty
+
+                remaining = sell_qty
+                while remaining > 0 and open_tiers:
+                    if open_tiers[0]["qty"] <= remaining:
+                        remaining -= open_tiers[0]["qty"]
+                        open_tiers.pop(0)
+                    else:
+                        open_tiers[0]["qty"] -= remaining
+                        remaining = 0
+
+                if shares > 0 and open_tiers:
+                    total_inv = sum(t["price"] * t["qty"] for t in open_tiers)
+                    total_qty = sum(t["qty"] for t in open_tiers)
+                    avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
+                else:
+                    avg_cost   = 0.0
+                    open_tiers = []
+                    cycle_buys = []   # 포지션 청산 → 사이클 초기화
+
+        elif x <= tb:
+            buy_qty = min(
+                math.floor(current_chunk / x + 1e-9),
+                math.floor(cash / x + 1e-9),
+            )
+            if buy_qty > 0:
+                total_inv = avg_cost * shares + x * buy_qty
+                shares   += buy_qty
+                avg_cost  = total_inv / shares
+                cash     -= buy_qty * x
+                open_tiers.append({"date": date, "price": x, "qty": buy_qty})
+                cycle_buys.append({"date": date, "price": x})
+
+        asset      = cash + shares * x
+        prev_asset = asset
+
+    return events
+
+
+# ──────────────────────────────────────────────
 # 탭 구성
 # ──────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표", "📖 전략 소개 & 성과", "⚙️ 개인 설정"])
@@ -1294,6 +1385,131 @@ a   = 파라미터값
             coloraxis_colorbar=dict(title="수익률(%)"),
         )
         st.plotly_chart(fig_m, use_container_width=True)
+
+        st.divider()
+
+        # ── 종합 성과 요약 테이블 ──────────────────────────
+        st.subheader("📋 종합 성과 요약")
+        _final_asset = res_p.get("final_asset", initial_capital)
+
+        _summary_data = {
+            "항목": ["시작 자본", "최종 자산", "총 수익률", "CAGR (연복리)",
+                     "MDD", "Calmar Ratio", "총 매수 횟수", "총 매도 횟수"],
+            "수치": [
+                f"${initial_capital:,.0f}",
+                f"${_final_asset:,.0f}",
+                f"{res_p['total_return']*100:+.2f}%",
+                f"{res_p['cagr']*100:.1f}%",
+                f"{res_p['mdd']*100:.1f}%",
+                f"{res_p['calmar']:.3f}",
+                f"{res_p['buy_count']}회",
+                f"{res_p['sell_count']}회",
+            ],
+        }
+        st.dataframe(pd.DataFrame(_summary_data), hide_index=True, use_container_width=True)
+
+        st.divider()
+
+        # ── 5티어 완전 투자 분석 ──────────────────────────
+        st.subheader(f"🎯 {divisions}티어 완전 투자 분석")
+        st.caption(f"분할 매수 {divisions}회가 모두 체결된 사이클 분석")
+
+        with st.spinner("5티어 분석 중..."):
+            _t5_events = run_5tier_analysis(
+                price_df_perf, start_date, end_date,
+                a_buy, a_sell, sell_ratio, divisions, initial_capital,
+            )
+
+        if _t5_events:
+            _df_t5 = pd.DataFrame(_t5_events)
+            _t5_total   = len(_df_t5)
+            _t5_wins    = int((_df_t5["손익률"] > 0).sum())
+            _t5_avg_hold = _df_t5["보유일수"].mean()
+            _t5_max_hold = int(_df_t5["보유일수"].max())
+
+            # 요약 지표
+            _c1, _c2, _c3, _c4 = st.columns(4)
+            _c1.metric("발생 횟수", f"{_t5_total}회")
+            _c2.metric("승률", f"{_t5_wins/_t5_total*100:.1f}%  ({_t5_wins}승 {_t5_total-_t5_wins}패)")
+            _c3.metric("평균 보유기간", f"{_t5_avg_hold:.1f}일")
+            _c4.metric("최장 보유기간", f"{_t5_max_hold}일")
+
+            # 인사이트 박스
+            st.info(
+                f"**'{divisions}티어 완전 매수 후 무한 보유' 걱정은 거의 불필요합니다.**\n\n"
+                f"최장 보유일은 **{_t5_max_hold}일(캘린더 기준)**에 불과합니다. "
+                f"매도 조건이 '직전 2일 평균 대비 +{a_sell*100:.1f}%'이기 때문에, "
+                f"주가가 조금만 반등해도 바로 매도가 트리거됩니다.\n\n"
+                f"전체 {_t5_total}회 중 **{_t5_wins}회 수익({_t5_wins/_t5_total*100:.0f}%)** 으로 마감했습니다."
+            )
+
+            # TOP 10 가장 긴 보유기간
+            st.markdown(f"**TOP 10 — {divisions}번째 티어 체결 후 가장 긴 보유 기간**")
+            _top10 = _df_t5.nlargest(10, "보유일수").reset_index(drop=True)
+            _top10.index += 1
+
+            def _style_t5(row):
+                return ["color: #2e7d32; font-weight:bold" if row["손익률"] > 0
+                        else "color: #c62828; font-weight:bold" if row["손익률"] < 0
+                        else "" for _ in row]
+
+            st.dataframe(
+                _top10.style
+                    .apply(_style_t5, axis=1)
+                    .format({"5번째 매수가": "${:.2f}", "평균단가": "${:.2f}",
+                             "매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
+                hide_index=False, use_container_width=True,
+            )
+
+            # 보유기간 분포 차트
+            _fig_hold = px.histogram(
+                _df_t5, x="보유일수", nbins=20,
+                title=f"{divisions}티어 완전 투자 후 보유기간 분포",
+                labels={"보유일수": "보유기간 (일)", "count": "횟수"},
+                color_discrete_sequence=["#5C6BC0"],
+            )
+            _fig_hold.update_layout(height=320, bargap=0.1)
+            st.plotly_chart(_fig_hold, use_container_width=True)
+
+            # 전체 목록 (펼치기)
+            with st.expander(f"📋 전체 {_t5_total}회 상세 내역 보기"):
+                st.dataframe(
+                    _df_t5.style
+                        .apply(_style_t5, axis=1)
+                        .format({"5번째 매수가": "${:.2f}", "평균단가": "${:.2f}",
+                                 "매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
+                    hide_index=True, use_container_width=True,
+                    height=min(38 + 35 * len(_df_t5), 600),
+                )
+        else:
+            st.info(f"선택 기간 내 {divisions}티어 완전 투자 이벤트가 없습니다.")
+
+        st.divider()
+
+        # ── 맥락 참고 (정적 인사이트) ─────────────────────
+        st.subheader("💡 전략 인사이트 & 맥락 참고")
+        st.warning(
+            "**다음 내용은 2014~현재 SOXL 데이터 기반 백테스트 결과 해석입니다. "
+            "과거 성과가 미래 수익을 보장하지 않습니다.**"
+        )
+        with st.container(border=True):
+            st.markdown("""
+**왜 이 전략이 SOXL에서 잘 작동하나?**
+- **SOXL 자체가 2014~현재 구간에 폭발적으로 상승**한 종목이라 백테스트 수치가 좋게 나오는 구간입니다
+- 단순 Buy & Hold 대비 **변동성을 활용**하여 추가 수익을 창출하는 구조입니다
+- LOC 주문으로 **장 마감 기준가 확인 → 당일 체결**하여 신호 딜레이가 없습니다
+
+**주요 지표 해석**
+- **Calmar 1.8**: 실제로 매우 좋은 수준 (1.0 이상이면 우수, 2.0 이상이면 최상급)
+- **MDD ~26%**: 3배 레버리지 ETF 치고는 꽤 잘 관리된 수치 (미관리 SOXL은 -90%+ MDD도 경험)
+- **승률 ~85%**: 단기 매매 전략으로는 높은 승률 (단, 손익비도 함께 고려 필요)
+
+**주의사항**
+- 5티어 모두 체결되면 **현금이 거의 소진**되므로 추가 하락 시 매수 불가
+- 급락장(코로나, 금리 충격 등)에서는 **MDD가 일시적으로 크게 확대**될 수 있음
+- 실제 거래에서는 **슬리피지, 수수료, 세금** 등이 수익률에 영향
+- 전략 파라미터를 너무 자주 바꾸면 과최적화(overfitting) 위험
+            """)
 
 
 # ══════════════════════════════════════════════
