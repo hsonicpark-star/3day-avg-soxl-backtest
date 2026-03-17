@@ -10,6 +10,13 @@ import json
 from pathlib import Path
 import requests
 import os
+import extra_streamlit_components as stx
+
+@st.cache_resource
+def _get_cookie_manager():
+    return stx.CookieManager(key="soxl_cm")
+
+_cookie_mgr = _get_cookie_manager()
 
 # ── 실행 환경 감지 ──────────────────────────────────────────
 # Streamlit Cloud는 HOME=/home/appuser 또는 환경변수로 식별
@@ -160,6 +167,27 @@ st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
 
 # ── 클라우드: 로그인 게이트 ────────────────────────────────────
 if _IS_CLOUD:
+    # 쿠키에서 자동 로그인 시도 (새로고침해도 로그인 유지)
+    if not st.session_state.get("logged_in", False):
+        _cookie_user = _cookie_mgr.get("soxl_user")
+        if _cookie_user:
+            try:
+                _ws   = _get_users_ws()
+                _rows = _ws.get_all_records()
+                _row  = next(
+                    (r for r in _rows if str(r.get("username", "")).strip() == str(_cookie_user).strip()),
+                    None
+                )
+                if _row:
+                    st.session_state.logged_in    = True
+                    st.session_state.username     = str(_cookie_user).strip()
+                    st.session_state.user_settings = {
+                        k: _row.get(k, "") for k in ("tg_chat_id", "tg_token", "gs_url", "gs_sheet")
+                    }
+                    st.rerun()
+            except Exception:
+                pass  # 쿠키 자동 로그인 실패 → 수동 로그인 폼 표시
+
     if not st.session_state.get("logged_in", False):
         st.title("📈 종가평균매매 백테스트")
         st.markdown("---")
@@ -182,9 +210,14 @@ if _IS_CLOUD:
                                 _user = None
                                 st.error(f"인증 서버 오류: {e}")
                         if _user:
-                            st.session_state.logged_in      = True
-                            st.session_state.username        = _u
-                            st.session_state.user_settings   = _user
+                            st.session_state.logged_in    = True
+                            st.session_state.username     = _u
+                            st.session_state.user_settings = _user
+                            # 30일 자동 로그인 쿠키 저장
+                            _cookie_mgr.set(
+                                "soxl_user", _u,
+                                expires_at=datetime.now() + timedelta(days=30),
+                            )
                             st.rerun()
                         else:
                             st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
@@ -243,6 +276,7 @@ with st.sidebar:
         st.markdown("---")
         st.caption(f"👤 **{st.session_state.username}** 으로 로그인 중")
         if st.button("🚪 로그아웃", use_container_width=True):
+            _cookie_mgr.delete("soxl_user")
             for k in ("logged_in", "username", "user_settings"):
                 st.session_state.pop(k, None)
             st.rerun()
