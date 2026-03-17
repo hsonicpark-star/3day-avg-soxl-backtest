@@ -20,6 +20,8 @@ def load_config():
             return {}
     return {}
 
+_SENSITIVE_KEYS = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
+
 def save_config(data: dict):
     try:
         cfg = load_config()
@@ -27,6 +29,22 @@ def save_config(data: dict):
         _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
+
+def _purge_sensitive_from_config():
+    """기존 config.json에 남아있던 민감 정보 삭제."""
+    try:
+        cfg = load_config()
+        changed = False
+        for k in _SENSITIVE_KEYS:
+            if k in cfg:
+                del cfg[k]
+                changed = True
+        if changed:
+            _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except:
+        pass
+
+_purge_sensitive_from_config()  # 앱 시작 시 1회 실행
 
 st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
 st.title("📈 종가평균매매 백테스트 (LOC)")
@@ -1081,8 +1099,9 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
 
 with tab5:
     st.subheader("⚙️ 개인 설정")
+    st.info("🔒 이 탭의 설정은 **현재 세션에만 유지**됩니다. 탭을 닫거나 새로고침하면 다시 입력해야 합니다. (다른 사용자와 공유되지 않습니다)")
 
-    _cfg5 = load_config()
+    _cfg5 = load_config()  # os_start/os_capital 등 비민감 설정만 참조
 
     # ── 텔레그램 알림 설정 ─────────────────────────────────
     with st.container(border=True):
@@ -1108,13 +1127,13 @@ with tab5:
         c1, c2 = st.columns(2)
         tg_chat_id = c1.text_input(
             "텔레그램 Chat ID",
-            value=_cfg5.get("tg_chat_id", ""),
+            value="",
             placeholder="예: 1234567890",
             key="tg_chat_id_input",
         )
         tg_token = c2.text_input(
             "Bot Token",
-            value=_cfg5.get("tg_token", ""),
+            value="",
             placeholder="예: 123456789:AAF...",
             type="password",
             key="tg_token_input",
@@ -1144,12 +1163,7 @@ with tab5:
                     else:
                         st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
         with btn_col2:
-            if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
-                if not tg_chat_id or not tg_token:
-                    st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
-                else:
-                    save_config({"tg_chat_id": tg_chat_id, "tg_token": tg_token})
-                    st.success("✅ 텔레그램 설정이 저장되었습니다.")
+            st.caption("⚠️ 보안을 위해 텔레그램 설정은 서버에 저장되지 않습니다.")
 
     st.write("")
 
@@ -1180,13 +1194,13 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
         uc1, uc2 = st.columns([3, 1])
         gs_url = uc1.text_input(
             "스프레드시트 URL",
-            value=_cfg5.get("gs_url", ""),
+            value="",
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="gs_url_input",
         )
         gs_sheet = uc2.text_input(
             "시트 이름",
-            value=_cfg5.get("gs_sheet", "종가평균"),
+            value="종가평균",
             placeholder="종가평균",
             key="gs_sheet_input",
         )
@@ -1232,9 +1246,4 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
                             st.error(f"❌ 전송 실패: {e}")
 
         with btn_col5:
-            if st.button("💾 저장하기 ", use_container_width=True, key="gs_save"):
-                if not gs_url:
-                    st.warning("스프레드시트 URL을 입력해주세요.")
-                else:
-                    save_config({"gs_url": gs_url, "gs_sheet": gs_sheet})
-                    st.success(f"✅ 저장 완료! (URL + 시트명: '{gs_sheet}')")
+            st.caption("⚠️ 보안을 위해 구글시트 설정은 서버에 저장되지 않습니다.")
