@@ -961,10 +961,17 @@ with tab2:
         as_max  = rc5.number_input("최댓값", value= 0.020, step=0.001, format="%.3f", key="as_max")
         as_step = rc6.number_input("간격",   value= 0.001, min_value=0.0001, step=0.001, format="%.4f", key="as_step")
 
-        st.markdown("**분할수 / 매도비율**")
-        rc7, rc8 = st.columns(2)
-        div_opts       = rc7.multiselect("분할수",      options=[1,2,3,4,5,6,7,8,10], default=[5])
-        sellratio_opts = rc8.multiselect("매도비율 (%)", options=[50,60,70,80,90,100],  default=[100])
+        st.markdown("**분할수 범위**")
+        rd1, rd2, rd3 = st.columns(3)
+        dv_min  = rd1.number_input("최솟값", min_value=1, max_value=20, value=5,  step=1, key="dv_min")
+        dv_max  = rd2.number_input("최댓값", min_value=1, max_value=20, value=5,  step=1, key="dv_max")
+        dv_step = rd3.number_input("간격",   min_value=1, max_value=10, value=1,  step=1, key="dv_step")
+
+        st.markdown("**매도비율 범위 (%)**")
+        rs1, rs2, rs3 = st.columns(3)
+        sr_min  = rs1.number_input("최솟값", min_value=10, max_value=100, value=100, step=10, key="sr_min")
+        sr_max  = rs2.number_input("최댓값", min_value=10, max_value=100, value=100, step=10, key="sr_max")
+        sr_step = rs3.number_input("간격",   min_value=10, max_value=50,  value=10,  step=10, key="sr_step")
 
         metric_key = st.selectbox("최적화 기준 지표", [
             "Calmar Ratio (CAGR / MDD)",
@@ -975,8 +982,10 @@ with tab2:
 
     ab_vals = np.round(np.arange(ab_min, ab_max + ab_step * 0.5, ab_step), 6).tolist()
     as_vals = np.round(np.arange(as_min, as_max + as_step * 0.5, as_step), 6).tolist()
-    dv_list = div_opts       if div_opts       else [5]
-    sr_list = sellratio_opts if sellratio_opts else [100]
+    dv_list = list(range(int(dv_min), int(dv_max) + 1, int(dv_step)))
+    sr_list = list(range(int(sr_min), int(sr_max) + 1, int(sr_step)))
+    if not dv_list: dv_list = [int(dv_min)]
+    if not sr_list: sr_list = [int(sr_min)]
     n_total = len(ab_vals) * len(as_vals) * len(dv_list) * len(sr_list)
 
     # sort_col 미리 결정 (방식별 공통 사용)
@@ -1273,8 +1282,8 @@ with tab2:
                 def _objective(trial):
                     ab  = trial.suggest_float("a_buy",  ab_min, ab_max)
                     as_ = trial.suggest_float("a_sell", as_min, as_max)
-                    dv  = trial.suggest_categorical("분할수",  dv_list)
-                    sr  = trial.suggest_categorical("매도비율", sr_list)
+                    dv  = trial.suggest_int("분할수",  int(dv_min), int(dv_max)) if dv_min != dv_max else int(dv_min)
+                    sr  = trial.suggest_int("매도비율", int(sr_min), int(sr_max), step=int(sr_step)) if sr_min != sr_max else int(sr_min)
                     r   = run_backtest(price_df_opt, start_date, end_date,
                                        ab, as_, sr, dv, initial_capital)
                     if r is None:
