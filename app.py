@@ -374,9 +374,11 @@ def run_backtest(
 
     cash       = float(initial_capital)
     shares     = 0
+    avg_cost   = 0.0
     prev_asset = float(initial_capital)
     assets     = np.empty(len(closes))
     buy_count  = sell_count = 0
+    sell_pnls  = []          # 매도별 손익률(%) 기록
     history    = [] if return_history else None
 
     for i in range(len(closes)):
@@ -389,11 +391,16 @@ def run_backtest(
         if shares > 0 and x >= ts:
             sell_qty = math.floor(shares * (sell_ratio / 100.0))
             if sell_qty > 0:
+                pnl_pct = (x / avg_cost - 1) * 100 if avg_cost > 0 else 0.0
+                sell_pnls.append(pnl_pct)
                 action = "SELL"; trade_shares = -sell_qty; trade_amount = sell_qty * x
                 cash += trade_amount; shares -= sell_qty; sell_count += 1
+                if shares == 0:
+                    avg_cost = 0.0
         elif x <= tb:
             buy_qty = min(math.floor(current_chunk / x + 1e-9), math.floor(cash / x + 1e-9))
             if buy_qty > 0:
+                avg_cost  = (avg_cost * shares + x * buy_qty) / (shares + buy_qty)
                 action = "BUY"; trade_shares = buy_qty; trade_amount = buy_qty * x
                 cash -= trade_amount; shares += buy_qty; buy_count += 1
 
@@ -419,10 +426,17 @@ def run_backtest(
     cagr         = ((final_asset / initial_capital) ** (1.0 / years) - 1.0) if years > 0 else 0.0
     calmar       = cagr / abs(mdd) if mdd != 0 else 0.0
 
+    _win_cnt  = sum(1 for p in sell_pnls if p > 0)
+    _avg_pnl  = sum(sell_pnls) / len(sell_pnls) if sell_pnls else 0.0
+    _max_pnl  = max(sell_pnls) if sell_pnls else 0.0
+    _min_pnl  = min(sell_pnls) if sell_pnls else 0.0
+
     out = dict(
         final_asset=final_asset, total_return=total_return,
         cagr=cagr, mdd=mdd, calmar=calmar,
         buy_count=buy_count, sell_count=sell_count,
+        win_count=_win_cnt, avg_pnl=_avg_pnl,
+        max_pnl=_max_pnl, min_pnl=_min_pnl,
         assets=assets, dates=sim.index,
     )
     if return_history:
@@ -1392,9 +1406,12 @@ a   = 파라미터값
         st.subheader("📋 종합 성과 요약")
         _final_asset = res_p.get("final_asset", initial_capital)
 
+        _sc   = res_p['sell_count']
+        _wc   = res_p['win_count']
         _summary_data = {
             "항목": ["시작 자본", "최종 자산", "총 수익률", "CAGR (연복리)",
-                     "MDD", "Calmar Ratio", "총 매수 횟수", "총 매도 횟수"],
+                     "MDD", "Calmar Ratio", "총 매도 횟수", "승률",
+                     "평균 손익률", "최대 단일 수익", "최대 단일 손실"],
             "수치": [
                 f"${initial_capital:,.0f}",
                 f"${_final_asset:,.0f}",
@@ -1402,8 +1419,11 @@ a   = 파라미터값
                 f"{res_p['cagr']*100:.1f}%",
                 f"{res_p['mdd']*100:.1f}%",
                 f"{res_p['calmar']:.3f}",
-                f"{res_p['buy_count']}회",
-                f"{res_p['sell_count']}회",
+                f"{_sc}회",
+                f"{_wc/_sc*100:.1f}%  ({_wc}승 {_sc-_wc}패)" if _sc > 0 else "-",
+                f"{res_p['avg_pnl']:+.2f}%",
+                f"{res_p['max_pnl']:+.2f}%",
+                f"{res_p['min_pnl']:+.2f}%",
             ],
         }
         st.dataframe(pd.DataFrame(_summary_data), hide_index=True, use_container_width=True)
