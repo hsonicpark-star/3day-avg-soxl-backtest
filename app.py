@@ -1391,22 +1391,100 @@ with tab5:
             st.markdown("#### 🗂️ 구글 스프레드시트 연동")
             st.caption("포트폴리오 정보와 주문 신호를 구글 스프레드시트로 전송합니다.")
         with col_help2:
-            with st.popover("❓ 시트 URL 확인 & 권한 부여", use_container_width=True):
+            with st.popover("❓ 구글 스프레드시트 URL 확인 & 권한 부여", use_container_width=True):
                 st.markdown("""
-**① 스프레드시트 URL 복사**
-- 구글 스프레드시트를 열고 주소창 URL 전체를 복사해 붙여넣기
+<style>
+.gs-help-section { margin-bottom: 20px; }
+.gs-help-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px;
+}
+.gs-help-badge {
+    background: #2EAA5E; color: white;
+    border-radius: 50%; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.gs-help-box {
+    background: #EDF7F0; border-radius: 10px;
+    padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.gs-help-box ol { margin: 0; padding-left: 20px; }
+.gs-help-box li { margin-bottom: 2px; }
+.gs-tag {
+    background: #D4EFE0; color: #1a6e3c;
+    border-radius: 5px; padding: 1px 7px;
+    font-family: monospace; font-size: 13px;
+}
+.gs-example-box {
+    border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 12px 16px; margin-top: 10px; font-size: 13px; color: #555;
+}
+.gs-example-val { color: #2EAA5E; font-family: monospace; font-size: 13px; }
+.gs-warn-box {
+    background: #FFFBEB; border: 1px solid #F59E0B;
+    border-radius: 10px; padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.gs-warn-title { font-weight: 700; color: #92400E; margin-bottom: 6px; }
+.gs-email-box {
+    border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 10px 14px; margin: 8px 0 12px 0; font-size: 13px; color: #555;
+}
+.gs-email-val { color: #2EAA5E; font-family: monospace; font-size: 13px; font-weight: 700; }
+.gs-security-box {
+    background: #F1F5F9; border-radius: 10px;
+    padding: 14px 18px; font-size: 13px; color: #475569; line-height: 1.7;
+    margin-bottom: 10px;
+}
+</style>
 
-**② 서비스 계정 이메일 공유**
-- 스프레드시트 우측 상단 **공유** 클릭
-- 아래 이메일을 **편집자**로 추가:
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">1</span> 새 스프레드시트 만들기</div>
+  <div class="gs-help-box">
+    <ol>
+      <li><a href="https://sheets.google.com" target="_blank">Google Sheets</a>에 접속합니다.</li>
+      <li><span class="gs-tag">+ 새로 만들기</span> 또는 <span class="gs-tag">빈 스프레드시트</span> 를 클릭합니다.</li>
+      <li>스프레드시트 이름을 지정합니다. (예: 3일평균 포트폴리오)</li>
+    </ol>
+  </div>
+</div>
 
-```
-connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
-```
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">2</span> 스프레드시트 URL 확인하기</div>
+  <div class="gs-help-box">
+    <div>브라우저 주소창에 표시된 URL을 복사합니다.</div>
+    <div class="gs-example-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">URL 형식:</div>
+      <div class="gs-example-val">https://docs.google.com/spreadsheets/d/1ABC...XYZ/edit</div>
+    </div>
+    <div style="font-size:13px; color:#64748B; margin-top:8px;">
+      * 전체 URL을 복사하면 됩니다. 뒤에 <span class="gs-tag">/edit</span> 가 있어도 괜찮습니다.
+    </div>
+  </div>
+</div>
 
-**③ 저장 후 테스트**
-- URL 저장 → "시트 연결 테스트" 버튼으로 확인
-""")
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">3</span> 서비스 계정에 편집 권한 부여 (중요!)</div>
+  <div class="gs-warn-box">
+    <div class="gs-warn-title">⚠ 앱이 스프레드시트에 데이터를 기록하려면 아래 이메일에 편집 권한을 부여해야 합니다.</div>
+    <div class="gs-email-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">서비스 계정 이메일:</div>
+      <div class="gs-email-val">connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com</div>
+    </div>
+    <ol>
+      <li>스프레드시트 우측 상단의 <span class="gs-tag">공유</span> 버튼을 클릭합니다.</li>
+      <li>"사용자 및 그룹 추가" 입력란에 위 서비스 계정 이메일을 붙여넣습니다.</li>
+      <li>권한을 <span class="gs-tag">편집자</span> 로 설정합니다.</li>
+      <li><span class="gs-tag">보내기</span> 를 클릭합니다.</li>
+    </ol>
+  </div>
+</div>
+
+<div class="gs-security-box">
+  <strong>보안 참고사항:</strong> 서비스 계정은 이 앱 전용 계정으로, 공유된 스프레드시트에만 접근할 수 있습니다.
+  스프레드시트를 "링크가 있는 모든 사용자"로 공개할 필요 없이, 서비스 계정에만 권한을 부여하면 됩니다.
+</div>
+""", unsafe_allow_html=True)
 
         uc1, uc2 = st.columns([3, 1])
         gs_url = uc1.text_input(
