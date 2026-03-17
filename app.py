@@ -889,12 +889,65 @@ with tab1:
 
 
 # ══════════════════════════════════════════════
+# TAB 2 – 파라미터 최적화  (공통 헬퍼)
+# ══════════════════════════════════════════════
+def _show_opt_results(res_df, sort_col, ab_vals, as_vals, ticker, key_sfx):
+    """최적화 결과 공통 표시 (상위 20, 히트맵, 산점도, CSV)"""
+    st.subheader(f"🏆 상위 20개 결과  ({sort_col} 기준)")
+    st.dataframe(res_df.head(20).style.format({
+        "a_buy": "{:.4f}", "a_sell": "{:.4f}",
+        "CAGR(%)": "{:.2f}%", "MDD(%)": "{:.2f}%",
+        "Calmar": "{:.4f}", "총수익(%)": "{:.2f}%",
+        "최종자산($)": "${:,.2f}",
+    }), use_container_width=True)
+
+    if ab_vals and as_vals and len(ab_vals) * len(as_vals) <= 2500:
+        st.subheader(f"🗺️ 히트맵: a_buy × a_sell  →  {sort_col}")
+        hmap_data = (
+            res_df.groupby(["a_buy", "a_sell"])[sort_col].max().reset_index()
+            .pivot(index="a_sell", columns="a_buy", values=sort_col)
+        )
+        show_text = len(ab_vals) * len(as_vals) <= 400
+        fig_hmap = px.imshow(hmap_data, color_continuous_scale="RdYlGn",
+                              labels={"x": "a_buy", "y": "a_sell", "color": sort_col},
+                              aspect="auto", text_auto=".2f" if show_text else False)
+        fig_hmap.update_layout(height=520)
+        st.plotly_chart(fig_hmap, use_container_width=True)
+
+    st.subheader("📊 리스크-수익 분포  (CAGR vs MDD)")
+    fig_sc = px.scatter(res_df, x="MDD(%)", y="CAGR(%)", color=sort_col,
+                         hover_data=["a_buy", "a_sell", "분할수", "매도비율", "Calmar"],
+                         color_continuous_scale="RdYlGn")
+    fig_sc.update_layout(height=450)
+    st.plotly_chart(fig_sc, use_container_width=True)
+
+    opt_csv = res_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("💾 최적화 결과 CSV 다운로드", data=opt_csv,
+                       file_name=f"opt_{ticker}_{key_sfx}.csv", mime="text/csv",
+                       key=f"dl_opt_{key_sfx}")
+
+
+# ══════════════════════════════════════════════
 # TAB 2 – 파라미터 최적화
 # ══════════════════════════════════════════════
 with tab2:
-    st.subheader("🔍 파라미터 그리드 탐색")
-    st.caption("a_buy / a_sell 구간을 격자 탐색하여 최적 파라미터 조합을 찾습니다.")
+    st.subheader("🔍 파라미터 최적화")
 
+    opt_method = st.radio(
+        "최적화 방식",
+        ["📊 그리드 탐색", "🎲 랜덤 탐색", "📈 워크포워드", "🧠 베이지안"],
+        horizontal=True,
+        key="opt_method",
+    )
+    _method_desc = {
+        "📊 그리드 탐색": "모든 파라미터 조합을 완전 탐색합니다. 조합이 적을 때 가장 정확합니다.",
+        "🎲 랜덤 탐색": "무작위로 N개 조합을 샘플링합니다. 탐색 공간이 클 때 빠르게 좋은 파라미터를 찾습니다.",
+        "📈 워크포워드": "전체 기간을 IS(최적화)·OOS(검증) 윈도우로 분할해 과적합을 방지합니다. 실전에 가장 가까운 검증 방식입니다.",
+        "🧠 베이지안": "Optuna TPE 알고리즘으로 스마트하게 탐색합니다. 적은 시도로 최적값에 빠르게 수렴합니다.",
+    }
+    st.caption(_method_desc[opt_method])
+
+    # ── 공통 파라미터 범위 설정 ──────────────────
     with st.expander("파라미터 범위 설정", expanded=True):
         st.markdown("**매수 a값 범위 (a_buy)**")
         rc1, rc2, rc3 = st.columns(3)
@@ -926,94 +979,362 @@ with tab2:
     sr_list = sellratio_opts if sellratio_opts else [100]
     n_total = len(ab_vals) * len(as_vals) * len(dv_list) * len(sr_list)
 
-    info_msg = (f"예상 조합 수: **{n_total:,}개** "
-                f"(a_buy {len(ab_vals)} × a_sell {len(as_vals)} "
-                f"× 분할수 {len(dv_list)} × 매도비율 {len(sr_list)})")
-    if n_total > 10000:
-        st.error(info_msg + "  \n조합이 10,000개를 초과합니다. 범위를 줄이거나 간격을 늘려주세요.")
-    elif n_total > 3000:
-        st.warning(info_msg + "  \n조합이 많아 다소 시간이 걸릴 수 있습니다.")
-    else:
-        st.info(info_msg)
+    # sort_col 미리 결정 (방식별 공통 사용)
+    if "Calmar" in metric_key:    _sort_col, _sort_asc = "Calmar",    False
+    elif "CAGR" in metric_key:    _sort_col, _sort_asc = "CAGR(%)",   False
+    elif "총수익률" in metric_key: _sort_col, _sort_asc = "총수익(%)", False
+    else:                          _sort_col, _sort_asc = "MDD(%)",    False
 
-    if st.button("▶ 최적화 실행", type="primary", key="run_opt",
-                 disabled=(n_total > 10000 or n_total == 0)):
-        with st.spinner("가격 데이터 로드 중..."):
-            price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
-        if price_df_opt.empty:
-            st.error("가격 데이터를 불러오지 못했습니다.")
-            st.stop()
+    # ── ① 그리드 탐색 ────────────────────────────
+    if opt_method == "📊 그리드 탐색":
+        info_msg = (f"예상 조합 수: **{n_total:,}개** "
+                    f"(a_buy {len(ab_vals)} × a_sell {len(as_vals)} "
+                    f"× 분할수 {len(dv_list)} × 매도비율 {len(sr_list)})")
+        if n_total > 10000:
+            st.error(info_msg + "  \n조합이 10,000개를 초과합니다. 범위를 줄이거나 간격을 늘려주세요.")
+        elif n_total > 3000:
+            st.warning(info_msg + "  \n조합이 많아 다소 시간이 걸릴 수 있습니다.")
+        else:
+            st.info(info_msg)
 
-        progress     = st.progress(0.0, text="최적화 실행 중...")
-        update_every = max(1, n_total // 100)
-        rows  = []
-        count = 0
+        if st.button("▶ 그리드 탐색 실행", type="primary", key="run_grid",
+                     disabled=(n_total > 10000 or n_total == 0)):
+            with st.spinner("가격 데이터 로드 중..."):
+                price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+            if price_df_opt.empty:
+                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.stop()
 
-        for ab in ab_vals:
-            for as_ in as_vals:
-                for dv in dv_list:
-                    for sr in sr_list:
-                        r = run_backtest(price_df_opt, start_date, end_date,
-                                         ab, as_, sr, dv, initial_capital)
-                        if r:
-                            rows.append({
-                                "a_buy": ab, "a_sell": as_,
-                                "분할수": dv, "매도비율": sr,
-                                "CAGR(%)":     round(r["cagr"]         * 100, 2),
-                                "MDD(%)":      round(r["mdd"]          * 100, 2),
-                                "Calmar":      round(r["calmar"],             4),
-                                "총수익(%)":   round(r["total_return"] * 100, 2),
-                                "최종자산($)": round(r["final_asset"],        2),
-                                "매수횟수":    r["buy_count"],
-                                "매도횟수":    r["sell_count"],
-                            })
-                        count += 1
-                        if count % update_every == 0:
-                            progress.progress(min(count / n_total, 1.0),
-                                              text=f"최적화 실행 중... {count:,} / {n_total:,}")
+            progress     = st.progress(0.0, text="그리드 탐색 실행 중...")
+            update_every = max(1, n_total // 100)
+            rows, count  = [], 0
 
-        progress.progress(1.0, text="완료!")
-        if not rows:
-            st.error("유효한 결과가 없습니다.")
-            st.stop()
+            for ab in ab_vals:
+                for as_ in as_vals:
+                    for dv in dv_list:
+                        for sr in sr_list:
+                            r = run_backtest(price_df_opt, start_date, end_date,
+                                             ab, as_, sr, dv, initial_capital)
+                            if r:
+                                rows.append({
+                                    "a_buy": ab, "a_sell": as_,
+                                    "분할수": dv, "매도비율": sr,
+                                    "CAGR(%)":     round(r["cagr"]         * 100, 2),
+                                    "MDD(%)":      round(r["mdd"]          * 100, 2),
+                                    "Calmar":      round(r["calmar"],             4),
+                                    "총수익(%)":   round(r["total_return"] * 100, 2),
+                                    "최종자산($)": round(r["final_asset"],        2),
+                                    "매수횟수":    r["buy_count"],
+                                    "매도횟수":    r["sell_count"],
+                                })
+                            count += 1
+                            if count % update_every == 0:
+                                progress.progress(min(count / n_total, 1.0),
+                                                  text=f"실행 중... {count:,} / {n_total:,}")
 
-        res_df = pd.DataFrame(rows)
-        if "Calmar" in metric_key:   sort_col, asc = "Calmar",    False
-        elif "CAGR" in metric_key:   sort_col, asc = "CAGR(%)",   False
-        elif "총수익률" in metric_key: sort_col, asc = "총수익(%)", False
-        else:                         sort_col, asc = "MDD(%)",    False
-        res_df = res_df.sort_values(sort_col, ascending=asc).reset_index(drop=True)
+            progress.progress(1.0, text="완료!")
+            if not rows:
+                st.error("유효한 결과가 없습니다.")
+                st.stop()
 
-        st.subheader(f"🏆 상위 20개 결과  ({sort_col} 기준)")
-        st.dataframe(res_df.head(20).style.format({
-            "a_buy": "{:.4f}", "a_sell": "{:.4f}",
-            "CAGR(%)": "{:.2f}%", "MDD(%)": "{:.2f}%",
-            "Calmar": "{:.4f}", "총수익(%)": "{:.2f}%",
-            "최종자산($)": "${:,.2f}",
-        }), use_container_width=True)
+            res_df = pd.DataFrame(rows).sort_values(_sort_col, ascending=_sort_asc).reset_index(drop=True)
+            _show_opt_results(res_df, _sort_col, ab_vals, as_vals, ticker, "grid")
 
-        st.subheader(f"🗺️ 히트맵: a_buy × a_sell  →  {sort_col}")
-        hmap_data = (
-            res_df.groupby(["a_buy", "a_sell"])[sort_col].max().reset_index()
-            .pivot(index="a_sell", columns="a_buy", values=sort_col)
+    # ── ② 랜덤 탐색 ──────────────────────────────
+    elif opt_method == "🎲 랜덤 탐색":
+        import random
+        n_samples = st.number_input("샘플 수", min_value=50, max_value=5000,
+                                    value=500, step=50, key="n_samples")
+        st.info(f"랜덤으로 **{n_samples:,}개** 조합을 샘플링합니다. "
+                f"(그리드 탐색 전체 {n_total:,}개 중 무작위 선택)")
+
+        if st.button("▶ 랜덤 탐색 실행", type="primary", key="run_random"):
+            with st.spinner("가격 데이터 로드 중..."):
+                price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+            if price_df_opt.empty:
+                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.stop()
+
+            random.seed(42)
+            sampled = [
+                (round(random.uniform(ab_min, ab_max), 4),
+                 round(random.uniform(as_min, as_max), 4),
+                 random.choice(dv_list),
+                 random.choice(sr_list))
+                for _ in range(int(n_samples))
+            ]
+            progress = st.progress(0.0, text="랜덤 탐색 실행 중...")
+            rows = []
+            for i, (ab, as_, dv, sr) in enumerate(sampled):
+                r = run_backtest(price_df_opt, start_date, end_date,
+                                 ab, as_, sr, dv, initial_capital)
+                if r:
+                    rows.append({
+                        "a_buy": ab, "a_sell": as_,
+                        "분할수": dv, "매도비율": sr,
+                        "CAGR(%)":     round(r["cagr"]         * 100, 2),
+                        "MDD(%)":      round(r["mdd"]          * 100, 2),
+                        "Calmar":      round(r["calmar"],             4),
+                        "총수익(%)":   round(r["total_return"] * 100, 2),
+                        "최종자산($)": round(r["final_asset"],        2),
+                        "매수횟수":    r["buy_count"],
+                        "매도횟수":    r["sell_count"],
+                    })
+                if i % max(1, int(n_samples) // 100) == 0:
+                    progress.progress(min(i / int(n_samples), 1.0),
+                                      text=f"실행 중... {i:,} / {int(n_samples):,}")
+
+            progress.progress(1.0, text="완료!")
+            if not rows:
+                st.error("유효한 결과가 없습니다.")
+                st.stop()
+
+            res_df = pd.DataFrame(rows).sort_values(_sort_col, ascending=_sort_asc).reset_index(drop=True)
+            _show_opt_results(res_df, _sort_col, None, None, ticker, "random")
+
+    # ── ③ 워크포워드 ──────────────────────────────
+    elif opt_method == "📈 워크포워드":
+        from datetime import timedelta
+        wf1, wf2 = st.columns(2)
+        is_years  = wf1.number_input("IS(최적화) 기간 (년)", min_value=1, max_value=10, value=3, key="wf_is")
+        oos_years = wf2.number_input("OOS(검증) 기간 (년)",  min_value=1, max_value=5,  value=1, key="wf_oos")
+
+        st.info(
+            f"📐 IS **{is_years}년** 최적화 → OOS **{oos_years}년** 검증을 슬라이딩 반복합니다.\n\n"
+            f"그리드 조합 **{n_total:,}개** × 윈도우 수 만큼 백테스트가 실행됩니다."
         )
-        show_text = (len(ab_vals) * len(as_vals)) <= 400
-        fig_hmap = px.imshow(hmap_data, color_continuous_scale="RdYlGn",
-                              labels={"x": "a_buy", "y": "a_sell", "color": sort_col},
-                              aspect="auto", text_auto=".2f" if show_text else False)
-        fig_hmap.update_layout(height=520)
-        st.plotly_chart(fig_hmap, use_container_width=True)
 
-        st.subheader("📊 리스크-수익 분포  (CAGR vs MDD)")
-        fig_sc = px.scatter(res_df, x="MDD(%)", y="CAGR(%)", color=sort_col,
-                             hover_data=["a_buy", "a_sell", "분할수", "매도비율", "Calmar"],
-                             color_continuous_scale="RdYlGn")
-        fig_sc.update_layout(height=450)
-        st.plotly_chart(fig_sc, use_container_width=True)
+        if st.button("▶ 워크포워드 실행", type="primary", key="run_wfo"):
+            with st.spinner("가격 데이터 로드 중..."):
+                price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+            if price_df_opt.empty:
+                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.stop()
 
-        opt_csv = res_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("💾 최적화 결과 CSV 다운로드", data=opt_csv,
-                           file_name=f"optimization_{ticker}.csv", mime="text/csv")
+            dates       = price_df_opt.index
+            total_start = dates[0].date()
+            total_end   = dates[-1].date()
+
+            windows = []
+            cur = total_start
+            while True:
+                is_s  = cur
+                is_e  = is_s  + timedelta(days=int(is_years  * 365.25))
+                oos_s = is_e
+                oos_e = oos_s + timedelta(days=int(oos_years * 365.25))
+                if oos_e > total_end:
+                    break
+                windows.append((is_s, is_e, oos_s, oos_e))
+                cur = oos_s
+
+            if not windows:
+                st.error("데이터 기간이 너무 짧아 윈도우를 생성할 수 없습니다. IS+OOS 기간을 줄여주세요.")
+                st.stop()
+
+            st.info(f"총 **{len(windows)}개** 윈도우 생성됨")
+            total_steps = len(windows) * max(n_total, 1)
+            progress    = st.progress(0.0, text="워크포워드 실행 중...")
+            step_count  = 0
+            wfo_rows    = []
+            cur_capital = initial_capital
+
+            for wi, (is_s, is_e, oos_s, oos_e) in enumerate(windows):
+                best_score, best_params, best_is_r = -999.0, None, None
+
+                for ab in ab_vals:
+                    for as_ in as_vals:
+                        for dv in dv_list:
+                            for sr in sr_list:
+                                r = run_backtest(price_df_opt, str(is_s), str(is_e),
+                                                 ab, as_, sr, dv, initial_capital)
+                                if r:
+                                    if "Calmar" in metric_key:    score = r["calmar"]
+                                    elif "CAGR" in metric_key:    score = r["cagr"] * 100
+                                    elif "총수익률" in metric_key: score = r["total_return"] * 100
+                                    else:                          score = -abs(r["mdd"] * 100)
+                                    if score > best_score:
+                                        best_score  = score
+                                        best_params = (ab, as_, dv, sr)
+                                        best_is_r   = r
+                                step_count += 1
+                                if step_count % max(1, total_steps // 200) == 0:
+                                    progress.progress(
+                                        min(step_count / total_steps, 0.99),
+                                        text=f"윈도우 {wi+1}/{len(windows)} IS 최적화 중..."
+                                    )
+
+                if best_params is None:
+                    continue
+
+                ab_b, as_b, dv_b, sr_b = best_params
+                oos_r = run_backtest(price_df_opt, str(oos_s), str(oos_e),
+                                     ab_b, as_b, sr_b, dv_b, cur_capital)
+                if oos_r is None:
+                    continue
+
+                wfo_rows.append({
+                    "윈도우":      wi + 1,
+                    "IS 기간":     f"{is_s} ~ {is_e}",
+                    "OOS 기간":    f"{oos_s} ~ {oos_e}",
+                    "Best a_buy":  ab_b,
+                    "Best a_sell": as_b,
+                    f"IS {_sort_col}": round(best_score, 3),
+                    "OOS Calmar":  round(oos_r["calmar"],       3),
+                    "OOS CAGR(%)": round(oos_r["cagr"]  * 100, 2),
+                    "OOS MDD(%)":  round(oos_r["mdd"]   * 100, 2),
+                    "시작($)":     round(cur_capital,           2),
+                    "종료($)":     round(oos_r["final_asset"],  2),
+                })
+                cur_capital = oos_r["final_asset"]
+
+            progress.progress(1.0, text="완료!")
+            if not wfo_rows:
+                st.error("유효한 OOS 결과가 없습니다.")
+                st.stop()
+
+            wfo_df    = pd.DataFrame(wfo_rows)
+            total_ret = (cur_capital - initial_capital) / initial_capital
+
+            # 종합 요약
+            st.subheader("📊 워크포워드 종합 성과")
+            wc1, wc2, wc3, wc4 = st.columns(4)
+            wc1.metric("시작 자본",        f"${initial_capital:,.0f}")
+            wc2.metric("최종 자본 (OOS)",  f"${cur_capital:,.0f}")
+            wc3.metric("OOS 총 수익률",    f"{total_ret*100:+.2f}%")
+            wc4.metric("윈도우 수",        f"{len(wfo_rows)}개")
+
+            # 윈도우별 결과 테이블
+            st.subheader("🪟 윈도우별 결과")
+            st.dataframe(wfo_df.style.format({
+                "Best a_buy":  "{:.4f}",
+                "Best a_sell": "{:.4f}",
+                "OOS Calmar":  "{:.3f}",
+                "OOS CAGR(%)": "{:.2f}%",
+                "OOS MDD(%)":  "{:.2f}%",
+                "시작($)":     "${:,.2f}",
+                "종료($)":     "${:,.2f}",
+            }), use_container_width=True)
+
+            # OOS CAGR 바차트
+            fig_wfo = px.bar(
+                wfo_df, x="윈도우", y="OOS CAGR(%)", color="OOS CAGR(%)",
+                color_continuous_scale="RdYlGn", text_auto=".1f",
+                title="윈도우별 OOS CAGR (%)"
+            )
+            fig_wfo.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig_wfo.update_layout(height=400)
+            st.plotly_chart(fig_wfo, use_container_width=True)
+
+            # OOS 자본 곡선
+            fig_cap = px.line(
+                wfo_df, x="윈도우", y="종료($)",
+                title="OOS 자본 변화 (윈도우별 종료 자산)", markers=True
+            )
+            fig_cap.update_layout(height=380)
+            st.plotly_chart(fig_cap, use_container_width=True)
+
+            wfo_csv = wfo_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("💾 워크포워드 결과 CSV", data=wfo_csv,
+                               file_name=f"wfo_{ticker}.csv", mime="text/csv",
+                               key="dl_wfo")
+
+    # ── ④ 베이지안 (Optuna) ───────────────────────
+    elif opt_method == "🧠 베이지안":
+        try:
+            import optuna as _optuna
+            _optuna_ok = True
+        except ImportError:
+            _optuna_ok = False
+
+        if not _optuna_ok:
+            st.error("`optuna` 패키지가 설치되지 않았습니다. "
+                     "`requirements.txt`에 `optuna>=3.6.0` 추가 후 재배포하세요.")
+        else:
+            bc1, _ = st.columns(2)
+            n_trials = bc1.number_input("탐색 횟수 (trials)", min_value=50,
+                                        max_value=2000, value=300, step=50, key="n_trials")
+            st.info(
+                f"Optuna TPE 알고리즘으로 **{n_trials}회** 스마트 탐색합니다.\n\n"
+                f"그리드 탐색({n_total:,}개) 대비 적은 시도로 최적값에 근접합니다."
+            )
+
+            if st.button("▶ 베이지안 최적화 실행", type="primary", key="run_bayes"):
+                with st.spinner("가격 데이터 로드 중..."):
+                    price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+                if price_df_opt.empty:
+                    st.error("가격 데이터를 불러오지 못했습니다.")
+                    st.stop()
+
+                _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+                progress     = st.progress(0.0, text="베이지안 탐색 실행 중...")
+                trial_rows   = []
+                _tc          = [0]
+
+                def _objective(trial):
+                    ab  = trial.suggest_float("a_buy",  ab_min, ab_max)
+                    as_ = trial.suggest_float("a_sell", as_min, as_max)
+                    dv  = trial.suggest_categorical("분할수",  dv_list)
+                    sr  = trial.suggest_categorical("매도비율", sr_list)
+                    r   = run_backtest(price_df_opt, start_date, end_date,
+                                       ab, as_, sr, dv, initial_capital)
+                    if r is None:
+                        return -999.0
+                    if "Calmar" in metric_key:    score = r["calmar"]
+                    elif "CAGR" in metric_key:    score = r["cagr"] * 100
+                    elif "총수익률" in metric_key: score = r["total_return"] * 100
+                    else:                          score = -abs(r["mdd"] * 100)
+                    trial_rows.append({
+                        "a_buy": round(ab, 4), "a_sell": round(as_, 4),
+                        "분할수": dv, "매도비율": sr,
+                        "CAGR(%)":     round(r["cagr"]         * 100, 2),
+                        "MDD(%)":      round(r["mdd"]          * 100, 2),
+                        "Calmar":      round(r["calmar"],             4),
+                        "총수익(%)":   round(r["total_return"] * 100, 2),
+                        "최종자산($)": round(r["final_asset"],        2),
+                        "매수횟수":    r["buy_count"],
+                        "매도횟수":    r["sell_count"],
+                    })
+                    _tc[0] += 1
+                    if _tc[0] % max(1, int(n_trials) // 50) == 0:
+                        progress.progress(min(_tc[0] / int(n_trials), 1.0),
+                                          text=f"베이지안 탐색 중... {_tc[0]:,} / {int(n_trials):,}")
+                    return score
+
+                study = _optuna.create_study(
+                    direction="maximize",
+                    sampler=_optuna.samplers.TPESampler(seed=42)
+                )
+                study.optimize(_objective, n_trials=int(n_trials))
+                progress.progress(1.0, text="완료!")
+
+                if not trial_rows:
+                    st.error("유효한 결과가 없습니다.")
+                    st.stop()
+
+                res_df = pd.DataFrame(trial_rows).sort_values(
+                    _sort_col, ascending=_sort_asc
+                ).reset_index(drop=True)
+
+                best = study.best_params
+                st.success(
+                    f"🏆 최적 파라미터: a_buy=**{best['a_buy']:.4f}**, "
+                    f"a_sell=**{best['a_sell']:.4f}**, "
+                    f"분할수=**{best['분할수']}**, 매도비율=**{best['매도비율']}%**"
+                )
+
+                _show_opt_results(res_df, _sort_col, None, None, ticker, "bayes")
+
+                # 수렴 곡선
+                st.subheader("📈 탐색 수렴 과정")
+                _vals     = [t.value for t in study.trials if t.value is not None and t.value > -900]
+                _best_cur = [max(_vals[:i+1]) for i in range(len(_vals))]
+                fig_conv  = px.line(
+                    y=_best_cur,
+                    labels={"y": f"Best {_sort_col}", "index": "Trial"},
+                    title="베이지안 최적화 수렴 곡선"
+                )
+                fig_conv.update_layout(height=380)
+                st.plotly_chart(fig_conv, use_container_width=True)
 
 
 # ══════════════════════════════════════════════
