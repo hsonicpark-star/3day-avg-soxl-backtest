@@ -69,6 +69,25 @@ if _IS_CLOUD:
     except:
         pass
 
+# ── gspread 인증 (로그인보다 먼저 정의되어야 함) ──────────────
+_GS_SCOPES = ["https://spreadsheets.google.com/feeds",
+              "https://www.googleapis.com/auth/drive"]
+
+def _get_gspread_client():
+    """Streamlit Cloud(st.secrets) 또는 로컬(service_account.json)로 gspread 인증."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds = Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES)
+        else:
+            _key_path = Path(__file__).parent / "service_account.json"
+            creds = Credentials.from_service_account_file(str(_key_path), scopes=_GS_SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        raise RuntimeError(f"인증 실패: {e}")
+
 # ── 인증 함수 ──────────────────────────────────────────────────
 def _get_users_ws():
     """서비스 계정으로 users 시트 접근."""
@@ -1083,25 +1102,6 @@ a   = 파라미터값
 # ══════════════════════════════════════════════
 # TAB 5 – 개인 설정
 # ══════════════════════════════════════════════
-_GS_SCOPES = ["https://spreadsheets.google.com/feeds",
-              "https://www.googleapis.com/auth/drive"]
-
-def _get_gspread_client():
-    """Streamlit Cloud(st.secrets) 또는 로컬(service_account.json)로 gspread 인증."""
-    import gspread
-    from google.oauth2.service_account import Credentials
-    try:
-        if "gcp_service_account" in st.secrets:
-            creds = Credentials.from_service_account_info(
-                dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES)
-        else:
-            _key_path = Path(__file__).parent / "service_account.json"
-            creds = Credentials.from_service_account_file(str(_key_path), scopes=_GS_SCOPES)
-        return gspread.authorize(creds)
-    except Exception as e:
-        raise RuntimeError(f"인증 실패: {e}")
-
-
 def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
                            _sell_ratio: float, _divisions: int, ticker_name: str):
     """시뮬레이션 결과를 구글시트 지정 탭 L4부터 기록."""
