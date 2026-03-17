@@ -9,8 +9,26 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import requests
+import os
 
-_CONFIG = Path(__file__).parent / "config.json"
+# ── 실행 환경 감지 ──────────────────────────────────────────
+# Streamlit Cloud는 HOME=/home/appuser 또는 환경변수로 식별
+_IS_CLOUD = (
+    os.environ.get("STREAMLIT_SHARING_MODE") == "1"
+    or str(Path.home()) == "/home/appuser"
+    or os.environ.get("IS_STREAMLIT_CLOUD", "") == "1"
+)
+
+# ── config 경로 ──────────────────────────────────────────────
+# 로컬: C:\Users\{이름}\.soxl\config.json  (각자 PC에 독립 저장)
+# 클라우드: 앱 디렉토리 (비민감 정보만, 공유 서버)
+if _IS_CLOUD:
+    _CONFIG = Path(__file__).parent / "config.json"
+else:
+    _CONFIG = Path.home() / ".soxl" / "config.json"
+    _CONFIG.parent.mkdir(parents=True, exist_ok=True)
+
+_SENSITIVE_KEYS = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
 
 def load_config():
     if _CONFIG.exists():
@@ -20,31 +38,28 @@ def load_config():
             return {}
     return {}
 
-_SENSITIVE_KEYS = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
-
-def save_config(data: dict):
+def save_config(data: dict, sensitive: bool = False):
+    """sensitive=True 이면 민감 정보 포함. 클라우드에서는 민감 정보 저장 안 함."""
     try:
         cfg = load_config()
-        cfg.update(data)
+        for k, v in data.items():
+            if k in _SENSITIVE_KEYS and _IS_CLOUD:
+                continue  # 클라우드에서 민감 정보 저장 차단
+            cfg[k] = v
         _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
 
-def _purge_sensitive_from_config():
-    """기존 config.json에 남아있던 민감 정보 삭제."""
+# 클라우드 서버에 혹시 남은 민감 정보 제거
+if _IS_CLOUD:
     try:
         cfg = load_config()
-        changed = False
-        for k in _SENSITIVE_KEYS:
-            if k in cfg:
-                del cfg[k]
-                changed = True
-        if changed:
+        if any(k in cfg for k in _SENSITIVE_KEYS):
+            for k in _SENSITIVE_KEYS:
+                cfg.pop(k, None)
             _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
-
-_purge_sensitive_from_config()  # 앱 시작 시 1회 실행
 
 st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
 st.title("📈 종가평균매매 백테스트 (LOC)")
@@ -1099,9 +1114,13 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
 
 with tab5:
     st.subheader("⚙️ 개인 설정")
-    st.info("🔒 이 탭의 설정은 **현재 세션에만 유지**됩니다. 탭을 닫거나 새로고침하면 다시 입력해야 합니다. (다른 사용자와 공유되지 않습니다)")
 
-    _cfg5 = load_config()  # os_start/os_capital 등 비민감 설정만 참조
+    _cfg5 = load_config()
+
+    if _IS_CLOUD:
+        st.info("☁️ **Streamlit Cloud 접속 중** — 보안을 위해 민감 정보(텔레그램·구글시트)는 서버에 저장되지 않습니다. 접속할 때마다 입력해주세요.")
+    else:
+        st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_CONFIG}` 에 저장됩니다. 다음 실행 시 자동으로 불러옵니다.")
 
     # ── 텔레그램 알림 설정 ─────────────────────────────────
     with st.container(border=True):
@@ -1125,15 +1144,16 @@ with tab5:
 """)
 
         c1, c2 = st.columns(2)
+        # 로컬이면 저장된 값 불러오기, 클라우드면 빈칸
         tg_chat_id = c1.text_input(
             "텔레그램 Chat ID",
-            value="",
+            value=_cfg5.get("tg_chat_id", "") if not _IS_CLOUD else "",
             placeholder="예: 1234567890",
             key="tg_chat_id_input",
         )
         tg_token = c2.text_input(
             "Bot Token",
-            value="",
+            value=_cfg5.get("tg_token", "") if not _IS_CLOUD else "",
             placeholder="예: 123456789:AAF...",
             type="password",
             key="tg_token_input",
@@ -1163,7 +1183,15 @@ with tab5:
                     else:
                         st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
         with btn_col2:
-            st.caption("⚠️ 보안을 위해 텔레그램 설정은 서버에 저장되지 않습니다.")
+            if not _IS_CLOUD:
+                if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
+                    if not tg_chat_id or not tg_token:
+                        st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
+                    else:
+                        save_config({"tg_chat_id": tg_chat_id, "tg_token": tg_token}, sensitive=True)
+                        st.success(f"✅ 저장 완료!\n`{_CONFIG}`")
+            else:
+                st.caption("⚠️ 클라우드 환경: 저장 불가")
 
     st.write("")
 
@@ -1194,13 +1222,13 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
         uc1, uc2 = st.columns([3, 1])
         gs_url = uc1.text_input(
             "스프레드시트 URL",
-            value="",
+            value=_cfg5.get("gs_url", "") if not _IS_CLOUD else "",
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="gs_url_input",
         )
         gs_sheet = uc2.text_input(
             "시트 이름",
-            value="종가평균",
+            value=_cfg5.get("gs_sheet", "종가평균") if not _IS_CLOUD else "종가평균",
             placeholder="종가평균",
             key="gs_sheet_input",
         )
@@ -1222,7 +1250,7 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
         with btn_col4:
             if st.button("📊 주문 시트 전송", use_container_width=True, key="gs_send", type="primary"):
                 if not gs_url:
-                    st.warning("스프레드시트 URL을 먼저 저장해주세요.")
+                    st.warning("스프레드시트 URL을 먼저 입력해주세요.")
                 else:
                     with st.spinner("시뮬레이션 & 시트 전송 중..."):
                         try:
@@ -1246,4 +1274,12 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
                             st.error(f"❌ 전송 실패: {e}")
 
         with btn_col5:
-            st.caption("⚠️ 보안을 위해 구글시트 설정은 서버에 저장되지 않습니다.")
+            if not _IS_CLOUD:
+                if st.button("💾 저장하기 ", use_container_width=True, key="gs_save", type="primary"):
+                    if not gs_url:
+                        st.warning("스프레드시트 URL을 입력해주세요.")
+                    else:
+                        save_config({"gs_url": gs_url, "gs_sheet": gs_sheet}, sensitive=True)
+                        st.success(f"✅ 저장 완료!\n`{_CONFIG}`")
+            else:
+                st.caption("⚠️ 클라우드 환경: 저장 불가")
