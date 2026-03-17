@@ -963,6 +963,52 @@ a   = 파라미터값
 # ══════════════════════════════════════════════
 # TAB 5 – 개인 설정
 # ══════════════════════════════════════════════
+_GS_SCOPES = ["https://spreadsheets.google.com/feeds",
+              "https://www.googleapis.com/auth/drive"]
+
+def _get_gspread_client():
+    """Streamlit Cloud(st.secrets) 또는 로컬(service_account.json)로 gspread 인증."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    try:
+        if "gcp_service_account" in st.secrets:
+            creds = Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES)
+        else:
+            _key_path = Path(__file__).parent / "service_account.json"
+            creds = Credentials.from_service_account_file(str(_key_path), scopes=_GS_SCOPES)
+        return gspread.authorize(creds)
+    except Exception as e:
+        raise RuntimeError(f"인증 실패: {e}")
+
+
+def _write_orders_to_sheet(gs_url: str, res: dict, _sell_ratio: float,
+                           _divisions: int, ticker_name: str):
+    """시뮬레이션 결과를 구글시트 '종가평균' 탭 L4부터 기록."""
+    gc = _get_gspread_client()
+    sh = gc.open_by_url(gs_url)
+    ws = sh.worksheet("종가평균")
+
+    # L4:O 범위 초기화 (최대 10행)
+    ws.batch_clear(["L4:O13"])
+
+    rows = []
+    # 매수 LOC
+    buy_tgt = res["next_buy_primary"]
+    buy_qty = res["pending_buys"][0]["수량"]
+    rows.append(["매수", "LOC", round(buy_tgt, 2), buy_qty])
+
+    # 매도 LOC (보유 시에만)
+    if res["shares"] > 0:
+        sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+        sell_tgt = res["next_sell_target"]
+        rows.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
+
+    # L4 = row 4, col 12 (L) → gspread update
+    ws.update(range_name="L4", values=rows)
+    return len(rows)
+
+
 def _send_telegram(token: str, chat_id: str, text: str) -> dict:
     """텔레그램 Bot API로 메시지 전송. 결과 dict 반환."""
     try:
@@ -1139,34 +1185,47 @@ connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
         )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
-        btn_col3, btn_col4, spacer2 = st.columns([1, 1, 4])
+        btn_col3, btn_col4, btn_col5 = st.columns(3)
         with btn_col3:
             if st.button("🔗 시트 연결 테스트", use_container_width=True, key="gs_test"):
                 if not gs_url:
                     st.warning("스프레드시트 URL을 먼저 입력해주세요.")
                 else:
                     try:
-                        import gspread
-                        from google.oauth2.service_account import Credentials
-                        _SCOPES = ["https://spreadsheets.google.com/feeds",
-                                   "https://www.googleapis.com/auth/drive"]
-                        # Streamlit Cloud: st.secrets / 로컬: secrets.json
-                        if "gcp_service_account" in st.secrets:
-                            creds = Credentials.from_service_account_info(
-                                st.secrets["gcp_service_account"], scopes=_SCOPES)
-                        else:
-                            _key_path = Path(__file__).parent / "secrets.json"
-                            creds = Credentials.from_service_account_file(
-                                str(_key_path), scopes=_SCOPES)
-                        gc = gspread.authorize(creds)
+                        gc = _get_gspread_client()
                         sh = gc.open_by_url(gs_url)
                         st.success(f"✅ 연결 성공! 시트명: **{sh.title}**")
-                    except ImportError:
-                        st.error("❌ gspread 패키지가 설치되지 않았습니다. requirements.txt 확인 후 재시작해주세요.")
                     except Exception as e:
                         st.error(f"❌ 연결 실패: {e}")
+
         with btn_col4:
-            if st.button("💾 저장하기 ", use_container_width=True, key="gs_save", type="primary"):
+            if st.button("📊 주문 시트 전송", use_container_width=True, key="gs_send", type="primary"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 먼저 저장해주세요.")
+                else:
+                    with st.spinner("시뮬레이션 & 시트 전송 중..."):
+                        try:
+                            _cfg_gs  = load_config()
+                            _gs_start = _cfg_gs.get("os_start", "2024-01-01")
+                            _gs_cap   = float(_cfg_gs.get("os_capital", initial_capital))
+                            try:    _gs_start_d = datetime.strptime(_gs_start, "%Y-%m-%d").date()
+                            except: _gs_start_d = datetime(2024, 1, 1).date()
+                            _today = datetime.today().date()
+                            _pdf = load_price_data(ticker, _gs_start_d, _today, "Yahoo Finance", None)
+                            _res = run_portfolio_for_ordersheet(
+                                _pdf, _gs_start_d, ticker,
+                                a_buy, a_sell, sell_ratio, divisions, _gs_cap,
+                            )
+                            if _res is None:
+                                st.error("시뮬레이션 데이터가 없습니다.")
+                            else:
+                                n = _write_orders_to_sheet(gs_url, _res, sell_ratio, divisions, ticker)
+                                st.success(f"✅ 구글시트 '종가평균' 탭 L4에 {n}건 전송 완료!")
+                        except Exception as e:
+                            st.error(f"❌ 전송 실패: {e}")
+
+        with btn_col5:
+            if st.button("💾 저장하기 ", use_container_width=True, key="gs_save"):
                 if not gs_url:
                     st.warning("스프레드시트 URL을 입력해주세요.")
                 else:
