@@ -1237,19 +1237,92 @@ with tab5:
         with col_help:
             with st.popover("❓ Chat ID & Bot Token 확인 방법", use_container_width=True):
                 st.markdown("""
-**① Bot Token 발급**
-1. 텔레그램에서 `@BotFather` 검색
-2. `/newbot` 명령어 입력
-3. 봇 이름 입력 (예: `3days avg bot`)
-4. 봇 아이디 입력 (예: `@3days-avg_bot`)
-5. BotFather가 발급한 **Token** 복사
+<style>
+.tg-help-section { margin-bottom: 20px; }
+.tg-help-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px;
+}
+.tg-help-badge {
+    background: #4A90D9; color: white;
+    border-radius: 50%; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.tg-help-box {
+    background: #EEF4FB; border-radius: 10px;
+    padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.tg-help-box ol { margin: 0; padding-left: 20px; }
+.tg-help-box li { margin-bottom: 2px; }
+.tg-tag {
+    background: #D0E8FF; color: #1a5fa8;
+    border-radius: 5px; padding: 1px 7px;
+    font-family: monospace; font-size: 13px;
+}
+.tg-example-box {
+    border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 12px 16px; margin-top: 10px; font-size: 13px;
+    color: #555;
+}
+.tg-example-val { color: #4A90D9; font-family: monospace; font-size: 13px; }
+.tg-warn-box {
+    background: #FFFBEB; border: 1px solid #F59E0B;
+    border-radius: 10px; padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.tg-warn-title { font-weight: 700; color: #92400E; margin-bottom: 4px; }
+.tg-sub-title { font-weight: 700; margin-bottom: 4px; }
+</style>
 
-**② Chat ID 확인**
-1. 생성한 봇 `@3days-avg_bot` 에 메시지 아무거나 전송
-2. 브라우저에서 아래 URL 접속:
-   `https://api.telegram.org/bot{TOKEN}/getUpdates`
-3. `"chat":{"id": 숫자}` 부분이 Chat ID
-""")
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">1</span> Bot Token 생성하기</div>
+  <div class="tg-help-box">
+    <ol>
+      <li>텔레그램에서 <span class="tg-tag">@BotFather</span> 를 검색합니다.</li>
+      <li>BotFather와 대화를 시작하고 <span class="tg-tag">/newbot</span> 을 입력합니다.</li>
+      <li>봇의 이름을 입력합니다. (예: 3일평균 알림봇)</li>
+      <li>봇의 username을 입력합니다. (반드시 <span class="tg-tag">_bot</span> 으로 끝나야 합니다. 예: 3days-avg_bot)</li>
+      <li>성공하면 HTTP API Token이 발급됩니다. 이것이 <strong>Bot Token</strong>입니다.</li>
+    </ol>
+    <div class="tg-example-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">Bot Token 예시:</div>
+      <div class="tg-example-val">1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ</div>
+    </div>
+  </div>
+</div>
+
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">2</span> Chat ID 확인하기</div>
+  <div class="tg-help-box">
+    <div class="tg-sub-title">방법 1: @userinfobot 사용</div>
+    <ol>
+      <li>텔레그램에서 <span class="tg-tag">@userinfobot</span> 을 검색합니다.</li>
+      <li>대화를 시작하면 자동으로 Chat ID가 표시됩니다.</li>
+    </ol>
+    <div class="tg-sub-title" style="margin-top:10px;">방법 2: @RawDataBot 사용</div>
+    <ol>
+      <li>텔레그램에서 <span class="tg-tag">@RawDataBot</span> 을 검색합니다.</li>
+      <li>대화를 시작하면 JSON 형식으로 정보가 표시되며, "id" 값이 Chat ID입니다.</li>
+    </ol>
+    <div class="tg-example-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">Chat ID 예시:</div>
+      <div class="tg-example-val">123456789</div>
+    </div>
+  </div>
+</div>
+
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">3</span> 내 봇 시작하기 (중요!)</div>
+  <div class="tg-warn-box">
+    <div class="tg-warn-title">⚠ 반드시 내가 만든 봇을 시작해야 메시지를 받을 수 있습니다!</div>
+    <ol>
+      <li>텔레그램에서 내가 만든 봇을 검색합니다. (예: <span class="tg-tag">@3days-avg_bot</span>)</li>
+      <li><span class="tg-tag">/start</span> 를 입력하여 봇을 시작합니다.</li>
+      <li>이제 알림을 받을 준비가 완료되었습니다!</li>
+    </ol>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
         c1, c2 = st.columns(2)
         # 로컬이면 저장된 값 불러오기, 클라우드면 빈칸
