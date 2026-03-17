@@ -1261,7 +1261,7 @@ with tab5:
     font-family: monospace; font-size: 13px;
 }
 .tg-example-box {
-    border: 1px solid #CBD5E1; border-radius: 8px;
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
     padding: 12px 16px; margin-top: 10px; font-size: 13px;
     color: #555;
 }
@@ -1417,7 +1417,7 @@ with tab5:
     font-family: monospace; font-size: 13px;
 }
 .gs-example-box {
-    border: 1px solid #CBD5E1; border-radius: 8px;
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
     padding: 12px 16px; margin-top: 10px; font-size: 13px; color: #555;
 }
 .gs-example-val { color: #2EAA5E; font-family: monospace; font-size: 13px; }
@@ -1427,7 +1427,7 @@ with tab5:
 }
 .gs-warn-title { font-weight: 700; color: #92400E; margin-bottom: 6px; }
 .gs-email-box {
-    border: 1px solid #CBD5E1; border-radius: 8px;
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
     padding: 10px 14px; margin: 8px 0 12px 0; font-size: 13px; color: #555;
 }
 .gs-email-val { color: #2EAA5E; font-family: monospace; font-size: 13px; font-weight: 700; }
