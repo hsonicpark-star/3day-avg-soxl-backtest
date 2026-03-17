@@ -976,32 +976,77 @@ def _send_telegram(token: str, chat_id: str, text: str) -> dict:
         return {"ok": False, "description": str(e)}
 
 
-def _build_order_text(ticker: str = "SOXL") -> str:
-    """오늘의 주문표를 텔레그램용 텍스트로 변환."""
+def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
+                      _sell_ratio: float, _divisions: int,
+                      _os_start, _os_capital: float) -> str:
+    """Tab3와 동일한 시뮬레이션 엔진으로 오늘의 주문표를 텔레그램 텍스트로 변환."""
     try:
-        raw = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
-        if isinstance(raw.columns, pd.MultiIndex):
-            raw = raw.xs(ticker, axis=1, level="Ticker")
-        closes = raw["Close"].dropna().astype(float)
-        if len(closes) < 2:
-            return f"[{ticker}] 데이터 부족으로 주문표를 생성할 수 없습니다."
-        p1, p2 = float(closes.iloc[-1]), float(closes.iloc[-2])
-        a_buy, a_sell = -0.005, 0.009
-        tgt_buy  = (p1 + p2) * (1 + a_buy)  / (2 - a_buy)
-        tgt_sell = (p1 + p2) * (1 + a_sell) / (2 - a_sell)
-        today = datetime.today().strftime("%Y-%m-%d")
+        today = datetime.today().date()
+        price_df_tg = load_price_data(ticker_name, _os_start, today, "Yahoo Finance", None)
+        if price_df_tg.empty:
+            return "❌ 가격 데이터를 불러오지 못했습니다."
+
+        res = run_portfolio_for_ordersheet(
+            price_df_tg, _os_start, ticker_name,
+            _a_buy, _a_sell, _sell_ratio, _divisions, _os_capital,
+        )
+        if res is None:
+            return "❌ 시뮬레이션 데이터가 없습니다."
+
+        lp   = res["latest_price"]
+        p1   = res["p1_now"]
+        p2   = res["p2_now"]
+        today_str = today.strftime("%Y-%m-%d")
+
         lines = [
-            f"📋 <b>오늘의 주문표</b> ({today})",
-            f"종목: {ticker}",
-            f"직전 종가(p1): ${p1:.2f}",
-            f"전전 종가(p2): ${p2:.2f}",
-            "─────────────────",
-            f"🟢 LOC 매수 기준가: <b>${tgt_buy:.2f}</b>",
-            f"🔴 LOC 매도 기준가: <b>${tgt_sell:.2f}</b>",
-            "─────────────────",
-            "※ 종가 LOC 주문 기준입니다.",
+            f"📋 <b>오늘의 주문표</b> ({today_str})",
+            f"전략: 종가평균매매",
+            f"종목: {ticker_name}",
+            f"직전 종가(p1): ${p1:,.2f}  |  전전 종가(p2): ${p2:,.2f}",
+            "─────────────────────────",
         ]
+
+        # 매도 (보유 시에만)
+        if res["shares"] > 0:
+            sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+            sell_tgt = res["next_sell_target"]
+            vs_avg   = (sell_tgt / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
+            lines += [
+                f"🔵 <b>LOC 매도</b>",
+                f"   기준가: <b>${sell_tgt:,.2f}</b>",
+                f"   예상수량: {sell_qty:,}주  |  예상금액: ${sell_qty * sell_tgt:,.2f}",
+                f"   평단 ${res['avg_cost']:.2f} 대비 {vs_avg:+.2f}%",
+                "─────────────────────────",
+            ]
+
+        # 매수
+        buy_tgt  = res["next_buy_primary"]
+        buy_qty  = res["pending_buys"][0]["수량"]
+        chunk    = res["current_asset"] / _divisions
+        vs_lp_b  = (buy_tgt / lp - 1) * 100 if lp > 0 else 0
+        tier_no  = res["pending_buys"][0]["비고"]
+        lines += [
+            f"🔴 <b>LOC 매수</b>",
+            f"   기준가: <b>${buy_tgt:,.2f}</b>  ({vs_lp_b:+.2f}% vs 전일종가)",
+            f"   1회 매수금: ${chunk:,.2f}",
+            f"   예상수량: {buy_qty:,}주  |  예상금액: ${buy_qty * buy_tgt:,.2f}",
+            f"   {tier_no}",
+            "─────────────────────────",
+        ]
+
+        # 보유 현황 요약
+        if res["shares"] > 0:
+            pnl = (lp / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
+            lines += [
+                f"📦 보유: {res['shares']:,}주  |  평단: ${res['avg_cost']:.2f}",
+                f"   현재가: ${lp:.2f}  ({pnl:+.2f}%)  |  현금: ${res['cash']:,.2f}",
+            ]
+        else:
+            lines.append(f"📦 보유주식 없음  |  현금: ${res['cash']:,.2f}")
+
+        lines.append("※ 종가 LOC 주문 기준입니다.")
         return "\n".join(lines)
+
     except Exception as e:
         return f"주문표 생성 오류: {e}"
 
@@ -1055,8 +1100,16 @@ with tab5:
                 if not tg_chat_id or not tg_token:
                     st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
                 else:
-                    with st.spinner("발송 중..."):
-                        msg  = _build_order_text(ticker)
+                    with st.spinner("시뮬레이션 & 발송 중..."):
+                        _cfg_tg  = load_config()
+                        _tg_start = _cfg_tg.get("os_start", "2024-01-01")
+                        _tg_cap   = float(_cfg_tg.get("os_capital", initial_capital))
+                        try:    _tg_start_d = datetime.strptime(_tg_start, "%Y-%m-%d").date()
+                        except: _tg_start_d = datetime(2024, 1, 1).date()
+                        msg = _build_order_text(
+                            ticker, a_buy, a_sell, sell_ratio, divisions,
+                            _tg_start_d, _tg_cap,
+                        )
                         result = _send_telegram(tg_token, tg_chat_id, msg)
                     if result.get("ok"):
                         st.success("✅ 텔레그램 발송 성공!")
