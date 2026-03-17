@@ -424,6 +424,7 @@ def run_portfolio_for_ordersheet(
     open_tiers  = []   # [{'date': Timestamp, 'price': float, 'qty': int}]
     sell_trades = []
     buy_trades  = []
+    daily_log   = []
 
     if not sim.empty:
         closes   = sim["Close"].values.astype(float)
@@ -440,6 +441,9 @@ def run_portfolio_for_ordersheet(
         ts   = tgt_sell[i]
         date = sim.index[i]
         current_chunk = prev_asset / divisions
+        _day_action = "-"
+        _day_qty    = 0
+        _day_amt    = 0.0
 
         if shares > 0 and x >= ts:
             sell_qty = math.floor(shares * (sell_ratio / 100.0))
@@ -463,6 +467,9 @@ def run_portfolio_for_ordersheet(
 
                 cash   += sell_qty * x
                 shares -= sell_qty
+                _day_action = "SELL"
+                _day_qty    = -sell_qty   # 음수로 표시 (백테스트와 동일)
+                _day_amt    = round(sell_qty * x, 2)
 
                 # FIFO 티어 차감
                 remaining = sell_qty
@@ -504,10 +511,34 @@ def run_portfolio_for_ordersheet(
                     "금액($)": round(buy_qty * x, 2),
                     "비고":    f"평단 ${avg_cost:.2f} | 보유 {shares}주",
                 })
+                _day_action = "BUY"
+                _day_qty    = buy_qty
+                _day_amt    = round(buy_qty * x, 2)
 
         asset      = cash + shares * x
         prev_asset = asset
         peak_asset = max(peak_asset, asset)
+
+        # 전체 날짜 기록 (백테스트 일별 상세표와 동일 형식)
+        _date_val2   = date.date() if hasattr(date, "date") else date
+        _oldest      = open_tiers[0]["date"] if open_tiers else None
+        _oldest_date = _oldest.date() if _oldest and hasattr(_oldest, "date") else _oldest
+        _hdays       = (date.date() - _oldest_date).days if _oldest_date else "-"
+        daily_log.append({
+            "날짜":       str(_date_val2),
+            "종가(x)":    round(x, 4),
+            "전날(p1)":   round(p1s[i], 4),
+            "전전날(p2)": round(p2s[i], 4),
+            "매수경계가": round(tb, 4),
+            "매도경계가": round(ts, 4),
+            "매매":       _day_action,
+            "거래주수":   _day_qty,
+            "거래금액($)":_day_amt,
+            "보유주수":   shares,
+            "보유기간":   _hdays if shares > 0 else "-",
+            "현금($)":    round(cash, 2),
+            "총자산($)":  round(asset, 2),
+        })
 
     latest_price  = float(all_closes[-1])
     current_asset = cash + shares * latest_price
@@ -552,6 +583,7 @@ def run_portfolio_for_ordersheet(
         "cash":               cash,
         "sell_trades":        sell_trades,
         "trade_history":      sorted(buy_trades + sell_trades, key=lambda r: r["날짜"]),
+        "daily_log":          daily_log,
         "pending_buys":       pending_buys,
         "open_tiers":         open_tiers,
         "latest_price":       latest_price,
@@ -1018,62 +1050,83 @@ with tab3:
             st.info("현재 보유 주식 없음 (전량 현금)")
             st.metric("보유현금", f"${res['cash']:,.2f}")
 
-        # ── 매매 히스토리 (시작일 ~ 오늘 전체) ──
+        # ── 일별 매매 상세 히스토리 (시작일 ~ 오늘 전체) ──
         st.divider()
-        st.subheader("📜 매매 히스토리")
-        _th = res.get("trade_history", [])
-        if _th:
-            _df_hist = pd.DataFrame(_th)
+        st.subheader("📅 일별 매매 상세표")
+        _dl = res.get("daily_log", [])
+        if _dl:
+            _df_daily = pd.DataFrame(_dl)
             # 최신 날짜 먼저
-            _df_hist = _df_hist.sort_values("날짜", ascending=False).reset_index(drop=True)
-            # 표시용 컬럼 정리 (avg_cost 컬럼 숨김)
-            _show_cols = [c for c in ["날짜","구분","티커","체결가","수량","금액($)","보유기간(일)","비고"] if c in _df_hist.columns]
-            _df_show = _df_hist[_show_cols].copy()
-            _df_show["체결가"] = _df_show["체결가"].apply(lambda v: f"${v:,.2f}")
-            _df_show["금액($)"] = _df_show["금액($)"].apply(lambda v: f"${v:,.2f}")
+            _df_daily = _df_daily.sort_values("날짜", ascending=False).reset_index(drop=True)
 
-            _buy_cnt  = (_df_hist["구분"] == "매수").sum()
-            _sell_cnt = (_df_hist["구분"] == "매도").sum()
-            st.caption(f"시작일 {res['start_date']} ~ 오늘 | 총 {len(_df_hist)}건 (매수 {_buy_cnt}회 · 매도 {_sell_cnt}회)")
+            # 요약 카운트
+            _buy_cnt  = (_df_daily["매매"] == "BUY").sum()
+            _sell_cnt = (_df_daily["매매"] == "SELL").sum()
+            _total_cnt = _buy_cnt + _sell_cnt
+            st.caption(
+                f"시작일 {res['start_date']} ~ {res['end_date']} | "
+                f"총 {_total_cnt}건 (매수 {_buy_cnt}회 · 매도 {_sell_cnt}회)"
+            )
 
-            def _style_hist(row):
-                styles = [""] * len(row)
-                if "구분" in row.index:
-                    idx = list(row.index).index("구분")
-                    if row["구분"] == "매수":
-                        styles[idx] = "color: #C62828; font-weight: bold"
-                    elif row["구분"] == "매도":
-                        styles[idx] = "color: #1565C0; font-weight: bold"
-                return styles
+            # 표시용 포맷
+            _df_show = _df_daily.copy()
+            for _col in ["종가(x)", "전날(p1)", "전전날(p2)", "매수경계가", "매도경계가"]:
+                _df_show[_col] = _df_show[_col].apply(lambda v: f"${v:,.4f}")
+            _df_show["거래금액($)"] = _df_show["거래금액($)"].apply(
+                lambda v: f"${v:,.2f}" if v != 0 else "-"
+            )
+            _df_show["현금($)"]   = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
+            _df_show["총자산($)"] = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
+            _df_show["거래주수"] = _df_show["거래주수"].apply(
+                lambda v: f"{v:,}" if v != 0 else "-"
+            )
+
+            # 행 색상: BUY=연분홍, SELL=연초록
+            def _style_daily(row):
+                if row["매매"] == "BUY":
+                    return ["background-color: #FFF0F0"] * len(row)
+                elif row["매매"] == "SELL":
+                    return ["background-color: #F0FFF4"] * len(row)
+                return [""] * len(row)
+
+            # 매매 컬럼 글자색
+            def _style_action(val):
+                if val == "BUY":
+                    return "color: #C62828; font-weight: bold"
+                elif val == "SELL":
+                    return "color: #1565C0; font-weight: bold"
+                return "color: #999"
 
             st.dataframe(
-                _df_show.style.apply(_style_hist, axis=1),
+                _df_show.style
+                    .apply(_style_daily, axis=1)
+                    .applymap(_style_action, subset=["매매"]),
                 hide_index=True,
                 use_container_width=True,
-                height=min(38 + 35 * len(_df_show), 500),
+                height=min(38 + 35 * len(_df_show), 600),
             )
 
             # ── 다운로드 버튼 ──
             import io as _io
             _today_dl = str(datetime.today().date()).replace("-", "")
             _dl1, _dl2, _ = st.columns([1, 1, 4])
-            _csv_data = _df_show.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             _dl1.download_button(
                 "📥 CSV 다운로드", data=_csv_data,
-                file_name=f"soxl_trade_history_{_today_dl}.csv",
+                file_name=f"soxl_daily_history_{_today_dl}.csv",
                 mime="text/csv", key="dl_csv", use_container_width=True,
             )
             _buf = _io.BytesIO()
             with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
-                _df_show.to_excel(_writer, index=False, sheet_name="매매히스토리")
+                _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
             _dl2.download_button(
                 "📥 엑셀 다운로드", data=_buf.getvalue(),
-                file_name=f"soxl_trade_history_{_today_dl}.xlsx",
+                file_name=f"soxl_daily_history_{_today_dl}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="dl_xlsx", use_container_width=True,
             )
         else:
-            st.info("📭 시작일부터 오늘까지 체결된 매매 내역이 없습니다.")
+            st.info("📭 시작일부터 오늘까지 데이터가 없습니다.")
 
 
 # ══════════════════════════════════════════════
