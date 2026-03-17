@@ -212,7 +212,7 @@ if _IS_CLOUD:
                             # 30일 자동 로그인 쿠키 저장
                             _cookie_mgr.set(
                                 "soxl_user", _u,
-                                expires_at=datetime.now() + timedelta(days=30),
+                                expires=datetime.now() + timedelta(days=30),
                             )
                             st.rerun()
                         else:
