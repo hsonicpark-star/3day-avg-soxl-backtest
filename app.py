@@ -1005,28 +1005,16 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
             f"직전 종가(p1): ${p1:,.2f}  |  전전 종가(p2): ${p2:,.2f}",
         ]
 
+        # 매수
+        buy_tgt = res["next_buy_primary"]
+        buy_qty = res["pending_buys"][0]["수량"]
+        lines.append(f"🔴 매수 LOC {buy_qty:,}주  ${buy_tgt:,.2f}")
+
         # 매도 (보유 시에만)
         if res["shares"] > 0:
             sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
             sell_tgt = res["next_sell_target"]
-            vs_avg   = (sell_tgt / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
-            lines += [
-                f"",
-                f"🔵 <b>LOC 매도</b>",
-                f"   기준가: <b>${sell_tgt:,.2f}</b>",
-                f"   예상수량: {sell_qty:,}주  |  예상금액: ${sell_qty * sell_tgt:,.2f}",
-                f"   평단 ${res['avg_cost']:.2f} 대비 {vs_avg:+.2f}%",
-            ]
-
-        # 매수
-        buy_tgt = res["next_buy_primary"]
-        buy_qty = res["pending_buys"][0]["수량"]
-        lines += [
-            f"",
-            f"🔴 <b>LOC 매수</b>",
-            f"   기준가: <b>${buy_tgt:,.2f}</b>",
-            f"   예상수량: {buy_qty:,}주  |  예상금액: ${buy_qty * buy_tgt:,.2f}",
-        ]
+            lines.append(f"🔵 매도 LOC {sell_qty:,}주  ${sell_tgt:,.2f}")
 
         # 보유 현황 요약
         if res["shares"] > 0:
