@@ -1089,7 +1089,7 @@ with tab5:
 - 아래 이메일을 **편집자**로 추가:
 
 ```
-soxl-bot@soxl-backtest.iam.gserviceaccount.com
+connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com
 ```
 
 **③ 저장 후 테스트**
