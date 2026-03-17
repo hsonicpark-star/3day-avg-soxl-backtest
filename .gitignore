@@ -3,6 +3,11 @@
 *.csv
 config.json
 
+# 보안 키 파일 (절대 커밋 금지!)
+service_account.json
+secrets.json
+*.key
+
 # Python
 __pycache__/
 *.pyc
