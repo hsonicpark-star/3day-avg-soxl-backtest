@@ -1,0 +1,28 @@
+name: Daily LOC Alert (15:00 KST)
+
+on:
+  schedule:
+    - cron: '0 6 * * 1-5'   # 06:00 UTC = 15:00 KST, 월~금
+  workflow_dispatch:          # 수동 실행 버튼 (테스트용)
+
+jobs:
+  send-alerts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance gspread google-auth requests pandas
+
+      - name: Run daily alert script
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          ADMIN_SHEET_URL: ${{ secrets.ADMIN_SHEET_URL }}
+        run: python scripts/daily_telegram_alert.py
