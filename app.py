@@ -1429,7 +1429,22 @@ with tab3:
 
     # ── 자본 조정 (증액/감액) ──────────────────────────────
     with st.expander("💰 자본 조정 (증액 / 감액)"):
-        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 적용하면 시작 자본이 즉시 업데이트됩니다.")
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 조정 이력이 날짜별로 기록됩니다.")
+
+        # 조정 이력 로드
+        _cfg_adj = load_config()
+        if _IS_CLOUD and st.session_state.get("logged_in"):
+            _adj_history_raw = st.session_state.get("user_settings", {}).get("capital_adj_history", "[]")
+        else:
+            _adj_history_raw = _cfg_adj.get("capital_adj_history", "[]")
+        try:
+            _adj_history = json.loads(_adj_history_raw) if isinstance(_adj_history_raw, str) else _adj_history_raw
+            if not isinstance(_adj_history, list):
+                _adj_history = []
+        except Exception:
+            _adj_history = []
+
+        # 조정 입력
         _adj_c1, _adj_c2 = st.columns([2, 1])
         _adj_amount = _adj_c1.number_input(
             "조정 금액 ($)",
@@ -1437,29 +1452,61 @@ with tab3:
             help="증액: 양수 입력 (예: 3000) · 감액: 음수 입력 (예: -3000)",
             key="capital_adj_input"
         )
-        _adj_c1.caption(f"적용 후 자본금: **${_default_capital + _adj_amount:,.0f}** "
-                        f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='}"
-                        f" ${abs(_adj_amount):,.0f})")
+        _new_cap_preview = _default_capital + _adj_amount
+        _adj_c1.caption(
+            f"적용 후 자본금: **${_new_cap_preview:,.0f}** "
+            f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
+            f"${abs(_adj_amount):,.0f})"
+        )
+        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금", key="adj_memo")
+
         if _adj_c2.button("💰 적용", use_container_width=True, key="apply_adj",
                           disabled=(_adj_amount == 0)):
             _new_capital = _default_capital + _adj_amount
             if _new_capital <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
             else:
-                # URL, config, 시트에 저장
+                # 이력에 추가
+                _adj_history.append({
+                    "날짜": datetime.today().strftime("%Y-%m-%d"),
+                    "조정금액": float(_adj_amount),
+                    "누적자본금": float(_new_capital),
+                    "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
+                })
+                _adj_history_json = json.dumps(_adj_history, ensure_ascii=False)
+
+                # 저장
                 st.query_params["capital"] = str(int(_new_capital))
-                save_config({"os_capital": _new_capital})
+                save_config({"os_capital": _new_capital, "capital_adj_history": _adj_history_json})
                 if _IS_CLOUD and st.session_state.get("logged_in"):
                     try:
                         _save_user_settings_to_sheet(
                             st.session_state.username,
-                            {"os_capital": float(_new_capital)}
+                            {"os_capital": float(_new_capital),
+                             "capital_adj_history": _adj_history_json}
                         )
-                        st.session_state.user_settings.update({"os_capital": float(_new_capital)})
+                        st.session_state.user_settings.update({
+                            "os_capital": float(_new_capital),
+                            "capital_adj_history": _adj_history_json
+                        })
                     except Exception:
                         pass
                 st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다. 주문표를 다시 로드해주세요.")
                 st.rerun()
+
+        # 조정 이력 테이블
+        if _adj_history:
+            st.markdown("---")
+            st.markdown("**📋 자본 조정 이력**")
+            _df_adj = pd.DataFrame(_adj_history)
+            _df_adj["조정금액"] = _df_adj["조정금액"].apply(
+                lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}"
+            )
+            _df_adj["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(_df_adj[["날짜","조정금액","누적자본금","메모"]],
+                         use_container_width=True, hide_index=True)
+        else:
+            st.info("아직 자본 조정 이력이 없습니다.")
 
     if st.button("📋 주문표 로드", type="primary", key="run_os"):
         # URL 파라미터 & config.json 동시 저장
