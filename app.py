@@ -358,20 +358,7 @@ with st.sidebar:
     sell_ratio = st.number_input("매도비율 (%)", value=_def_sr, step=10.0, min_value=0.0, max_value=100.0)
     divisions  = st.number_input("분할수", value=_def_div, min_value=1, step=1)
 
-    # ── 파라미터 저장 버튼 ──
-    if st.button("💾 파라미터 저장", use_container_width=True):
-        _param_data = {
-            "a_buy": float(a_buy), "a_sell": float(a_sell),
-            "sell_ratio": float(sell_ratio), "divisions": int(divisions)
-        }
-        save_config(_param_data, ticker)
-        if _IS_CLOUD and st.session_state.get("logged_in"):
-            try:
-                _save_user_settings_to_sheet(st.session_state.username, _param_data)
-                st.session_state.user_settings.update(_param_data)
-            except Exception as _e:
-                st.warning(f"시트 저장 실패: {_e}")
-        st.success("✅ 파라미터가 저장되었습니다!")
+    st.caption("📌 파라미터 저장은 오늘의 주문표 탭에서 할 수 있습니다.")
 
     st.markdown("---")
     st.subheader("백테스트 설정")
@@ -1660,14 +1647,35 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             st.session_state[f"del_confirm_{key_sfx}"] = False
             st.rerun()
 
-    # ── 적용 파라미터 표시 ──
+    # ── 적용 파라미터 표시 + 수정 ──
     with st.container(border=True):
         _p1, _p2, _p3, _p4 = st.columns(4)
         _p1.metric("매수기준 (a_buy)",  f"{_a_buy:.4f}")
         _p2.metric("매도기준 (a_sell)", f"{_a_sell:.4f}")
         _p3.metric("매도비율",          f"{_sell_ratio:.0f}%")
         _p4.metric("분할수",            f"{_divisions}회")
-        st.caption("📌 파라미터 변경은 사이드바 → 파라미터 저장 후 반영됩니다.")
+
+        with st.expander("✏️ 파라미터 수정"):
+            _ep1, _ep2 = st.columns(2)
+            _ep3, _ep4 = st.columns(2)
+            _new_a_buy  = _ep1.number_input("매수기준 (a_buy)",  value=_a_buy,
+                                             step=0.001, format="%.4f", key=f"edit_abuy_{key_sfx}")
+            _new_a_sell = _ep2.number_input("매도기준 (a_sell)", value=_a_sell,
+                                             step=0.001, format="%.4f", key=f"edit_asell_{key_sfx}")
+            _new_sr     = _ep3.number_input("매도비율 (%)",      value=_sell_ratio,
+                                             step=10.0, min_value=0.0, max_value=100.0,
+                                             key=f"edit_sr_{key_sfx}")
+            _new_div    = _ep4.number_input("분할수",            value=_divisions,
+                                             min_value=1, step=1, key=f"edit_div_{key_sfx}")
+            if st.button("💾 파라미터 저장", key=f"save_param_{key_sfx}", type="primary",
+                         use_container_width=True):
+                _new_param = {
+                    "a_buy": float(_new_a_buy), "a_sell": float(_new_a_sell),
+                    "sell_ratio": float(_new_sr), "divisions": int(_new_div),
+                }
+                _save_ticker_setting(tk, _new_param)
+                st.success(f"✅ {tk} 파라미터가 저장되었습니다!")
+                st.rerun()
 
     # ── 시작일 / 자본금 ──
     c1, c2 = st.columns(2)
