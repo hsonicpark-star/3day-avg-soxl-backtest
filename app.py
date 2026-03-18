@@ -254,7 +254,8 @@ if _IS_CLOUD:
                     st.session_state.user_settings = {
                         k: _row.get(k, "") for k in (
                             "tg_chat_id", "tg_token", "gs_url", "gs_sheet",
-                            "a_buy", "a_sell", "sell_ratio", "divisions"
+                            "a_buy", "a_sell", "sell_ratio", "divisions",
+                            "ticker_settings"
                         )
                     }
                     st.rerun()
