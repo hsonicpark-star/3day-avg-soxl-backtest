@@ -898,6 +898,114 @@ def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio
     return events
 
 
+def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio, divisions, initial_capital):
+    """티어별 완전 청산 사이클 분석.
+    포지션이 0이 될 때까지 추적하여, 각 사이클에서 몇 티어까지 매수됐는지 기록.
+    1티어만 사고 매도, 2티어 사고 매도, ... N티어 사고 매도 각각 통계 산출.
+    """
+    sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+    sim_raw["p1"] = sim_raw["Close"].shift(1)
+    sim_raw["p2"] = sim_raw["Close"].shift(2)
+    sim = sim_raw.dropna(subset=["p1", "p2"])
+    if sim.empty:
+        return []
+
+    cash       = float(initial_capital)
+    shares     = 0
+    avg_cost   = 0.0
+    open_tiers = []
+    prev_asset = float(initial_capital)
+
+    # 사이클 추적
+    cycle_buys            = []   # 이번 사이클의 매수 내역
+    cycle_total_invested  = 0.0  # 이번 사이클 총 투자금
+    cycle_total_received  = 0.0  # 이번 사이클 총 매도 수익
+    cycle_start_date      = None
+
+    events = []
+
+    closes   = sim["Close"].values.astype(float)
+    p1s      = sim["p1"].values.astype(float)
+    p2s      = sim["p2"].values.astype(float)
+    tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
+    tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+
+    for i in range(len(closes)):
+        x    = closes[i]
+        tb   = tgt_buy[i]
+        ts   = tgt_sell[i]
+        date = sim.index[i]
+        current_chunk = prev_asset / divisions
+
+        if shares > 0 and x >= ts:
+            sell_qty = math.floor(shares * (sell_ratio / 100.0))
+            if sell_qty > 0:
+                proceeds               = sell_qty * x
+                cash                  += proceeds
+                shares                -= sell_qty
+                cycle_total_received  += proceeds
+
+                # FIFO 티어 소진
+                remaining = sell_qty
+                while remaining > 0 and open_tiers:
+                    if open_tiers[0]["qty"] <= remaining:
+                        remaining -= open_tiers[0]["qty"]
+                        open_tiers.pop(0)
+                    else:
+                        open_tiers[0]["qty"] -= remaining
+                        remaining = 0
+
+                if shares == 0:
+                    # 포지션 완전 청산 → 사이클 기록
+                    n_tiers   = len(cycle_buys)
+                    hold_days = (date.date() - cycle_start_date.date()).days if cycle_start_date else 0
+                    pnl       = (cycle_total_received - cycle_total_invested) / cycle_total_invested * 100 \
+                                if cycle_total_invested > 0 else 0.0
+                    events.append({
+                        "티어수":     n_tiers,
+                        "시작일":     str(cycle_start_date.date()) if cycle_start_date else "",
+                        "매도완료일": str(date.date()),
+                        "보유일수":   hold_days,
+                        "평균단가":   round(cycle_total_invested / sum(b["qty"] for b in cycle_buys), 2)
+                                      if cycle_buys and sum(b["qty"] for b in cycle_buys) > 0 else 0.0,
+                        "최종매도가": round(x, 2),
+                        "손익률":     round(pnl, 2),
+                    })
+                    # 사이클 초기화
+                    cycle_buys           = []
+                    cycle_total_invested = 0.0
+                    cycle_total_received = 0.0
+                    cycle_start_date     = None
+                    avg_cost             = 0.0
+                    open_tiers           = []
+                else:
+                    # 부분 매도 → avg_cost 재계산
+                    if open_tiers:
+                        total_inv = sum(t["price"] * t["qty"] for t in open_tiers)
+                        total_qty = sum(t["qty"] for t in open_tiers)
+                        avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
+
+        elif x <= tb:
+            buy_qty = min(
+                math.floor(current_chunk / x + 1e-9),
+                math.floor(cash / x + 1e-9),
+            )
+            if buy_qty > 0:
+                total_inv             = avg_cost * shares + x * buy_qty
+                shares               += buy_qty
+                avg_cost              = total_inv / shares
+                cash                 -= buy_qty * x
+                cycle_total_invested += buy_qty * x
+                open_tiers.append({"date": date, "price": x, "qty": buy_qty})
+                cycle_buys.append({"date": date, "price": x, "qty": buy_qty})
+                if cycle_start_date is None:
+                    cycle_start_date = date
+
+        prev_asset = cash + shares * x
+
+    return events
+
+
 # ──────────────────────────────────────────────
 # 탭 구성
 # ──────────────────────────────────────────────
@@ -1936,6 +2044,95 @@ a   = 파라미터값
                 f"{_res['min_pnl']:+.2f}%",
             ],
         }), hide_index=True, use_container_width=True)
+        st.divider()
+
+        # ── 티어별 매수 사이클 분석 ────────────────────────────
+        st.subheader("📊 티어별 매수 사이클 분석")
+        st.caption("포지션이 완전히 청산될 때까지를 1사이클로 보고, 사이클마다 몇 번 분할 매수가 발생했는지 분석합니다.")
+        with st.spinner("티어별 분석 중..."):
+            _tier_events = run_tier_breakdown_analysis(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap)
+        if _tier_events:
+            _tier_df = pd.DataFrame(_tier_events)
+            # 티어별 집계
+            _tier_summary_rows = []
+            for _t in range(1, div + 1):
+                _sub = _tier_df[_tier_df["티어수"] == _t]
+                if len(_sub) == 0:
+                    _tier_summary_rows.append({
+                        "티어": f"{_t}티어",
+                        "발생횟수": 0, "승수": 0, "패수": 0, "승률(%)": "-",
+                        "평균보유일": "-", "평균손익률(%)": "-",
+                        "최대수익(%)": "-", "최대손실(%)": "-",
+                    })
+                else:
+                    _wins = int((_sub["손익률"] > 0).sum())
+                    _loss = len(_sub) - _wins
+                    _tier_summary_rows.append({
+                        "티어": f"{_t}티어",
+                        "발생횟수": len(_sub),
+                        "승수": _wins,
+                        "패수": _loss,
+                        "승률(%)": f"{_wins/len(_sub)*100:.1f}%",
+                        "평균보유일": f"{_sub['보유일수'].mean():.1f}일",
+                        "평균손익률(%)": f"{_sub['손익률'].mean():+.2f}%",
+                        "최대수익(%)": f"{_sub['손익률'].max():+.2f}%",
+                        "최대손실(%)": f"{_sub['손익률'].min():+.2f}%",
+                    })
+            _tier_summary_df = pd.DataFrame(_tier_summary_rows)
+
+            # 요약 테이블
+            st.dataframe(_tier_summary_df, hide_index=True, use_container_width=True)
+
+            # 차트: 발생 횟수 + 평균 손익률
+            _tier_chart_data = pd.DataFrame({
+                "티어": [f"{_t}티어" for _t in range(1, div + 1)],
+                "발생횟수": [len(_tier_df[_tier_df["티어수"] == _t]) for _t in range(1, div + 1)],
+                "평균손익률": [
+                    round(_tier_df[_tier_df["티어수"] == _t]["손익률"].mean(), 2)
+                    if len(_tier_df[_tier_df["티어수"] == _t]) > 0 else 0
+                    for _t in range(1, div + 1)
+                ],
+            })
+            _fig_tier = go.Figure()
+            _fig_tier.add_trace(go.Bar(
+                x=_tier_chart_data["티어"], y=_tier_chart_data["발생횟수"],
+                name="발생횟수", marker_color="#5C6BC0", yaxis="y1",
+            ))
+            _fig_tier.add_trace(go.Scatter(
+                x=_tier_chart_data["티어"], y=_tier_chart_data["평균손익률"],
+                name="평균손익률(%)", mode="lines+markers+text",
+                text=[f"{v:+.2f}%" for v in _tier_chart_data["평균손익률"]],
+                textposition="top center",
+                marker=dict(size=10, color="#EF5350"),
+                line=dict(color="#EF5350", width=2),
+                yaxis="y2",
+            ))
+            _fig_tier.update_layout(
+                title=f"티어별 발생 횟수 & 평균 손익률",
+                yaxis=dict(title="발생횟수 (회)", side="left"),
+                yaxis2=dict(title="평균 손익률 (%)", side="right", overlaying="y",
+                            zeroline=True, zerolinecolor="#aaa"),
+                legend=dict(orientation="h", y=1.1),
+                height=360, bargap=0.3,
+            )
+            st.plotly_chart(_fig_tier, use_container_width=True)
+
+            # 상세 내역 expander
+            with st.expander("📋 전체 사이클 상세 내역 보기"):
+                def _style_tier(row):
+                    return ["color: #2e7d32; font-weight:bold" if row["손익률"] > 0
+                            else "color: #c62828; font-weight:bold" if row["손익률"] < 0
+                            else "" for _ in row]
+                _tier_df_disp = _tier_df.copy()
+                _tier_df_disp["티어수"] = _tier_df_disp["티어수"].apply(lambda x: f"{x}티어")
+                st.dataframe(
+                    _tier_df_disp.style.apply(_style_tier, axis=1)
+                                        .format({"평균단가": "${:.2f}", "최종매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
+                    hide_index=True, use_container_width=True,
+                    height=min(38 + 35 * len(_tier_df_disp), 500),
+                )
+        else:
+            st.info("선택 기간 내 완전 청산된 사이클이 없습니다.")
         st.divider()
 
         st.subheader(f"🎯 {div}티어 완전 투자 분석")
