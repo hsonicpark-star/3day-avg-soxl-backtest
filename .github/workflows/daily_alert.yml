@@ -2,7 +2,7 @@ name: Daily LOC Alert (15:00 KST)
 
 on:
   schedule:
-    - cron: '0 6 * * 1-5'   # 06:00 UTC = 15:00 KST, 월~금
+    - cron: '0 22 * * 1-5'  # 22:00 UTC = 07:00 KST 다음날, 월~금 (미국장 마감 후)
   workflow_dispatch:          # 수동 실행 버튼 (테스트용)
 
 jobs:
