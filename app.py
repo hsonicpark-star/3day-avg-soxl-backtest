@@ -170,7 +170,10 @@ st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
 if _IS_CLOUD:
     # 쿠키에서 자동 로그인 시도 (새로고침해도 로그인 유지)
     if not st.session_state.get("logged_in", False):
-        _cookie_user = _cookie_mgr.get("soxl_user")
+        try:
+            _cookie_user = _cookie_mgr.get("soxl_user")
+        except Exception:
+            _cookie_user = None
         if _cookie_user:
             try:
                 _ws   = _get_users_ws()
@@ -218,10 +221,13 @@ if _IS_CLOUD:
                             st.session_state.username     = _u
                             st.session_state.user_settings = _user
                             # 30일 자동 로그인 쿠키 저장
-                            _cookie_mgr.set(
-                                "soxl_user", _u,
-                                expires=datetime.now() + timedelta(days=30),
-                            )
+                            try:
+                                _cookie_mgr.set(
+                                    "soxl_user", _u,
+                                    expires=datetime.now() + timedelta(days=30),
+                                )
+                            except Exception:
+                                pass
                             st.rerun()
                         else:
                             st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
@@ -315,7 +321,10 @@ with st.sidebar:
         st.markdown("---")
         st.caption(f"👤 **{st.session_state.username}** 으로 로그인 중")
         if st.button("🚪 로그아웃", use_container_width=True):
-            _cookie_mgr.remove("soxl_user")
+            try:
+                _cookie_mgr.remove("soxl_user")
+            except Exception:
+                pass
             for k in ("logged_in", "username", "user_settings"):
                 st.session_state.pop(k, None)
             st.rerun()
