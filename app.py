@@ -41,7 +41,20 @@ else:
 
 _SENSITIVE_KEYS = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
 
-def load_config():
+def load_config(ticker: str = None):
+    """ticker 지정 시 해당 ticker 네임스페이스 반환, 없으면 전체 반환."""
+    if _CONFIG.exists():
+        try:
+            cfg = json.loads(_CONFIG.read_text(encoding="utf-8"))
+            if ticker:
+                return cfg.get(ticker, {})
+            return cfg
+        except:
+            return {}
+    return {}
+
+def _load_full_config() -> dict:
+    """항상 전체 config를 반환 (내부용)."""
     if _CONFIG.exists():
         try:
             return json.loads(_CONFIG.read_text(encoding="utf-8"))
@@ -49,15 +62,17 @@ def load_config():
             return {}
     return {}
 
-def save_config(data: dict, sensitive: bool = False):
-    """sensitive=True 이면 민감 정보 포함. 클라우드에서는 민감 정보 저장 안 함."""
+def save_config(data: dict, ticker: str = None, sensitive: bool = False):
+    """sensitive=True 이면 민감 정보 포함. 클라우드에서는 민감 정보 저장 안 함.
+    ticker 지정 시 해당 ticker 네임스페이스에 저장, 없으면 루트에 저장."""
     try:
-        cfg = load_config()
+        full_cfg = _load_full_config()
+        target = full_cfg.setdefault(ticker, {}) if ticker else full_cfg
         for k, v in data.items():
             if k in _SENSITIVE_KEYS and _IS_CLOUD:
                 continue  # 클라우드에서 민감 정보 저장 차단
-            cfg[k] = v
-        _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            target[k] = v
+        _CONFIG.write_text(json.dumps(full_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
 
@@ -90,7 +105,7 @@ def append_order_history(rows: list):
 # 클라우드 서버에 혹시 남은 민감 정보 제거
 if _IS_CLOUD:
     try:
-        cfg = load_config()
+        cfg = _load_full_config()
         if any(k in cfg for k in _SENSITIVE_KEYS):
             for k in _SENSITIVE_KEYS:
                 cfg.pop(k, None)
@@ -273,7 +288,7 @@ with st.sidebar:
         try: return int(float(v)) if v not in ("", None) else d
         except: return d
 
-    _cfg_sb = load_config()
+    _cfg_sb = load_config(ticker)
     if _IS_CLOUD and st.session_state.get("logged_in"):
         _usercfg_sb = st.session_state.get("user_settings", {})
     else:
@@ -295,7 +310,7 @@ with st.sidebar:
             "a_buy": float(a_buy), "a_sell": float(a_sell),
             "sell_ratio": float(sell_ratio), "divisions": int(divisions)
         }
-        save_config(_param_data)
+        save_config(_param_data, ticker)
         if _IS_CLOUD and st.session_state.get("logged_in"):
             try:
                 _save_user_settings_to_sheet(st.session_state.username, _param_data)
@@ -1415,7 +1430,7 @@ with tab3:
 
     # URL 파라미터 > config.json > 기본값 순으로 초기값 결정
     _qp  = st.query_params
-    _cfg = load_config()
+    _cfg = load_config(ticker)
 
     _raw_start   = _qp.get("start")   or _cfg.get("os_start",   "2024-01-01")
     _raw_capital = _qp.get("capital") or str(_cfg.get("os_capital", initial_capital))
@@ -1440,7 +1455,7 @@ with tab3:
         st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 조정 이력이 날짜별로 기록됩니다.")
 
         # 조정 이력 로드
-        _cfg_adj = load_config()
+        _cfg_adj = load_config(ticker)
         if _IS_CLOUD and st.session_state.get("logged_in"):
             _adj_history_raw = st.session_state.get("user_settings", {}).get("capital_adj_history", "[]")
         else:
@@ -1485,7 +1500,7 @@ with tab3:
 
                 # 저장
                 st.query_params["capital"] = str(int(_new_capital))
-                save_config({"os_capital": _new_capital, "capital_adj_history": _adj_history_json})
+                save_config({"os_capital": _new_capital, "capital_adj_history": _adj_history_json}, ticker)
                 if _IS_CLOUD and st.session_state.get("logged_in"):
                     try:
                         _save_user_settings_to_sheet(
@@ -1542,7 +1557,7 @@ with tab3:
                 }
                 st.query_params["start"]   = str(_reset_start)
                 st.query_params["capital"] = str(int(_reset_capital))
-                save_config(_reset_data)
+                save_config(_reset_data, ticker)
                 if _IS_CLOUD and st.session_state.get("logged_in"):
                     try:
                         _save_user_settings_to_sheet(st.session_state.username, _reset_data)
@@ -1560,7 +1575,7 @@ with tab3:
         # URL 파라미터 & config.json 동시 저장
         st.query_params["start"]   = str(os_start)
         st.query_params["capital"] = str(int(os_capital))
-        save_config({"os_start": str(os_start), "os_capital": os_capital})
+        save_config({"os_start": str(os_start), "os_capital": os_capital}, ticker)
         # 클라우드 로그인 시 users 시트에도 저장 (자동 알림에서 사용)
         if _IS_CLOUD and st.session_state.get("logged_in"):
             try:
