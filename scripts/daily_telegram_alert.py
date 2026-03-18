@@ -135,7 +135,8 @@ def calc_today_order(df: pd.DataFrame,
 # ── 텔레그램 메시지 생성 ────────────────────────────────
 def build_message(res: dict, ticker: str) -> str:
     today = datetime.today().strftime("%Y-%m-%d")
-    lines = [f"📋 *{today} LOC 주문* ({ticker})"]
+    lines = [f"📋 *종가평균 주문* ({ticker})"]
+    lines.append(f"기준일: {today}")
     lines.append(f"기준가: p1={res['p1']:.2f} / p2={res['p2']:.2f}")
     lines.append("")
 
