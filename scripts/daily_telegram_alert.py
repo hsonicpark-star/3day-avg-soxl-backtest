@@ -11,11 +11,13 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # ── 상수 ───────────────────────────────────────────────
-TICKER        = "SOXL"
-DEFAULT_A_BUY    = -0.005
-DEFAULT_A_SELL   =  0.009
+TICKER             = "SOXL"
+DEFAULT_A_BUY      = -0.005
+DEFAULT_A_SELL     =  0.009
 DEFAULT_SELL_RATIO = 100.0
 DEFAULT_DIVISIONS  = 5
+DEFAULT_CAPITAL    = 10000.0
+DEFAULT_OS_START   = "2024-01-01"
 
 GS_SCOPES = [
     "https://spreadsheets.google.com/feeds",
@@ -37,10 +39,10 @@ def get_users(client, sheet_url: str) -> list[dict]:
     return ws.get_all_records()
 
 # ── 가격 데이터 ────────────────────────────────────────
-def fetch_prices(ticker: str, days: int = 10) -> pd.DataFrame:
-    end   = datetime.today()
-    start = end - timedelta(days=days)
-    df = yf.download(ticker, start=start.strftime("%Y-%m-%d"),
+def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
+    """start_date부터 오늘까지 종가 데이터 로드."""
+    end = datetime.today() + timedelta(days=1)  # yfinance end는 exclusive
+    df = yf.download(ticker, start=start_date,
                      end=end.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
     # yfinance 최신버전 멀티컬럼 대응
     if isinstance(df.columns, pd.MultiIndex):
@@ -53,11 +55,12 @@ def fetch_prices(ticker: str, days: int = 10) -> pd.DataFrame:
 def buy_limit_price(p1: float, p2: float, a: float) -> float:
     return (p1 + p2) * (1 + a) / (2 - a)
 
-# ── 포트폴리오 시뮬레이션 (오늘 주문 산출) ────────────────
+# ── 포트폴리오 시뮬레이션 (os_start부터 전체 시뮬레이션) ─────
 def calc_today_order(df: pd.DataFrame,
                      a_buy: float, a_sell: float,
                      sell_ratio: float, divisions: int,
                      capital: float) -> dict:
+    """앱과 동일하게 os_start부터 전체 시뮬레이션하여 오늘 주문 산출."""
     closes = df["Close"].values
     if len(closes) < 3:
         return {}
@@ -93,6 +96,7 @@ def calc_today_order(df: pd.DataFrame,
                     avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
                 else:
                     avg_cost, open_tiers = 0.0, []
+
         elif x <= tb:
             buy_qty = min(
                 math.floor(chunk / x + 1e-9),
@@ -107,13 +111,15 @@ def calc_today_order(df: pd.DataFrame,
 
         prev_asset = cash + shares * x
 
-    # ── 내일 주문 계산 (마지막 2일 종가로) ──────────────────
+    # ── 다음 주문 계산 (마지막 2일 종가로) ──
     p1_now = float(closes[-1])
     p2_now = float(closes[-2])
     tb_next = buy_limit_price(p1_now, p2_now, a_buy)
     ts_next = buy_limit_price(p1_now, p2_now, a_sell)
-    chunk_now = (cash + shares * p1_now) / divisions
-    buy_qty_next  = min(
+    current_asset = cash + shares * p1_now
+    chunk_now = current_asset / divisions
+
+    buy_qty_next = min(
         math.floor(chunk_now / tb_next + 1e-9),
         math.floor(cash / tb_next + 1e-9),
     ) if cash > 0 else 0
@@ -177,13 +183,6 @@ def main():
         print("❌ ADMIN_SHEET_URL 환경변수가 없습니다.")
         return
 
-    print("📊 가격 데이터 로드 중...")
-    df = fetch_prices(TICKER, days=15)
-    if df.empty or len(df) < 3:
-        print("❌ 가격 데이터 부족")
-        return
-    print(f"✅ {TICKER} 최근 {len(df)}일 데이터 로드 완료 (최근 종가: {float(df['Close'].iloc[-1]):.2f})")
-
     print("👥 사용자 목록 로드 중...")
     client = get_gspread_client()
     users  = get_users(client, sheet_url)
@@ -206,7 +205,24 @@ def main():
         a_sell     = float(user.get("a_sell",     DEFAULT_A_SELL))     if user.get("a_sell")     else DEFAULT_A_SELL
         sell_ratio = float(user.get("sell_ratio", DEFAULT_SELL_RATIO)) if user.get("sell_ratio") else DEFAULT_SELL_RATIO
         divisions  = int(float(user.get("divisions", DEFAULT_DIVISIONS))) if user.get("divisions") else DEFAULT_DIVISIONS
-        capital    = float(user.get("os_capital", 10000))              if user.get("os_capital") else 10000.0
+        capital    = float(user.get("os_capital", DEFAULT_CAPITAL))    if user.get("os_capital") else DEFAULT_CAPITAL
+        os_start   = str(user.get("os_start",    DEFAULT_OS_START)).strip() or DEFAULT_OS_START
+
+        # os_start부터 전체 가격 데이터 로드 (앱과 동일한 방식)
+        print(f"  📊 {username}: {os_start}부터 데이터 로드 중...")
+        try:
+            df = fetch_prices(TICKER, os_start)
+        except Exception as e:
+            print(f"  ❌ {username}: 데이터 로드 실패 → {e}")
+            fail_count += 1
+            continue
+
+        if df.empty or len(df) < 3:
+            print(f"  ❌ {username}: 데이터 부족")
+            fail_count += 1
+            continue
+
+        print(f"     최근 종가: {float(df['Close'].iloc[-1]):.2f} (p1={float(df['Close'].iloc[-2]):.2f})")
 
         res = calc_today_order(df, a_buy, a_sell, sell_ratio, divisions, capital)
         if not res:
@@ -217,7 +233,7 @@ def main():
         msg = build_message(res, TICKER)
         ok, resp = send_telegram(chat_id, token, msg)
         if ok:
-            print(f"  ✅ {username}: 발송 성공")
+            print(f"  ✅ {username}: 발송 성공 (매수 {res['buy_qty']}주 ${res['tb']:.2f})")
             ok_count += 1
         else:
             print(f"  ❌ {username}: 발송 실패 → {resp}")
