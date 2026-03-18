@@ -42,7 +42,11 @@ def fetch_prices(ticker: str, days: int = 10) -> pd.DataFrame:
     start = end - timedelta(days=days)
     df = yf.download(ticker, start=start.strftime("%Y-%m-%d"),
                      end=end.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
+    # yfinance 최신버전 멀티컬럼 대응
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
     df = df[["Close"]].dropna()
+    df["Close"] = df["Close"].astype(float)
     return df
 
 # ── LOC 경계가 계산 ────────────────────────────────────
