@@ -115,38 +115,49 @@ if _IS_CLOUD:
         pass
 
 # ── ticker별 설정 관리 (멀티 계좌) ────────────────────────────
+def _parse_ticker_settings_json(raw) -> dict:
+    """ticker_settings JSON 문자열을 안전하게 파싱. 빈값·파싱오류 모두 {} 반환."""
+    if not raw or raw == "":
+        return {}
+    try:
+        ts = json.loads(raw) if isinstance(raw, str) else raw
+        return ts if isinstance(ts, dict) else {}
+    except Exception:
+        return {}
+
 def _get_ticker_settings() -> dict:
     """등록된 모든 ticker 설정 반환 {ticker: {a_buy, a_sell, os_start, ...}}"""
     if _IS_CLOUD and st.session_state.get("logged_in"):
-        raw = st.session_state.get("user_settings", {}).get("ticker_settings", "{}")
-        try:
-            ts = json.loads(raw) if isinstance(raw, str) else raw
-            return ts if isinstance(ts, dict) else {}
-        except:
-            return {}
+        raw = st.session_state.get("user_settings", {}).get("ticker_settings", "") or ""
+        return _parse_ticker_settings_json(raw)
     else:
         full_cfg = _load_full_config()
         return {k: v for k, v in full_cfg.items()
                 if k not in _GLOBAL_CONFIG_KEYS and isinstance(v, dict)}
 
-def _save_ticker_setting(tk: str, data: dict):
-    """ticker별 설정 저장 (로컬 config.json + 클라우드 Google Sheets 동기)."""
+def _save_ticker_setting(tk: str, data: dict) -> str:
+    """ticker별 설정 저장 (로컬 config.json + 클라우드 Google Sheets 동기).
+    성공 시 '' 반환, 실패 시 오류 메시지 반환."""
     save_config(data, tk)  # 로컬
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
-            raw = st.session_state.get("user_settings", {}).get("ticker_settings", "{}")
-            ts  = json.loads(raw) if isinstance(raw, str) else {}
-            if not isinstance(ts, dict):
-                ts = {}
+            raw = st.session_state.get("user_settings", {}).get("ticker_settings", "") or ""
+            ts  = _parse_ticker_settings_json(raw)
             ts[tk] = {**ts.get(tk, {}), **data}
             ts_json = json.dumps(ts, ensure_ascii=False)
-            _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            # session_state 먼저 업데이트 (GSheets 실패해도 화면엔 반영)
+            if "user_settings" not in st.session_state:
+                st.session_state.user_settings = {}
             st.session_state.user_settings["ticker_settings"] = ts_json
-        except Exception:
-            pass
+            # GSheets 저장
+            _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            return ""
+        except Exception as e:
+            return f"저장 중 오류: {e}"
+    return ""
 
-def _delete_ticker_setting(tk: str):
-    """ticker 설정 삭제 (로컬 + 클라우드)."""
+def _delete_ticker_setting(tk: str) -> str:
+    """ticker 설정 삭제 (로컬 + 클라우드). 성공 시 '' 반환, 실패 시 오류 메시지 반환."""
     full_cfg = _load_full_config()
     full_cfg.pop(tk, None)
     try:
@@ -155,14 +166,18 @@ def _delete_ticker_setting(tk: str):
         pass
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
-            raw = st.session_state.get("user_settings", {}).get("ticker_settings", "{}")
-            ts  = json.loads(raw) if isinstance(raw, str) else {}
+            raw = st.session_state.get("user_settings", {}).get("ticker_settings", "") or ""
+            ts  = _parse_ticker_settings_json(raw)
             ts.pop(tk, None)
             ts_json = json.dumps(ts, ensure_ascii=False)
-            _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            if "user_settings" not in st.session_state:
+                st.session_state.user_settings = {}
             st.session_state.user_settings["ticker_settings"] = ts_json
-        except Exception:
-            pass
+            _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            return ""
+        except Exception as e:
+            return f"삭제 중 오류: {e}"
+    return ""
 
 # ── gspread 인증 (로그인보다 먼저 정의되어야 함) ──────────────
 _GS_SCOPES = ["https://spreadsheets.google.com/feeds",
@@ -1955,13 +1970,16 @@ with tab3:
                 if _add_tk in _registered_tickers:
                     st.warning(f"⚠️ {_add_tk} 계좌가 이미 등록되어 있습니다.")
                 else:
-                    _save_ticker_setting(_add_tk, {
+                    _err = _save_ticker_setting(_add_tk, {
                         "a_buy": float(_add_a_buy), "a_sell": float(_add_a_sell),
                         "sell_ratio": float(_add_sr), "divisions": int(_add_div),
                         "os_start": str(_add_start), "os_capital": float(_add_capital),
                     })
-                    st.success(f"✅ {_add_tk} 계좌가 등록되었습니다!")
-                    st.rerun()
+                    if _err:
+                        st.error(f"❌ 계좌 등록 실패: {_err}")
+                    else:
+                        st.success(f"✅ {_add_tk} 계좌가 등록되었습니다!")
+                        st.rerun()
 
     # ── 등록된 계좌 표시 ──────────────────────────────────────
     if not _registered_tickers:
