@@ -23,13 +23,13 @@ _IS_CLOUD = (
 )
 
 # ── config 경로 ──────────────────────────────────────────────
-# 로컬: C:\Users\{이름}\.soxl\config.json  (각자 PC에 독립 저장)
+# 로컬: C:\Users\{이름}\.usd-avg\config.json  (각자 PC에 독립 저장)
 # 클라우드: 앱 디렉토리 (비민감 정보만, 공유 서버)
 _OLD_CONFIG = Path(__file__).parent / "config.json"   # 이전 경로 (마이그레이션용)
 if _IS_CLOUD:
     _CONFIG = _OLD_CONFIG
 else:
-    _CONFIG = Path.home() / ".soxl" / "config.json"
+    _CONFIG = Path.home() / ".usd-avg" / "config.json"
     _CONFIG.parent.mkdir(parents=True, exist_ok=True)
     # 이전 경로(앱 폴더)에 config가 있고 새 경로에 아직 없으면 자동 마이그레이션
     if _OLD_CONFIG.exists() and not _CONFIG.exists():
@@ -65,7 +65,7 @@ def save_config(data: dict, sensitive: bool = False):
 if _IS_CLOUD:
     _HISTORY_FILE = Path(__file__).parent / "order_history.csv"
 else:
-    _HISTORY_FILE = Path.home() / ".soxl" / "order_history.csv"
+    _HISTORY_FILE = Path.home() / ".usd-avg" / "order_history.csv"
 
 def load_order_history() -> "pd.DataFrame":
     if _HISTORY_FILE.exists():
@@ -164,14 +164,14 @@ def _hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
 
 # ── 앱 초기화 ──────────────────────────────────────────────────
-st.set_page_config(page_title="종가평균매매 백테스트", layout="wide")
+st.set_page_config(page_title="USD 종가평균매매 백테스트", layout="wide")
 
 # ── 클라우드: 로그인 게이트 ────────────────────────────────────
 if _IS_CLOUD:
     # 쿠키에서 자동 로그인 시도 (새로고침해도 로그인 유지)
     if not st.session_state.get("logged_in", False):
         try:
-            _cookie_user = _cookie_mgr.get("soxl_user")
+            _cookie_user = _cookie_mgr.get("usd_avg_user")
         except Exception:
             _cookie_user = None
         if _cookie_user:
@@ -223,7 +223,7 @@ if _IS_CLOUD:
                             # 30일 자동 로그인 쿠키 저장
                             try:
                                 _cookie_mgr.set(
-                                    "soxl_user", _u,
+                                    "usd_avg_user", _u,
                                     expires=datetime.now() + timedelta(days=30),
                                 )
                             except Exception:
@@ -253,7 +253,14 @@ st.title("📈 종가평균매매 백테스트 (LOC)")
 with st.sidebar:
     st.header("⚙️ 공통 설정")
 
-    ticker = st.text_input("종목코드 (Ticker)", "SOXL")
+    _PRESET_TICKERS = ["SOXL", "USD", "TQQQ", "직접입력"]
+    _ticker_select = st.selectbox("종목코드 (Ticker)", _PRESET_TICKERS, index=0)
+    if _ticker_select == "직접입력":
+        ticker = st.text_input("티커 직접 입력", placeholder="예: NVDA, SPY, QQQ, TSLA").strip().upper()
+        if not ticker:
+            st.warning("티커를 입력해주세요.")
+    else:
+        ticker = _ticker_select
 
     st.markdown("---")
     st.subheader("전략 파라미터")
@@ -322,7 +329,7 @@ with st.sidebar:
         st.caption(f"👤 **{st.session_state.username}** 으로 로그인 중")
         if st.button("🚪 로그아웃", use_container_width=True):
             try:
-                _cookie_mgr.remove("soxl_user")
+                _cookie_mgr.remove("usd_avg_user")
             except Exception:
                 pass
             for k in ("logged_in", "username", "user_settings"):
@@ -1380,7 +1387,8 @@ with tab2:
                 st.success(
                     f"🏆 최적 파라미터: a_buy=**{best['a_buy']:.4f}**, "
                     f"a_sell=**{best['a_sell']:.4f}**, "
-                    f"분할수=**{best['분할수']}**, 매도비율=**{best['매도비율']}%**"
+                    f"분할수=**{best.get('분할수', int(dv_min))}**, "
+                    f"매도비율=**{best.get('매도비율', int(sr_min))}%**"
                 )
 
                 _show_opt_results(res_df, _sort_col, None, None, ticker, "bayes")
@@ -1763,7 +1771,7 @@ with tab3:
             _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             _dl1.download_button(
                 "📥 CSV 다운로드", data=_csv_data,
-                file_name=f"soxl_daily_history_{_today_dl}.csv",
+                file_name=f"{ticker}_daily_history_{_today_dl}.csv",
                 mime="text/csv", key="dl_csv", use_container_width=True,
             )
             _buf = _io.BytesIO()
@@ -1771,7 +1779,7 @@ with tab3:
                 _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
             _dl2.download_button(
                 "📥 엑셀 다운로드", data=_buf.getvalue(),
-                file_name=f"soxl_daily_history_{_today_dl}.xlsx",
+                file_name=f"{ticker}_daily_history_{_today_dl}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="dl_xlsx", use_container_width=True,
             )
@@ -2024,23 +2032,23 @@ a   = 파라미터값
         # ── 맥락 참고 (정적 인사이트) ─────────────────────
         st.subheader("💡 전략 인사이트 & 맥락 참고")
         st.warning(
-            "**다음 내용은 2014~현재 SOXL 데이터 기반 백테스트 결과 해석입니다. "
+            f"**다음 내용은 선택한 종목({ticker}) 백테스트 결과 해석입니다. "
             "과거 성과가 미래 수익을 보장하지 않습니다.**"
         )
         with st.container(border=True):
-            st.markdown("""
-**왜 이 전략이 SOXL에서 잘 작동하나?**
-- **SOXL 자체가 2014~현재 구간에 폭발적으로 상승**한 종목이라 백테스트 수치가 좋게 나오는 구간입니다
+            st.markdown(f"""
+**왜 이 전략이 변동성 높은 종목에서 잘 작동하나?**
+- **장기 우상향 종목**일수록 백테스트 수치가 유리하게 나옵니다
 - 단순 Buy & Hold 대비 **변동성을 활용**하여 추가 수익을 창출하는 구조입니다
 - LOC 주문으로 **장 마감 기준가 확인 → 당일 체결**하여 신호 딜레이가 없습니다
 
 **주요 지표 해석**
-- **Calmar 1.8**: 실제로 매우 좋은 수준 (1.0 이상이면 우수, 2.0 이상이면 최상급)
-- **MDD ~26%**: 3배 레버리지 ETF 치고는 꽤 잘 관리된 수치 (미관리 SOXL은 -90%+ MDD도 경험)
-- **승률 ~85%**: 단기 매매 전략으로는 높은 승률 (단, 손익비도 함께 고려 필요)
+- **Calmar 1.0 이상**: 우수 / **2.0 이상**: 최상급
+- **MDD**: 레버리지 ETF는 MDD가 크게 나올 수 있으므로 감내 가능한 수준인지 확인
+- **승률**: 높은 승률도 손익비(평균 수익 vs 평균 손실)와 함께 고려 필요
 
 **주의사항**
-- 5티어 모두 체결되면 **현금이 거의 소진**되므로 추가 하락 시 매수 불가
+- 분할수(N)티어 모두 체결되면 **현금이 거의 소진**되므로 추가 하락 시 매수 불가
 - 급락장(코로나, 금리 충격 등)에서는 **MDD가 일시적으로 크게 확대**될 수 있음
 - 실제 거래에서는 **슬리피지, 수수료, 세금** 등이 수익률에 영향
 - 전략 파라미터를 너무 자주 바꾸면 과최적화(overfitting) 위험
