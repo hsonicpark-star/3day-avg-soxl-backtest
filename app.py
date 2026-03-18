@@ -2431,21 +2431,33 @@ with tab5:
 </div>
 """, unsafe_allow_html=True)
 
-        uc1, uc2 = st.columns([3, 1])
-        gs_url = uc1.text_input(
+        gs_url = st.text_input(
             "스프레드시트 URL",
             value=_cfg5.get("gs_url", "") if not _IS_CLOUD else _usercfg.get("gs_url", ""),
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="gs_url_input",
         )
-        gs_sheet = uc2.text_input(
-            "시트 이름",
-            value=_cfg5.get("gs_sheet", "종가평균") if not _IS_CLOUD else _usercfg.get("gs_sheet", "종가평균"),
-            placeholder="종가평균",
-            key="gs_sheet_input",
-        )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
+        # ── 종목별 시트 이름 매핑 ──────────────────────────────
+        _gs_tk_settings = _get_ticker_settings()
+        _gs_sheet_map   = {}   # {ticker: 입력된 시트 이름}
+
+        if _gs_tk_settings:
+            st.markdown("**📋 종목별 시트 이름 매핑**")
+            st.caption("각 종목 데이터를 기록할 구글시트의 탭(시트) 이름을 입력하세요.")
+            for _gs_tk, _gs_cfg in _gs_tk_settings.items():
+                _gs_default = _gs_cfg.get("gs_sheet", _gs_tk)
+                _gs_sheet_map[_gs_tk] = st.text_input(
+                    f"{_gs_tk} 시트 이름",
+                    value=_gs_default,
+                    placeholder=f"예: {_gs_tk}",
+                    key=f"gs_sheet_{_gs_tk}",
+                )
+        else:
+            st.info("📭 등록된 계좌가 없습니다. Tab3에서 계좌를 먼저 등록해주세요.")
+
+        st.write("")
         btn_col3, btn_col4, btn_col5 = st.columns(3)
         with btn_col3:
             if st.button("🔗 시트 연결 테스트", use_container_width=True, key="gs_test"):
@@ -2455,7 +2467,7 @@ with tab5:
                     try:
                         gc = _get_gspread_client()
                         sh = gc.open_by_url(gs_url)
-                        st.success(f"✅ 연결 성공! 시트명: **{sh.title}**")
+                        st.success(f"✅ 연결 성공! 스프레드시트: **{sh.title}**")
                     except Exception as e:
                         st.error(f"❌ 연결 실패: {e}")
 
@@ -2463,46 +2475,52 @@ with tab5:
             if st.button("📊 주문 시트 전송", use_container_width=True, key="gs_send", type="primary"):
                 if not gs_url:
                     st.warning("스프레드시트 URL을 먼저 입력해주세요.")
+                elif not _gs_tk_settings:
+                    st.warning("등록된 계좌가 없습니다.")
                 else:
-                    with st.spinner("시뮬레이션 & 시트 전송 중..."):
-                        try:
-                            _cfg_gs  = load_config()
-                            _gs_start = _cfg_gs.get("os_start", "2024-01-01")
-                            _gs_cap   = float(_cfg_gs.get("os_capital", initial_capital))
-                            try:    _gs_start_d = datetime.strptime(_gs_start, "%Y-%m-%d").date()
-                            except: _gs_start_d = datetime(2024, 1, 1).date()
-                            _today = datetime.today().date()
-                            _pdf = load_price_data(ticker, _gs_start_d, _today, "Yahoo Finance", None)
-                            _res = run_portfolio_for_ordersheet(
-                                _pdf, _gs_start_d, ticker,
-                                a_buy, a_sell, sell_ratio, divisions, _gs_cap,
-                            )
-                            if _res is None:
-                                st.error("시뮬레이션 데이터가 없습니다.")
-                            else:
-                                n = _write_orders_to_sheet(gs_url, gs_sheet, _res, sell_ratio, divisions, ticker)
-                                st.success(f"✅ 구글시트 '{gs_sheet}' 탭 L4에 {n}건 전송 완료!")
-                        except Exception as e:
-                            st.error(f"❌ 전송 실패: {e}")
+                    for _gs_tk, _gs_cfg in _gs_tk_settings.items():
+                        _sheet_name = _gs_sheet_map.get(_gs_tk, _gs_tk)
+                        with st.spinner(f"{_gs_tk} → '{_sheet_name}' 전송 중..."):
+                            try:
+                                try:    _gs_start_d = datetime.strptime(_gs_cfg.get("os_start", "2024-01-01"), "%Y-%m-%d").date()
+                                except: _gs_start_d = datetime(2024, 1, 1).date()
+                                _gs_cap  = float(_gs_cfg.get("os_capital", initial_capital))
+                                _gs_a_buy = float(_gs_cfg.get("a_buy",     -0.005))
+                                _gs_a_sell= float(_gs_cfg.get("a_sell",     0.009))
+                                _gs_sr    = float(_gs_cfg.get("sell_ratio", 100.0))
+                                _gs_div   = int  (_gs_cfg.get("divisions",  5))
+                                _pdf = load_price_data(_gs_tk, _gs_start_d, datetime.today().date(),
+                                                       "야후파이낸스 (yfinance)", None)
+                                _res = run_portfolio_for_ordersheet(
+                                    _pdf, _gs_start_d, _gs_tk,
+                                    _gs_a_buy, _gs_a_sell, _gs_sr, _gs_div, _gs_cap,
+                                )
+                                if _res is None:
+                                    st.error(f"❌ {_gs_tk}: 시뮬레이션 데이터가 없습니다.")
+                                else:
+                                    n = _write_orders_to_sheet(gs_url, _sheet_name, _res, _gs_sr, _gs_div, _gs_tk)
+                                    st.success(f"✅ {_gs_tk} → '{_sheet_name}' 탭 L4에 {n}건 전송 완료!")
+                            except Exception as e:
+                                st.error(f"❌ {_gs_tk} 전송 실패: {e}")
 
         with btn_col5:
             if st.button("💾 저장하기 ", use_container_width=True, key="gs_save", type="primary"):
                 if not gs_url:
                     st.warning("스프레드시트 URL을 입력해주세요.")
-                elif _IS_CLOUD:
-                    with st.spinner("저장 중..."):
+                else:
+                    # gs_url 글로벌 저장
+                    if _IS_CLOUD:
                         try:
-                            _save_user_settings_to_sheet(
-                                st.session_state.username,
-                                {"gs_url": gs_url, "gs_sheet": gs_sheet})
-                            st.session_state.user_settings.update(
-                                {"gs_url": gs_url, "gs_sheet": gs_sheet})
-                            st.success("✅ Google Sheets에 저장 완료!")
+                            _save_user_settings_to_sheet(st.session_state.username, {"gs_url": gs_url})
+                            st.session_state.user_settings.update({"gs_url": gs_url})
                         except Exception as e:
                             st.error(f"❌ 저장 실패: {e}")
-                else:
-                    save_config({"gs_url": gs_url, "gs_sheet": gs_sheet}, sensitive=True)
-                    st.success(f"✅ 저장 완료! `{_CONFIG}`")
+                    else:
+                        save_config({"gs_url": gs_url}, sensitive=True)
+                    # 종목별 시트 이름 저장 (ticker_settings에)
+                    for _gs_tk, _sheet_name in _gs_sheet_map.items():
+                        _save_ticker_setting(_gs_tk, {"gs_sheet": _sheet_name})
+                    st.success("✅ URL 및 종목별 시트 이름 저장 완료!")
 
     # ── 관리자 도구: 비밀번호 해시 생성 ───────────────────────
     st.write("")
