@@ -342,7 +342,9 @@ with st.sidebar:
 
     _cfg_sb = load_config(ticker)
     if _IS_CLOUD and st.session_state.get("logged_in"):
-        _usercfg_sb = st.session_state.get("user_settings", {})
+        # ticker별 저장 파라미터 우선 → 없으면 user_settings 폴백
+        _all_tk_cfg = _get_ticker_settings()
+        _usercfg_sb = _all_tk_cfg.get(ticker, st.session_state.get("user_settings", {}))
     else:
         _usercfg_sb = _cfg_sb
 
@@ -1657,6 +1659,15 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if _dc2.button("❌ 취소", key=f"del_cancel_{key_sfx}"):
             st.session_state[f"del_confirm_{key_sfx}"] = False
             st.rerun()
+
+    # ── 적용 파라미터 표시 ──
+    with st.container(border=True):
+        _p1, _p2, _p3, _p4 = st.columns(4)
+        _p1.metric("매수기준 (a_buy)",  f"{_a_buy:.4f}")
+        _p2.metric("매도기준 (a_sell)", f"{_a_sell:.4f}")
+        _p3.metric("매도비율",          f"{_sell_ratio:.0f}%")
+        _p4.metric("분할수",            f"{_divisions}회")
+        st.caption("📌 파라미터 변경은 사이드바 → 파라미터 저장 후 반영됩니다.")
 
     # ── 시작일 / 자본금 ──
     c1, c2 = st.columns(2)
