@@ -503,6 +503,7 @@ def run_backtest(
     avg_cost   = 0.0
     prev_asset = float(initial_capital)
     assets     = np.empty(len(closes))
+    cash_arr   = np.empty(len(closes))
     buy_count  = sell_count = 0
     sell_pnls  = []          # 매도별 손익률(%) 기록
     history    = [] if return_history else None
@@ -533,6 +534,7 @@ def run_backtest(
         asset = cash + shares * x
         prev_asset = asset
         assets[i]  = asset
+        cash_arr[i] = cash
 
         if return_history:
             history.append({
@@ -564,6 +566,8 @@ def run_backtest(
         win_count=_win_cnt, avg_pnl=_avg_pnl,
         max_pnl=_max_pnl, min_pnl=_min_pnl,
         assets=assets, dates=sim.index,
+        sell_pnls_list=sell_pnls,
+        cash_series=cash_arr,
     )
     if return_history:
         out["history"] = pd.DataFrame(history)
@@ -1004,6 +1008,47 @@ def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, s
         prev_asset = cash + shares * x
 
     return events
+
+
+def compute_sharpe_sortino(assets, risk_free_annual=0.04):
+    """샤프 비율 & 소르티노 비율 (연환산)."""
+    if len(assets) < 2:
+        return 0.0, 0.0
+    daily_ret = np.diff(assets) / assets[:-1]
+    rf_daily  = risk_free_annual / 252
+    excess    = daily_ret - rf_daily
+    std_all   = np.std(excess, ddof=1)
+    sharpe    = np.mean(excess) / std_all * np.sqrt(252) if std_all > 0 else 0.0
+    downside  = excess[excess < 0]
+    std_down  = np.std(downside, ddof=1) if len(downside) > 1 else 0.0
+    sortino   = np.mean(excess) / std_down * np.sqrt(252) if std_down > 0 else 0.0
+    return round(sharpe, 3), round(sortino, 3)
+
+
+def compute_rolling_perf(assets, window_days=252):
+    """롤링 CAGR(%) 및 MDD(%) 계산. 첫 window_days 구간은 NaN."""
+    n = len(assets)
+    rolling_cagr = np.full(n, np.nan)
+    rolling_mdd  = np.full(n, np.nan)
+    years = window_days / 252.0
+    for i in range(window_days, n):
+        sub  = assets[i - window_days: i + 1]
+        cagr = (sub[-1] / sub[0]) ** (1.0 / years) - 1.0
+        peak = np.maximum.accumulate(sub)
+        mdd  = ((sub - peak) / peak).min()
+        rolling_cagr[i] = round(cagr * 100, 2)
+        rolling_mdd[i]  = round(mdd * 100, 2)
+    return rolling_cagr, rolling_mdd
+
+
+def compute_bnh(price_df, start_date, end_date, initial_capital):
+    """Buy & Hold 자산 시계열 반환."""
+    sub = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date), "Close"].dropna()
+    if sub.empty:
+        return np.array([]), pd.DatetimeIndex([])
+    shares_bnh = initial_capital / float(sub.iloc[0])
+    assets_bnh = sub.values.astype(float) * shares_bnh
+    return assets_bnh, sub.index
 
 
 # ──────────────────────────────────────────────
@@ -1997,11 +2042,14 @@ a   = 파라미터값
 
         _hist = _res["history"]
 
-        sm1, sm2, sm3, sm4 = st.columns(4)
+        _sharpe, _sortino = compute_sharpe_sortino(_res["assets"])
+        sm1, sm2, sm3, sm4, sm5, sm6 = st.columns(6)
         sm1.metric("전체 CAGR",    f"{_res['cagr']*100:.2f}%")
         sm2.metric("전체 수익률",  f"{_res['total_return']*100:+.2f}%")
         sm3.metric("최대 MDD",     f"{_res['mdd']*100:.2f}%")
         sm4.metric("Calmar Ratio", f"{_res['calmar']:.3f}")
+        sm5.metric("Sharpe Ratio", f"{_sharpe:.3f}")
+        sm6.metric("Sortino Ratio",f"{_sortino:.3f}")
         st.divider()
 
         st.subheader("📅 연도별 성과")
@@ -2044,6 +2092,243 @@ a   = 파라미터값
                 f"{_res['min_pnl']:+.2f}%",
             ],
         }), hide_index=True, use_container_width=True)
+        st.divider()
+
+        # ── Buy & Hold 비교 ─────────────────────────────────
+        st.subheader("📈 Buy & Hold 비교")
+        st.caption("같은 기간 종목을 단순 보유했을 때와 전략 성과를 비교합니다.")
+        _bnh_assets, _bnh_dates = compute_bnh(_pdf, s_date, e_date, init_cap)
+        if len(_bnh_assets) > 0:
+            _str_dates = [str(d.date()) for d in _res["dates"]]
+            _bnh_dates_str = [str(d.date()) for d in _bnh_dates]
+            _fig_bnh = go.Figure()
+            _fig_bnh.add_trace(go.Scatter(
+                x=_str_dates, y=_res["assets"].tolist(),
+                name="종가평균매매 전략", line=dict(color="#1565C0", width=2),
+            ))
+            _fig_bnh.add_trace(go.Scatter(
+                x=_bnh_dates_str, y=_bnh_assets.tolist(),
+                name="Buy & Hold", line=dict(color="#EF5350", width=2, dash="dot"),
+            ))
+            _fig_bnh.add_hline(y=init_cap, line_dash="dash", line_color="#aaa",
+                               annotation_text="시작 자본")
+            _bnh_ret  = (_bnh_assets[-1] / _bnh_assets[0] - 1) * 100
+            _bnh_yrs  = (pd.to_datetime(e_date) - pd.to_datetime(s_date)).days / 365.25
+            _bnh_cagr = ((_bnh_assets[-1] / _bnh_assets[0]) ** (1 / _bnh_yrs) - 1) * 100 if _bnh_yrs > 0 else 0
+            _fig_bnh.update_layout(
+                title=f"전략 vs Buy&Hold │ 전략 수익 {_res['total_return']*100:+.1f}% vs B&H {_bnh_ret:+.1f}%",
+                yaxis_title="자산 ($)", height=380,
+                legend=dict(orientation="h", y=1.08),
+            )
+            st.plotly_chart(_fig_bnh, use_container_width=True)
+            _bc1, _bc2, _bc3, _bc4 = st.columns(4)
+            _bc1.metric("전략 총수익",    f"{_res['total_return']*100:+.1f}%")
+            _bc2.metric("B&H 총수익",     f"{_bnh_ret:+.1f}%")
+            _bc3.metric("전략 CAGR",      f"{_res['cagr']*100:.1f}%")
+            _bc4.metric("B&H CAGR",       f"{_bnh_cagr:.1f}%")
+        st.divider()
+
+        # ── 드로다운 (Underwater) 차트 ───────────────────────
+        st.subheader("🌊 드로다운 (Underwater) 분석")
+        st.caption("고점 대비 현재 손실 비율 추이. 얼마나 깊이, 얼마나 오래 손실 구간에 있었는지 보여줍니다.")
+        _peak_arr = np.maximum.accumulate(_res["assets"])
+        _dd_arr   = (_res["assets"] - _peak_arr) / _peak_arr * 100
+        _str_dates2 = [str(d.date()) for d in _res["dates"]]
+        _fig_dd = go.Figure()
+        _fig_dd.add_trace(go.Scatter(
+            x=_str_dates2, y=_dd_arr.tolist(),
+            fill="tozeroy", name="드로다운(%)",
+            line=dict(color="#EF5350", width=1),
+            fillcolor="rgba(239,83,80,0.25)",
+        ))
+        _fig_dd.add_hline(y=0, line_color="#888", line_width=1)
+        _fig_dd.update_layout(
+            yaxis_title="드로다운 (%)", height=300,
+            yaxis=dict(tickformat=".1f"),
+        )
+        st.plotly_chart(_fig_dd, use_container_width=True)
+        # 드로다운 구간 TOP5
+        _dd_series = pd.Series(_dd_arr, index=_res["dates"])
+        _in_dd = False; _dd_start = None; _dd_periods = []
+        for _di, (_ddate, _dval) in enumerate(_dd_series.items()):
+            if _dval < 0 and not _in_dd:
+                _in_dd = True; _dd_start = _ddate; _dd_peak_val = _res["assets"][_di]
+            elif _dval == 0 and _in_dd:
+                _in_dd = False
+                _sub_dd = _dd_series[_dd_start:_ddate]
+                _dd_periods.append({
+                    "시작일": str(_dd_start.date()), "회복일": str(_ddate.date()),
+                    "기간(일)": (_ddate - _dd_start).days,
+                    "최대낙폭(%)": round(float(_sub_dd.min()), 2),
+                })
+        if _dd_periods:
+            _dd_df = pd.DataFrame(_dd_periods).nsmallest(5, "최대낙폭(%)").reset_index(drop=True)
+            _dd_df.index += 1
+            st.markdown("**Top 5 최대 낙폭 구간**")
+            st.dataframe(_dd_df.style.format({"최대낙폭(%)": "{:.2f}%"}),
+                         hide_index=False, use_container_width=True)
+        st.divider()
+
+        # ── 롤링 성과 분석 ───────────────────────────────────
+        st.subheader("📉 롤링 성과 분석")
+        st.caption("구간별 성과 추이. 특정 시기에만 좋은 게 아닌지 검증합니다.")
+        _roll_tabs = st.tabs(["1년 롤링", "2년 롤링", "3년 롤링"])
+        for _rwin, _rtab in zip([252, 504, 756], _roll_tabs):
+            with _rtab:
+                _rc, _rm = compute_rolling_perf(_res["assets"], _rwin)
+                _valid = ~np.isnan(_rc)
+                if _valid.sum() > 0:
+                    _rdates = [str(d.date()) for d, v in zip(_res["dates"], _valid) if v]
+                    _fig_roll = go.Figure()
+                    _fig_roll.add_trace(go.Scatter(
+                        x=_rdates, y=_rc[_valid].tolist(),
+                        name="롤링 CAGR(%)", line=dict(color="#1565C0", width=2), yaxis="y1",
+                    ))
+                    _fig_roll.add_trace(go.Scatter(
+                        x=_rdates, y=_rm[_valid].tolist(),
+                        name="롤링 MDD(%)", line=dict(color="#EF5350", width=1.5, dash="dot"), yaxis="y2",
+                    ))
+                    _fig_roll.add_hline(y=0, line_dash="dash", line_color="#aaa", yref="y1")
+                    _fig_roll.update_layout(
+                        yaxis=dict(title="롤링 CAGR (%)", side="left"),
+                        yaxis2=dict(title="롤링 MDD (%)", side="right", overlaying="y"),
+                        legend=dict(orientation="h", y=1.08),
+                        height=340,
+                    )
+                    st.plotly_chart(_fig_roll, use_container_width=True)
+                    _r1, _r2, _r3 = st.columns(3)
+                    _r1.metric("평균 CAGR", f"{np.nanmean(_rc):+.1f}%")
+                    _r2.metric("최고 CAGR", f"{np.nanmax(_rc):+.1f}%")
+                    _r3.metric("최저 CAGR", f"{np.nanmin(_rc):+.1f}%")
+                else:
+                    st.info(f"분석 기간이 {_rwin // 252}년보다 짧아 롤링 분석이 불가합니다.")
+        st.divider()
+
+        # ── 수익률 분포 분석 ─────────────────────────────────
+        st.subheader("📊 매도 손익률 분포")
+        st.caption("매도 시마다 발생한 손익률의 분포. 수익/손실의 패턴을 분석합니다.")
+        _pnl_list = _res.get("sell_pnls_list", [])
+        if _pnl_list:
+            _pnl_arr = np.array(_pnl_list)
+            _skew    = float(pd.Series(_pnl_arr).skew())
+            _kurt    = float(pd.Series(_pnl_arr).kurtosis())
+            _fig_pnl = go.Figure()
+            _fig_pnl.add_trace(go.Histogram(
+                x=_pnl_arr.tolist(), nbinsx=30,
+                marker_color=["#EF5350" if v < 0 else "#43A047" for v in _pnl_arr],
+                name="손익률 빈도",
+            ))
+            _fig_pnl.add_vline(x=0, line_dash="dash", line_color="#333")
+            _fig_pnl.add_vline(x=float(np.mean(_pnl_arr)), line_dash="dot",
+                               line_color="#1565C0",
+                               annotation_text=f"평균 {np.mean(_pnl_arr):+.2f}%",
+                               annotation_position="top right")
+            _fig_pnl.update_layout(
+                xaxis_title="손익률 (%)", yaxis_title="빈도 (회)", height=320,
+            )
+            st.plotly_chart(_fig_pnl, use_container_width=True)
+            _pd1, _pd2, _pd3, _pd4 = st.columns(4)
+            _pd1.metric("평균 손익률",  f"{np.mean(_pnl_arr):+.2f}%")
+            _pd2.metric("중앙값",       f"{np.median(_pnl_arr):+.2f}%")
+            _pd3.metric("왜도 (Skew)",  f"{_skew:.3f}",
+                        help="양수=우측 꼬리(큰 수익 가끔), 음수=좌측 꼬리(큰 손실 가끔)")
+            _pd4.metric("첨도 (Kurt)",  f"{_kurt:.3f}",
+                        help="높을수록 극단값(큰 수익/손실) 빈도 높음")
+        else:
+            st.info("매도 이력이 없어 분포 분석이 불가합니다.")
+        st.divider()
+
+        # ── 현금 활용률 & 매매 타이밍 ────────────────────────
+        st.subheader("💵 현금 활용률 & 매매 타이밍 패턴")
+        _cash_series = _res.get("cash_series", np.array([]))
+        if len(_cash_series) > 0 and len(_res["assets"]) > 0:
+            _inv_ratio = (1 - _cash_series / _res["assets"]) * 100  # 투자 비율(%)
+            _cu1, _cu2, _cu3 = st.columns(3)
+            _cu1.metric("평균 투자 비율", f"{np.mean(_inv_ratio):.1f}%",
+                        help="현금이 아닌 주식에 투자된 비율의 평균")
+            _cu2.metric("최대 투자 비율", f"{np.max(_inv_ratio):.1f}%")
+            _cu3.metric("현금 보유 비율", f"{100 - np.mean(_inv_ratio):.1f}%")
+            _fig_cu = go.Figure()
+            _fig_cu.add_trace(go.Scatter(
+                x=[str(d.date()) for d in _res["dates"]],
+                y=_inv_ratio.tolist(),
+                fill="tozeroy", name="투자 비율(%)",
+                line=dict(color="#1565C0", width=1),
+                fillcolor="rgba(21,101,192,0.2)",
+            ))
+            _fig_cu.update_layout(
+                yaxis_title="주식 투자 비율 (%)", yaxis=dict(range=[0, 105]),
+                height=280,
+            )
+            st.plotly_chart(_fig_cu, use_container_width=True)
+
+        if not _hist.empty:
+            _buy_hist  = _hist[_hist["매매"] == "BUY"].copy()
+            _sell_hist = _hist[_hist["매매"] == "SELL"].copy()
+            if not _buy_hist.empty:
+                _buy_hist["요일"] = pd.to_datetime(_buy_hist["날짜"]).dt.day_name()
+                _sell_hist["요일"] = pd.to_datetime(_sell_hist["날짜"]).dt.day_name()
+                _buy_hist["월"]  = pd.to_datetime(_buy_hist["날짜"]).dt.month
+                _sell_hist["월"] = pd.to_datetime(_sell_hist["날짜"]).dt.month
+                _dow_order = ["Monday","Tuesday","Wednesday","Thursday","Friday"]
+                _buy_dow   = _buy_hist["요일"].value_counts().reindex(_dow_order, fill_value=0)
+                _sell_dow  = _sell_hist["요일"].value_counts().reindex(_dow_order, fill_value=0)
+                _dow_labels = ["월","화","수","목","금"]
+                _fig_dow = go.Figure()
+                _fig_dow.add_trace(go.Bar(x=_dow_labels, y=_buy_dow.values.tolist(),
+                                          name="매수", marker_color="#EF5350"))
+                _fig_dow.add_trace(go.Bar(x=_dow_labels, y=_sell_dow.values.tolist(),
+                                          name="매도", marker_color="#43A047"))
+                _fig_dow.update_layout(barmode="group", title="요일별 매매 빈도",
+                                       yaxis_title="횟수", height=300)
+                _buy_mon  = _buy_hist["월"].value_counts().sort_index()
+                _sell_mon = _sell_hist["월"].value_counts().sort_index()
+                _fig_mon = go.Figure()
+                _fig_mon.add_trace(go.Bar(x=[f"{m}월" for m in _buy_mon.index],
+                                          y=_buy_mon.values.tolist(),
+                                          name="매수", marker_color="#EF5350"))
+                _fig_mon.add_trace(go.Bar(x=[f"{m}월" for m in _sell_mon.index],
+                                          y=_sell_mon.values.tolist(),
+                                          name="매도", marker_color="#43A047"))
+                _fig_mon.update_layout(barmode="group", title="월별 매매 빈도",
+                                       yaxis_title="횟수", height=300)
+                _tc1, _tc2 = st.columns(2)
+                with _tc1:
+                    st.plotly_chart(_fig_dow, use_container_width=True)
+                with _tc2:
+                    st.plotly_chart(_fig_mon, use_container_width=True)
+        st.divider()
+
+        # ── 파라미터 민감도 히트맵 ───────────────────────────
+        st.subheader("🎛️ 파라미터 민감도 분석")
+        st.caption("현재 a_buy · a_sell 주변의 Calmar Ratio 분포. 과최적화 여부를 확인합니다.")
+        with st.expander("🔍 민감도 히트맵 보기 (클릭하여 실행)", expanded=False):
+            _n_steps = 5
+            _buy_range  = np.linspace(a_b - 0.005, a_b + 0.005, _n_steps)
+            _sell_range = np.linspace(a_s - 0.005, a_s + 0.005, _n_steps)
+            _heat = np.zeros((_n_steps, _n_steps))
+            with st.spinner("민감도 분석 중... (25회 시뮬레이션)"):
+                for _bi, _bv in enumerate(_buy_range):
+                    for _si, _sv in enumerate(_sell_range):
+                        _hr = run_backtest(_pdf, s_date, e_date, _bv, _sv, sr, div, init_cap)
+                        _heat[_bi][_si] = _hr["calmar"] if _hr else 0.0
+            _buy_labels  = [f"{v*100:.2f}%" for v in _buy_range]
+            _sell_labels = [f"{v*100:.2f}%" for v in _sell_range]
+            _fig_heat = px.imshow(
+                _heat, x=_sell_labels, y=_buy_labels,
+                color_continuous_scale="RdYlGn",
+                labels={"x": "a_sell", "y": "a_buy", "color": "Calmar"},
+                text_auto=".2f", aspect="auto",
+                title="Calmar Ratio 히트맵 (a_buy × a_sell)",
+            )
+            _fig_heat.add_annotation(
+                x=f"{a_s*100:.2f}%", y=f"{a_b*100:.2f}%",
+                text="★ 현재", showarrow=True, arrowhead=2,
+                font=dict(color="white", size=13, family="Arial Black"),
+            )
+            _fig_heat.update_layout(height=380)
+            st.plotly_chart(_fig_heat, use_container_width=True)
+            st.caption("녹색일수록 Calmar Ratio가 높습니다. 현재 파라미터(★) 주변이 고르게 녹색이면 과최적화 위험이 낮습니다.")
         st.divider()
 
         # ── 티어별 매수 사이클 분석 ────────────────────────────
@@ -2239,6 +2524,59 @@ a   = 파라미터값
                     int  (_pcfg.get("divisions",   divisions)),
                     initial_capital, start_date, end_date,
                 )
+
+            # ── 종목 간 비교 (2개 이상 등록 시) ─────────────────
+            if len(_tk_list) > 1:
+                st.divider()
+                st.subheader("🔄 종목 간 성과 비교")
+                st.caption("등록된 종목들의 수익 곡선 및 지표를 한 화면에서 비교합니다.")
+                _colors = ["#1565C0", "#E53935", "#2E7D32", "#F57F17", "#6A1B9A"]
+                _fig_cmp = go.Figure()
+                _cmp_rows = []
+                for _ci, _ctk in enumerate(_tk_list):
+                    _ccfg = _perf_tk_settings[_ctk]
+                    _cpdf = load_price_data(_ctk, start_date, end_date, "야후파이낸스 (yfinance)", None)
+                    if _cpdf.empty:
+                        continue
+                    _cr = run_backtest(
+                        _cpdf, start_date, end_date,
+                        float(_ccfg.get("a_buy",      a_buy)),
+                        float(_ccfg.get("a_sell",     a_sell)),
+                        float(_ccfg.get("sell_ratio", sell_ratio)),
+                        int  (_ccfg.get("divisions",  divisions)),
+                        initial_capital,
+                    )
+                    if not _cr:
+                        continue
+                    _sharpe_c, _sortino_c = compute_sharpe_sortino(_cr["assets"])
+                    _norm = _cr["assets"] / initial_capital * 100
+                    _fig_cmp.add_trace(go.Scatter(
+                        x=[str(d.date()) for d in _cr["dates"]],
+                        y=_norm.tolist(),
+                        name=_ctk,
+                        line=dict(color=_colors[_ci % len(_colors)], width=2),
+                    ))
+                    _cmp_rows.append({
+                        "종목": _ctk,
+                        "총수익률": f"{_cr['total_return']*100:+.1f}%",
+                        "CAGR": f"{_cr['cagr']*100:.1f}%",
+                        "MDD": f"{_cr['mdd']*100:.1f}%",
+                        "Calmar": f"{_cr['calmar']:.3f}",
+                        "Sharpe": f"{_sharpe_c:.3f}",
+                        "Sortino": f"{_sortino_c:.3f}",
+                        "승률": f"{_cr['win_count']/_cr['sell_count']*100:.1f}%" if _cr['sell_count'] > 0 else "-",
+                    })
+                _fig_cmp.add_hline(y=100, line_dash="dash", line_color="#aaa",
+                                   annotation_text="시작(100)")
+                _fig_cmp.update_layout(
+                    title="종목별 정규화 수익 곡선 (시작=100)",
+                    yaxis_title="자산 지수 (시작=100)",
+                    legend=dict(orientation="h", y=1.08),
+                    height=400,
+                )
+                st.plotly_chart(_fig_cmp, use_container_width=True)
+                if _cmp_rows:
+                    st.dataframe(pd.DataFrame(_cmp_rows), hide_index=True, use_container_width=True)
         else:
             # 등록된 계좌 없으면 → 사이드바 ticker로 분석 (기존 동작)
             _render_perf_analysis(
