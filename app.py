@@ -1427,6 +1427,40 @@ with tab3:
     os_capital = c2.number_input("시작 자본 ($)", value=_default_capital,
                                   step=1000.0, key="os_capital")
 
+    # ── 자본 조정 (증액/감액) ──────────────────────────────
+    with st.expander("💰 자본 조정 (증액 / 감액)"):
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 적용하면 시작 자본이 즉시 업데이트됩니다.")
+        _adj_c1, _adj_c2 = st.columns([2, 1])
+        _adj_amount = _adj_c1.number_input(
+            "조정 금액 ($)",
+            value=0.0, step=500.0,
+            help="증액: 양수 입력 (예: 3000) · 감액: 음수 입력 (예: -3000)",
+            key="capital_adj_input"
+        )
+        _adj_c1.caption(f"적용 후 자본금: **${_default_capital + _adj_amount:,.0f}** "
+                        f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='}"
+                        f" ${abs(_adj_amount):,.0f})")
+        if _adj_c2.button("💰 적용", use_container_width=True, key="apply_adj",
+                          disabled=(_adj_amount == 0)):
+            _new_capital = _default_capital + _adj_amount
+            if _new_capital <= 0:
+                st.error("자본금은 0보다 커야 합니다.")
+            else:
+                # URL, config, 시트에 저장
+                st.query_params["capital"] = str(int(_new_capital))
+                save_config({"os_capital": _new_capital})
+                if _IS_CLOUD and st.session_state.get("logged_in"):
+                    try:
+                        _save_user_settings_to_sheet(
+                            st.session_state.username,
+                            {"os_capital": float(_new_capital)}
+                        )
+                        st.session_state.user_settings.update({"os_capital": float(_new_capital)})
+                    except Exception:
+                        pass
+                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다. 주문표를 다시 로드해주세요.")
+                st.rerun()
+
     if st.button("📋 주문표 로드", type="primary", key="run_os"):
         # URL 파라미터 & config.json 동시 저장
         st.query_params["start"]   = str(os_start)
