@@ -1865,187 +1865,122 @@ a   = 파라미터값
 
     # ── 성과 분석 ──────────────────────────────
     st.subheader("📊 전략 성과 분석")
-    st.caption("사이드바의 공통 설정(티커 · 파라미터 · 기간 · 초기 자본)을 기준으로 분석합니다.")
 
-    if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
-        with st.spinner("데이터 로드 및 분석 중..."):
-            price_df_perf = load_price_data(ticker, start_date, end_date, data_source, excel_file)
+    def _render_perf_analysis(tk, a_b, a_s, sr, div, init_cap, s_date, e_date):
+        """ticker 하나의 성과 분석 전체를 렌더링."""
+        with st.spinner(f"{tk} 데이터 로드 및 분석 중..."):
+            _pdf = load_price_data(tk, s_date, e_date, "야후파이낸스 (yfinance)", None)
+        if _pdf.empty:
+            st.error(f"{tk}: 가격 데이터를 불러오지 못했습니다.")
+            return
 
-        if price_df_perf.empty:
-            st.error("가격 데이터를 불러오지 못했습니다.")
-            st.stop()
+        _res = run_backtest(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, return_history=True)
+        if _res is None:
+            st.warning(f"{tk}: 선택된 기간 내 거래 데이터가 없습니다.")
+            return
 
-        res_p = run_backtest(
-            price_df_perf, start_date, end_date,
-            a_buy, a_sell, sell_ratio, divisions, initial_capital,
-            return_history=True,
-        )
-        if res_p is None:
-            st.warning("선택된 기간 내 거래 데이터가 없습니다.")
-            st.stop()
+        _hist = _res["history"]
 
-        hist = res_p["history"]
-
-        # 전체 요약
         sm1, sm2, sm3, sm4 = st.columns(4)
-        sm1.metric("전체 CAGR",    f"{res_p['cagr']*100:.2f}%")
-        sm2.metric("전체 수익률",  f"{res_p['total_return']*100:+.2f}%")
-        sm3.metric("최대 MDD",     f"{res_p['mdd']*100:.2f}%")
-        sm4.metric("Calmar Ratio", f"{res_p['calmar']:.3f}")
-
+        sm1.metric("전체 CAGR",    f"{_res['cagr']*100:.2f}%")
+        sm2.metric("전체 수익률",  f"{_res['total_return']*100:+.2f}%")
+        sm3.metric("최대 MDD",     f"{_res['mdd']*100:.2f}%")
+        sm4.metric("Calmar Ratio", f"{_res['calmar']:.3f}")
         st.divider()
 
-        # 연도별 성과 테이블
         st.subheader("📅 연도별 성과")
-        annual_df = compute_annual_stats(hist, initial_capital)
-
+        _annual = compute_annual_stats(_hist, init_cap)
         def _color_ret(val):
             if isinstance(val, (int, float)):
-                if val > 0:  return "color: #2e7d32; font-weight:bold"
-                if val < 0:  return "color: #c62828; font-weight:bold"
+                if val > 0: return "color: #2e7d32; font-weight:bold"
+                if val < 0: return "color: #c62828; font-weight:bold"
             return ""
-
         st.dataframe(
-            annual_df.style
-                .applymap(_color_ret, subset=["연간수익률(%)"])
-                .format({"연간수익률(%)": "{:+.2f}%", "MDD(%)": "{:.2f}%"}),
-            hide_index=True, use_container_width=True,
-        )
-
+            _annual.style.applymap(_color_ret, subset=["연간수익률(%)"])
+                         .format({"연간수익률(%)": "{:+.2f}%", "MDD(%)": "{:.2f}%"}),
+            hide_index=True, use_container_width=True)
         st.divider()
 
-        # 월별 수익률 히트맵
         st.subheader("🗓️ 월별 수익률 히트맵")
-        monthly_pivot = compute_monthly_pivot(hist, initial_capital)
-
-        fig_m = px.imshow(
-            monthly_pivot,
-            color_continuous_scale="RdYlGn",
-            color_continuous_midpoint=0,
-            text_auto=".1f",
-            labels={"x": "월", "y": "연도", "color": "수익률(%)"},
-            aspect="auto",
-        )
-        fig_m.update_layout(
-            height=max(320, len(monthly_pivot) * 38 + 120),
-            coloraxis_colorbar=dict(title="수익률(%)"),
-        )
-        st.plotly_chart(fig_m, use_container_width=True)
-
+        _mp = compute_monthly_pivot(_hist, init_cap)
+        _fig_m = px.imshow(_mp, color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
+                           text_auto=".1f", labels={"x": "월", "y": "연도", "color": "수익률(%)"},
+                           aspect="auto")
+        _fig_m.update_layout(height=max(320, len(_mp) * 38 + 120),
+                              coloraxis_colorbar=dict(title="수익률(%)"))
+        st.plotly_chart(_fig_m, use_container_width=True)
         st.divider()
 
-        # ── 종합 성과 요약 테이블 ──────────────────────────
         st.subheader("📋 종합 성과 요약")
-        _final_asset = res_p.get("final_asset", initial_capital)
-
-        _sc   = res_p['sell_count']
-        _wc   = res_p['win_count']
-        _summary_data = {
+        _fa = _res.get("final_asset", init_cap)
+        _sc, _wc = _res['sell_count'], _res['win_count']
+        st.dataframe(pd.DataFrame({
             "항목": ["시작 자본", "최종 자산", "총 수익률", "CAGR (연복리)",
                      "MDD", "Calmar Ratio", "총 매도 횟수", "승률",
                      "평균 손익률", "최대 단일 수익", "최대 단일 손실"],
             "수치": [
-                f"${initial_capital:,.0f}",
-                f"${_final_asset:,.0f}",
-                f"{res_p['total_return']*100:+.2f}%",
-                f"{res_p['cagr']*100:.1f}%",
-                f"{res_p['mdd']*100:.1f}%",
-                f"{res_p['calmar']:.3f}",
+                f"${init_cap:,.0f}", f"${_fa:,.0f}",
+                f"{_res['total_return']*100:+.2f}%", f"{_res['cagr']*100:.1f}%",
+                f"{_res['mdd']*100:.1f}%", f"{_res['calmar']:.3f}",
                 f"{_sc}회",
                 f"{_wc/_sc*100:.1f}%  ({_wc}승 {_sc-_wc}패)" if _sc > 0 else "-",
-                f"{res_p['avg_pnl']:+.2f}%",
-                f"{res_p['max_pnl']:+.2f}%",
-                f"{res_p['min_pnl']:+.2f}%",
+                f"{_res['avg_pnl']:+.2f}%", f"{_res['max_pnl']:+.2f}%",
+                f"{_res['min_pnl']:+.2f}%",
             ],
-        }
-        st.dataframe(pd.DataFrame(_summary_data), hide_index=True, use_container_width=True)
-
+        }), hide_index=True, use_container_width=True)
         st.divider()
 
-        # ── 5티어 완전 투자 분석 ──────────────────────────
-        st.subheader(f"🎯 {divisions}티어 완전 투자 분석")
-        st.caption(f"분할 매수 {divisions}회가 모두 체결된 사이클 분석")
-
+        st.subheader(f"🎯 {div}티어 완전 투자 분석")
+        st.caption(f"분할 매수 {div}회가 모두 체결된 사이클 분석")
         with st.spinner("5티어 분석 중..."):
-            _t5_events = run_5tier_analysis(
-                price_df_perf, start_date, end_date,
-                a_buy, a_sell, sell_ratio, divisions, initial_capital,
-            )
-
-        if _t5_events:
-            _df_t5 = pd.DataFrame(_t5_events)
-            _t5_total   = len(_df_t5)
-            _t5_wins    = int((_df_t5["손익률"] > 0).sum())
-            _t5_avg_hold = _df_t5["보유일수"].mean()
-            _t5_max_hold = int(_df_t5["보유일수"].max())
-
-            # 요약 지표
-            _c1, _c2, _c3, _c4 = st.columns(4)
-            _c1.metric("발생 횟수", f"{_t5_total}회")
-            _c2.metric("승률", f"{_t5_wins/_t5_total*100:.1f}%  ({_t5_wins}승 {_t5_total-_t5_wins}패)")
-            _c3.metric("평균 보유기간", f"{_t5_avg_hold:.1f}일")
-            _c4.metric("최장 보유기간", f"{_t5_max_hold}일")
-
-            # 인사이트 박스
+            _t5 = run_5tier_analysis(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap)
+        if _t5:
+            _df5 = pd.DataFrame(_t5)
+            _tot, _wins = len(_df5), int((_df5["손익률"] > 0).sum())
+            _avg_h, _max_h = _df5["보유일수"].mean(), int(_df5["보유일수"].max())
+            _tc1, _tc2, _tc3, _tc4 = st.columns(4)
+            _tc1.metric("발생 횟수",   f"{_tot}회")
+            _tc2.metric("승률",        f"{_wins/_tot*100:.1f}%  ({_wins}승 {_tot-_wins}패)")
+            _tc3.metric("평균 보유기간", f"{_avg_h:.1f}일")
+            _tc4.metric("최장 보유기간", f"{_max_h}일")
             st.info(
-                f"**'{divisions}티어 완전 매수 후 무한 보유' 걱정은 거의 불필요합니다.**\n\n"
-                f"최장 보유일은 **{_t5_max_hold}일(캘린더 기준)**에 불과합니다. "
-                f"매도 조건이 '직전 2일 평균 대비 +{a_sell*100:.1f}%'이기 때문에, "
+                f"**'{div}티어 완전 매수 후 무한 보유' 걱정은 거의 불필요합니다.**\n\n"
+                f"최장 보유일은 **{_max_h}일**에 불과합니다. "
+                f"매도 조건이 '직전 2일 평균 대비 +{a_s*100:.1f}%'이기 때문에 "
                 f"주가가 조금만 반등해도 바로 매도가 트리거됩니다.\n\n"
-                f"전체 {_t5_total}회 중 **{_t5_wins}회 수익({_t5_wins/_t5_total*100:.0f}%)** 으로 마감했습니다."
+                f"전체 {_tot}회 중 **{_wins}회 수익({_wins/_tot*100:.0f}%)** 으로 마감했습니다."
             )
-
-            # TOP 10 가장 긴 보유기간
-            st.markdown(f"**TOP 10 — {divisions}번째 티어 체결 후 가장 긴 보유 기간**")
-            _top10 = _df_t5.nlargest(10, "보유일수").reset_index(drop=True)
-            _top10.index += 1
-
             def _style_t5(row):
                 return ["color: #2e7d32; font-weight:bold" if row["손익률"] > 0
                         else "color: #c62828; font-weight:bold" if row["손익률"] < 0
                         else "" for _ in row]
-
-            st.dataframe(
-                _top10.style
-                    .apply(_style_t5, axis=1)
-                    .format({"5번째 매수가": "${:.2f}", "평균단가": "${:.2f}",
-                             "매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
-                hide_index=False, use_container_width=True,
-            )
-
-            # 보유기간 분포 차트
-            _fig_hold = px.histogram(
-                _df_t5, x="보유일수", nbins=20,
-                title=f"{divisions}티어 완전 투자 후 보유기간 분포",
-                labels={"보유일수": "보유기간 (일)", "count": "횟수"},
-                color_discrete_sequence=["#5C6BC0"],
-            )
-            _fig_hold.update_layout(height=320, bargap=0.1)
-            st.plotly_chart(_fig_hold, use_container_width=True)
-
-            # 전체 목록 (펼치기)
-            with st.expander(f"📋 전체 {_t5_total}회 상세 내역 보기"):
-                st.dataframe(
-                    _df_t5.style
-                        .apply(_style_t5, axis=1)
-                        .format({"5번째 매수가": "${:.2f}", "평균단가": "${:.2f}",
-                                 "매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
-                    hide_index=True, use_container_width=True,
-                    height=min(38 + 35 * len(_df_t5), 600),
-                )
+            st.markdown(f"**TOP 10 — {div}번째 티어 체결 후 가장 긴 보유 기간**")
+            _top10 = _df5.nlargest(10, "보유일수").reset_index(drop=True)
+            _top10.index += 1
+            st.dataframe(_top10.style.apply(_style_t5, axis=1)
+                                      .format({"5번째 매수가": "${:.2f}", "평균단가": "${:.2f}",
+                                               "매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
+                         hide_index=False, use_container_width=True)
+            _fig_h = px.histogram(_df5, x="보유일수", nbins=20,
+                                   title=f"{div}티어 완전 투자 후 보유기간 분포",
+                                   labels={"보유일수": "보유기간 (일)", "count": "횟수"},
+                                   color_discrete_sequence=["#5C6BC0"])
+            _fig_h.update_layout(height=320, bargap=0.1)
+            st.plotly_chart(_fig_h, use_container_width=True)
+            with st.expander(f"📋 전체 {_tot}회 상세 내역 보기"):
+                st.dataframe(_df5.style.apply(_style_t5, axis=1)
+                                        .format({"5번째 매수가": "${:.2f}", "평균단가": "${:.2f}",
+                                                 "매도가": "${:.2f}", "손익률": "{:+.2f}%"}),
+                             hide_index=True, use_container_width=True,
+                             height=min(38 + 35 * len(_df5), 600))
         else:
-            st.info(f"선택 기간 내 {divisions}티어 완전 투자 이벤트가 없습니다.")
-
+            st.info(f"선택 기간 내 {div}티어 완전 투자 이벤트가 없습니다.")
         st.divider()
 
-        # ── 맥락 참고 (정적 인사이트) ─────────────────────
         st.subheader("💡 전략 인사이트 & 맥락 참고")
-        st.warning(
-            f"**다음 내용은 선택한 종목({ticker}) 백테스트 결과 해석입니다. "
-            "과거 성과가 미래 수익을 보장하지 않습니다.**"
-        )
+        st.warning(f"**다음 내용은 {tk} 백테스트 결과 해석입니다. 과거 성과가 미래 수익을 보장하지 않습니다.**")
         with st.container(border=True):
-            st.markdown(f"""
+            st.markdown("""
 **왜 이 전략이 변동성 높은 종목에서 잘 작동하나?**
 - **장기 우상향 종목**일수록 백테스트 수치가 유리하게 나옵니다
 - 단순 Buy & Hold 대비 **변동성을 활용**하여 추가 수익을 창출하는 구조입니다
@@ -2062,6 +1997,49 @@ a   = 파라미터값
 - 실제 거래에서는 **슬리피지, 수수료, 세금** 등이 수익률에 영향
 - 전략 파라미터를 너무 자주 바꾸면 과최적화(overfitting) 위험
             """)
+
+    # ── 분석 실행: 등록된 ticker 전체 ─────────────────────────
+    _perf_tk_settings = _get_ticker_settings()
+    if _perf_tk_settings:
+        st.caption(f"등록된 계좌 기준으로 분석합니다: **{', '.join(_perf_tk_settings.keys())}**  "
+                   f"(기간·초기자본은 사이드바 설정 사용)")
+    else:
+        st.caption("사이드바의 공통 설정(티커 · 파라미터 · 기간 · 초기 자본)을 기준으로 분석합니다.")
+
+    if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
+        if _perf_tk_settings:
+            # 등록된 ticker가 있으면 → 전체 순서대로 분석
+            _tk_list = list(_perf_tk_settings.keys())
+            if len(_tk_list) > 1:
+                _perf_tabs = st.tabs([f"📊 {t}" for t in _tk_list])
+                for _pi, _ptk in enumerate(_tk_list):
+                    with _perf_tabs[_pi]:
+                        _pcfg = _perf_tk_settings[_ptk]
+                        _render_perf_analysis(
+                            _ptk,
+                            float(_pcfg.get("a_buy",     a_buy)),
+                            float(_pcfg.get("a_sell",    a_sell)),
+                            float(_pcfg.get("sell_ratio", sell_ratio)),
+                            int  (_pcfg.get("divisions",  divisions)),
+                            initial_capital, start_date, end_date,
+                        )
+            else:
+                _ptk  = _tk_list[0]
+                _pcfg = _perf_tk_settings[_ptk]
+                _render_perf_analysis(
+                    _ptk,
+                    float(_pcfg.get("a_buy",      a_buy)),
+                    float(_pcfg.get("a_sell",     a_sell)),
+                    float(_pcfg.get("sell_ratio",  sell_ratio)),
+                    int  (_pcfg.get("divisions",   divisions)),
+                    initial_capital, start_date, end_date,
+                )
+        else:
+            # 등록된 계좌 없으면 → 사이드바 ticker로 분석 (기존 동작)
+            _render_perf_analysis(
+                ticker, a_buy, a_sell, sell_ratio, divisions,
+                initial_capital, start_date, end_date,
+            )
 
 
 # ══════════════════════════════════════════════
@@ -2296,21 +2274,33 @@ with tab5:
                 if not tg_chat_id or not tg_token:
                     st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
                 else:
-                    with st.spinner("시뮬레이션 & 발송 중..."):
-                        _cfg_tg  = load_config()
-                        _tg_start = _cfg_tg.get("os_start", "2024-01-01")
-                        _tg_cap   = float(_cfg_tg.get("os_capital", initial_capital))
-                        try:    _tg_start_d = datetime.strptime(_tg_start, "%Y-%m-%d").date()
-                        except: _tg_start_d = datetime(2024, 1, 1).date()
-                        msg = _build_order_text(
-                            ticker, a_buy, a_sell, sell_ratio, divisions,
-                            _tg_start_d, _tg_cap,
-                        )
-                        result = _send_telegram(tg_token, tg_chat_id, msg)
-                    if result.get("ok"):
-                        st.success("✅ 텔레그램 발송 성공!")
+                    _tg_all_settings = _get_ticker_settings()
+                    if not _tg_all_settings:
+                        st.warning("⚠️ 등록된 계좌가 없습니다. Tab3에서 계좌를 먼저 등록해주세요.")
                     else:
-                        st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
+                        _tg_all_ok = True
+                        for _tg_tk, _tg_cfg in _tg_all_settings.items():
+                            with st.spinner(f"{_tg_tk} 시뮬레이션 & 발송 중..."):
+                                try:
+                                    _tg_start_d = datetime.strptime(
+                                        _tg_cfg.get("os_start", "2024-01-01"), "%Y-%m-%d").date()
+                                except:
+                                    _tg_start_d = datetime(2024, 1, 1).date()
+                                msg = _build_order_text(
+                                    _tg_tk,
+                                    float(_tg_cfg.get("a_buy",      -0.005)),
+                                    float(_tg_cfg.get("a_sell",      0.009)),
+                                    float(_tg_cfg.get("sell_ratio",  100.0)),
+                                    int  (_tg_cfg.get("divisions",   5)),
+                                    _tg_start_d,
+                                    float(_tg_cfg.get("os_capital",  initial_capital)),
+                                )
+                                result = _send_telegram(tg_token, tg_chat_id, msg)
+                            if result.get("ok"):
+                                st.success(f"✅ {_tg_tk} 발송 성공!")
+                            else:
+                                _tg_all_ok = False
+                                st.error(f"❌ {_tg_tk} 발송 실패: {result.get('description', '알 수 없는 오류')}")
         with btn_col2:
             if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
                 if not tg_chat_id or not tg_token:
