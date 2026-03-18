@@ -1508,6 +1508,46 @@ with tab3:
         else:
             st.info("아직 자본 조정 이력이 없습니다.")
 
+        # ── 전체 초기화 ──────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**🔄 전체 초기화**")
+        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다. 새로운 투자를 처음부터 시작할 때 사용하세요.")
+        _reset_c1, _reset_c2, _reset_c3 = st.columns(3)
+        _reset_start   = _reset_c1.date_input("새 시작일", value=datetime.today().date(), key="reset_start")
+        _reset_capital = _reset_c2.number_input("새 시작 자본 ($)", value=_default_capital,
+                                                 step=1000.0, key="reset_capital")
+        if _reset_c3.button("🔄 초기화", use_container_width=True, key="do_reset", type="secondary"):
+            if "reset_confirmed" not in st.session_state:
+                st.session_state.reset_confirmed = False
+            st.session_state.reset_confirmed = True
+
+        if st.session_state.get("reset_confirmed", False):
+            st.warning(f"⚠️ **정말 초기화하시겠습니까?**  \n"
+                       f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
+            _conf_c1, _conf_c2 = st.columns(2)
+            if _conf_c1.button("✅ 확인 (초기화)", type="primary", key="confirm_reset"):
+                # 초기화 실행
+                _reset_data = {
+                    "os_start": str(_reset_start),
+                    "os_capital": float(_reset_capital),
+                    "capital_adj_history": "[]",
+                }
+                st.query_params["start"]   = str(_reset_start)
+                st.query_params["capital"] = str(int(_reset_capital))
+                save_config(_reset_data)
+                if _IS_CLOUD and st.session_state.get("logged_in"):
+                    try:
+                        _save_user_settings_to_sheet(st.session_state.username, _reset_data)
+                        st.session_state.user_settings.update(_reset_data)
+                    except Exception:
+                        pass
+                st.session_state.reset_confirmed = False
+                st.success(f"✅ 초기화 완료! 시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f}")
+                st.rerun()
+            if _conf_c2.button("❌ 취소", key="cancel_reset"):
+                st.session_state.reset_confirmed = False
+                st.rerun()
+
     if st.button("📋 주문표 로드", type="primary", key="run_os"):
         # URL 파라미터 & config.json 동시 저장
         st.query_params["start"]   = str(os_start)
