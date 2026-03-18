@@ -2502,12 +2502,28 @@ a   = 파라미터값
     # ── 분석 실행: 등록된 ticker 전체 ─────────────────────────
     _perf_tk_settings = _get_ticker_settings()
     if _perf_tk_settings:
-        st.caption(f"등록된 계좌 기준으로 분석합니다: **{', '.join(_perf_tk_settings.keys())}**  "
-                   f"(기간·초기자본은 사이드바 설정 사용)")
+        st.caption(
+            f"등록된 계좌: **{', '.join(_perf_tk_settings.keys())}**  |  "
+            f"현재 사이드바 선택 ticker(**{ticker}**)는 사이드바 파라미터 그대로 적용 · "
+            f"나머지는 각자 저장된 파라미터 사용  |  기간·초기자본은 사이드바 설정 공통 적용"
+        )
     else:
         st.caption("사이드바의 공통 설정(티커 · 파라미터 · 기간 · 초기 자본)을 기준으로 분석합니다.")
 
     if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
+
+        def _resolve_params(ptk, pcfg):
+            """사이드바에서 선택 중인 ticker → 사이드바 현재값 사용.
+            다른 ticker → 각자 저장된 값 사용."""
+            if ptk == ticker:
+                return float(a_buy), float(a_sell), float(sell_ratio), int(divisions)
+            return (
+                float(pcfg.get("a_buy",      a_buy)),
+                float(pcfg.get("a_sell",     a_sell)),
+                float(pcfg.get("sell_ratio", sell_ratio)),
+                int  (pcfg.get("divisions",  divisions)),
+            )
+
         if _perf_tk_settings:
             # 등록된 ticker가 있으면 → 전체 순서대로 분석
             _tk_list = list(_perf_tk_settings.keys())
@@ -2516,23 +2532,17 @@ a   = 파라미터값
                 for _pi, _ptk in enumerate(_tk_list):
                     with _perf_tabs[_pi]:
                         _pcfg = _perf_tk_settings[_ptk]
+                        _pb, _ps, _psr, _pdv = _resolve_params(_ptk, _pcfg)
                         _render_perf_analysis(
-                            _ptk,
-                            float(_pcfg.get("a_buy",     a_buy)),
-                            float(_pcfg.get("a_sell",    a_sell)),
-                            float(_pcfg.get("sell_ratio", sell_ratio)),
-                            int  (_pcfg.get("divisions",  divisions)),
+                            _ptk, _pb, _ps, _psr, _pdv,
                             initial_capital, start_date, end_date,
                         )
             else:
                 _ptk  = _tk_list[0]
                 _pcfg = _perf_tk_settings[_ptk]
+                _pb, _ps, _psr, _pdv = _resolve_params(_ptk, _pcfg)
                 _render_perf_analysis(
-                    _ptk,
-                    float(_pcfg.get("a_buy",      a_buy)),
-                    float(_pcfg.get("a_sell",     a_sell)),
-                    float(_pcfg.get("sell_ratio",  sell_ratio)),
-                    int  (_pcfg.get("divisions",   divisions)),
+                    _ptk, _pb, _ps, _psr, _pdv,
                     initial_capital, start_date, end_date,
                 )
 
@@ -2549,12 +2559,10 @@ a   = 파라미터값
                     _cpdf = load_price_data(_ctk, start_date, end_date, "야후파이낸스 (yfinance)", None)
                     if _cpdf.empty:
                         continue
+                    _cb, _cs, _csr, _cdv = _resolve_params(_ctk, _ccfg)
                     _cr = run_backtest(
                         _cpdf, start_date, end_date,
-                        float(_ccfg.get("a_buy",      a_buy)),
-                        float(_ccfg.get("a_sell",     a_sell)),
-                        float(_ccfg.get("sell_ratio", sell_ratio)),
-                        int  (_ccfg.get("divisions",  divisions)),
+                        _cb, _cs, _csr, _cdv,
                         initial_capital,
                     )
                     if not _cr:
