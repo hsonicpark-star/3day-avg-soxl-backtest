@@ -1432,6 +1432,18 @@ with tab3:
         st.query_params["start"]   = str(os_start)
         st.query_params["capital"] = str(int(os_capital))
         save_config({"os_start": str(os_start), "os_capital": os_capital})
+        # 클라우드 로그인 시 users 시트에도 저장 (자동 알림에서 사용)
+        if _IS_CLOUD and st.session_state.get("logged_in"):
+            try:
+                _save_user_settings_to_sheet(
+                    st.session_state.username,
+                    {"os_start": str(os_start), "os_capital": float(os_capital)}
+                )
+                st.session_state.user_settings.update(
+                    {"os_start": str(os_start), "os_capital": float(os_capital)}
+                )
+            except Exception:
+                pass
         st.info(f"🔗 설정이 URL에 저장되었습니다. 주소창 URL을 즐겨찾기에 추가하면 다음에 같은 설정으로 바로 접속됩니다.\n\n`?start={os_start}&capital={int(os_capital)}`")
         today = datetime.today().date()
         with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
