@@ -1593,7 +1593,9 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.rerun()
 
     # ── 주문표 로드 ──
-    if st.button("📋 주문표 로드", type="primary", key=f"run_os_{key_sfx}"):
+    _ss_key = f"os_res_{key_sfx}"   # session_state에 결과 저장할 키
+    _btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
+    if st.button(_btn_label, type="primary", key=f"run_os_{key_sfx}"):
         _save_ticker_setting(tk, {"os_start": str(os_start), "os_capital": os_capital})
         today = datetime.today().date()
         with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
@@ -1609,139 +1611,144 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if res is None:
             st.warning("시뮬레이션 데이터가 없습니다.")
             return
+        st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
 
-        st.markdown(f"**{res['start_date']} ~ {res['end_date']}**")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}")
-        m2.metric("현재 자산",  f"${res['current_asset']:,.0f}",
-                  delta=f"{res['total_return']*100:+.2f}%")
-        m3.metric("수익률",     f"{res['total_return']*100:+.2f}%",
-                  delta=f"CAGR {res['cagr']*100:.2f}%")
-        m4.metric("현재 DD",    f"{abs(res['current_dd'])*100:.2f}%",
-                  delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
-        m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
+    res = st.session_state.get(_ss_key)
+    if res is None:
+        return
 
-        # 오늘의 LOC 주문
-        lp, p1, p2 = res["latest_price"], res["p1_now"], res["p2_now"]
-        st.subheader("📑 오늘의 LOC 주문")
-        st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
+    st.markdown(f"**{res['start_date']} ~ {res['end_date']}**")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}")
+    m2.metric("현재 자산",  f"${res['current_asset']:,.0f}",
+              delta=f"{res['total_return']*100:+.2f}%")
+    m3.metric("수익률",     f"{res['total_return']*100:+.2f}%",
+              delta=f"CAGR {res['cagr']*100:.2f}%")
+    m4.metric("현재 DD",    f"{abs(res['current_dd'])*100:.2f}%",
+              delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
+    m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
 
-        today_orders = []
-        if res["shares"] > 0:
-            sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
-            sell_tgt = res["next_sell_target"]
-            today_orders.append({
-                "구분": "매도", "티커": tk,
-                "LOC 기준가": f"${sell_tgt:,.2f}", "1회매수금": "-",
-                "예상수량": f"{sell_qty:,}주",
-                "예상금액": f"${sell_qty * sell_tgt:,.2f}",
-                "전일종가 대비": f"{(sell_tgt/lp-1)*100:+.2f}%" if lp > 0 else "-",
-                "비고": (f"평단 ${res['avg_cost']:.2f} 대비 "
-                         f"{(sell_tgt/res['avg_cost']-1)*100:+.2f}%  |  "
-                         f"보유 {res['shares']:,}주 × {_sell_ratio:.0f}%"),
-            })
-        buy_p = res["next_buy_primary"]
-        qty_p = res["pending_buys"][0]["수량"]
+    # 오늘의 LOC 주문
+    lp, p1, p2 = res["latest_price"], res["p1_now"], res["p2_now"]
+    st.subheader("📑 오늘의 LOC 주문")
+    st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
+
+    today_orders = []
+    if res["shares"] > 0:
+        sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+        sell_tgt = res["next_sell_target"]
         today_orders.append({
-            "구분": "매수", "티커": tk,
-            "LOC 기준가": f"${buy_p:,.2f}",
-            "1회매수금": f"${res['current_asset'] / _divisions:,.2f}",
-            "예상수량": f"{qty_p:,}주",
-            "예상금액": f"${qty_p * buy_p:,.2f}",
-            "전일종가 대비": f"{(buy_p/lp-1)*100:+.2f}%" if lp > 0 else "-",
-            "비고": res["pending_buys"][0]["비고"],
+            "구분": "매도", "티커": tk,
+            "LOC 기준가": f"${sell_tgt:,.2f}", "1회매수금": "-",
+            "예상수량": f"{sell_qty:,}주",
+            "예상금액": f"${sell_qty * sell_tgt:,.2f}",
+            "전일종가 대비": f"{(sell_tgt/lp-1)*100:+.2f}%" if lp > 0 else "-",
+            "비고": (f"평단 ${res['avg_cost']:.2f} 대비 "
+                     f"{(sell_tgt/res['avg_cost']-1)*100:+.2f}%  |  "
+                     f"보유 {res['shares']:,}주 × {_sell_ratio:.0f}%"),
         })
+    buy_p = res["next_buy_primary"]
+    qty_p = res["pending_buys"][0]["수량"]
+    today_orders.append({
+        "구분": "매수", "티커": tk,
+        "LOC 기준가": f"${buy_p:,.2f}",
+        "1회매수금": f"${res['current_asset'] / _divisions:,.2f}",
+        "예상수량": f"{qty_p:,}주",
+        "예상금액": f"${qty_p * buy_p:,.2f}",
+        "전일종가 대비": f"{(buy_p/lp-1)*100:+.2f}%" if lp > 0 else "-",
+        "비고": res["pending_buys"][0]["비고"],
+    })
 
-        def _style_gubun(row):
-            s = [""] * len(row)
-            if "구분" in row.index:
-                i = list(row.index).index("구분")
-                s[i] = "color: #1565C0; font-weight: bold" if row["구분"] == "매도" else \
-                        "color: #C62828; font-weight: bold" if row["구분"] == "매수" else ""
-            return s
+    def _style_gubun(row):
+        s = [""] * len(row)
+        if "구분" in row.index:
+            i = list(row.index).index("구분")
+            s[i] = "color: #1565C0; font-weight: bold" if row["구분"] == "매도" else \
+                    "color: #C62828; font-weight: bold" if row["구분"] == "매수" else ""
+        return s
 
-        st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
-                     use_container_width=True, hide_index=True,
-                     height=38 + 35 * len(today_orders))
+    st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
+                 use_container_width=True, hide_index=True,
+                 height=38 + 35 * len(today_orders))
 
-        # 현재 보유 현황
-        st.subheader("📦 현재 보유 현황")
-        if res["shares"] > 0:
-            avg_c = res["avg_cost"]
-            hc = st.columns(6)
-            hc[0].metric("보유주수",  f"{res['shares']:,}주")
-            hc[1].metric("평균단가",  f"${avg_c:.2f}")
-            hc[2].metric("현재가",    f"${lp:.2f}")
-            hc[3].metric("평가금액",  f"${res['shares']*lp:,.2f}")
-            hc[4].metric("평가손익",  f"${(lp-avg_c)*res['shares']:,.2f}",
-                          delta=f"{(lp/avg_c-1)*100:+.2f}%" if avg_c > 0 else "")
-            hc[5].metric("보유현금",  f"${res['cash']:,.2f}")
-            if res["open_tiers"]:
-                with st.expander(f"보유 티어 상세 ({len(res['open_tiers'])}개 배치)"):
-                    tiers_rows = []
-                    for t in res["open_tiers"]:
-                        bd = t["date"].date() if hasattr(t["date"], "date") else t["date"]
-                        tiers_rows.append({
-                            "매수일": str(bd),
-                            "매수가": f"${t['price']:.2f}",
-                            "수량": f"{t['qty']:,}주",
-                            "매수금액": f"${t['price']*t['qty']:,.2f}",
-                            "현재손익률": f"{(lp/t['price']-1)*100:+.2f}%" if t['price'] > 0 else "-",
-                            "보유일수": f"{(datetime.today().date()-bd).days}일",
-                        })
-                    st.dataframe(pd.DataFrame(tiers_rows), hide_index=True, use_container_width=True)
-        else:
-            st.info("현재 보유 주식 없음 (전량 현금)")
-            st.metric("보유현금", f"${res['cash']:,.2f}")
+    # 현재 보유 현황
+    st.subheader("📦 현재 보유 현황")
+    if res["shares"] > 0:
+        avg_c = res["avg_cost"]
+        hc = st.columns(6)
+        hc[0].metric("보유주수",  f"{res['shares']:,}주")
+        hc[1].metric("평균단가",  f"${avg_c:.2f}")
+        hc[2].metric("현재가",    f"${lp:.2f}")
+        hc[3].metric("평가금액",  f"${res['shares']*lp:,.2f}")
+        hc[4].metric("평가손익",  f"${(lp-avg_c)*res['shares']:,.2f}",
+                      delta=f"{(lp/avg_c-1)*100:+.2f}%" if avg_c > 0 else "")
+        hc[5].metric("보유현금",  f"${res['cash']:,.2f}")
+        if res["open_tiers"]:
+            with st.expander(f"보유 티어 상세 ({len(res['open_tiers'])}개 배치)"):
+                tiers_rows = []
+                for t in res["open_tiers"]:
+                    bd = t["date"].date() if hasattr(t["date"], "date") else t["date"]
+                    tiers_rows.append({
+                        "매수일": str(bd),
+                        "매수가": f"${t['price']:.2f}",
+                        "수량": f"{t['qty']:,}주",
+                        "매수금액": f"${t['price']*t['qty']:,.2f}",
+                        "현재손익률": f"{(lp/t['price']-1)*100:+.2f}%" if t['price'] > 0 else "-",
+                        "보유일수": f"{(datetime.today().date()-bd).days}일",
+                    })
+                st.dataframe(pd.DataFrame(tiers_rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("현재 보유 주식 없음 (전량 현금)")
+        st.metric("보유현금", f"${res['cash']:,.2f}")
 
-        # 일별 매매 상세표
-        st.divider()
-        st.subheader("📅 일별 매매 상세표")
-        _dl = res.get("daily_log", [])
-        if _dl:
-            _df_daily = pd.DataFrame(_dl).sort_values("날짜", ascending=False).reset_index(drop=True)
-            _bc = (_df_daily["매매"] == "BUY").sum()
-            _sc = (_df_daily["매매"] == "SELL").sum()
-            st.caption(f"시작일 {res['start_date']} ~ {res['end_date']} | "
-                       f"총 {_bc+_sc}건 (매수 {_bc}회 · 매도 {_sc}회)")
-            _df_show = _df_daily.copy()
-            for _col in ["종가(x)", "전날(p1)", "전전날(p2)", "매수경계가", "매도경계가"]:
-                _df_show[_col] = _df_show[_col].apply(lambda v: f"${v:,.4f}")
-            _df_show["거래금액($)"] = _df_show["거래금액($)"].apply(lambda v: f"${v:,.2f}" if v != 0 else "-")
-            _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
-            _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
-            _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
+    # 일별 매매 상세표
+    st.divider()
+    st.subheader("📅 일별 매매 상세표")
+    _dl = res.get("daily_log", [])
+    if _dl:
+        _df_daily = pd.DataFrame(_dl).sort_values("날짜", ascending=False).reset_index(drop=True)
+        _bc = (_df_daily["매매"] == "BUY").sum()
+        _sc = (_df_daily["매매"] == "SELL").sum()
+        st.caption(f"시작일 {res['start_date']} ~ {res['end_date']} | "
+                   f"총 {_bc+_sc}건 (매수 {_bc}회 · 매도 {_sc}회)")
+        _df_show = _df_daily.copy()
+        for _col in ["종가(x)", "전날(p1)", "전전날(p2)", "매수경계가", "매도경계가"]:
+            _df_show[_col] = _df_show[_col].apply(lambda v: f"${v:,.4f}")
+        _df_show["거래금액($)"] = _df_show["거래금액($)"].apply(lambda v: f"${v:,.2f}" if v != 0 else "-")
+        _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
+        _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
+        _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
 
-            def _style_daily(row):
-                if row["매매"] == "BUY":  return ["background-color: #FFF0F0"] * len(row)
-                if row["매매"] == "SELL": return ["background-color: #F0FFF4"] * len(row)
-                return [""] * len(row)
-            def _style_action(val):
-                if val == "BUY":  return "color: #C62828; font-weight: bold"
-                if val == "SELL": return "color: #1565C0; font-weight: bold"
-                return "color: #999"
+        def _style_daily(row):
+            if row["매매"] == "BUY":  return ["background-color: #FFF0F0"] * len(row)
+            if row["매매"] == "SELL": return ["background-color: #F0FFF4"] * len(row)
+            return [""] * len(row)
+        def _style_action(val):
+            if val == "BUY":  return "color: #C62828; font-weight: bold"
+            if val == "SELL": return "color: #1565C0; font-weight: bold"
+            return "color: #999"
 
-            st.dataframe(_df_show.style.apply(_style_daily, axis=1)
-                                        .applymap(_style_action, subset=["매매"]),
-                         hide_index=True, use_container_width=True,
-                         height=min(38 + 35 * len(_df_show), 600))
+        st.dataframe(_df_show.style.apply(_style_daily, axis=1)
+                                    .applymap(_style_action, subset=["매매"]),
+                     hide_index=True, use_container_width=True,
+                     height=min(38 + 35 * len(_df_show), 600))
 
-            import io as _io
-            _today_dl = str(datetime.today().date()).replace("-", "")
-            _dl1, _dl2, _ = st.columns([1, 1, 4])
-            _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            _dl1.download_button("📥 CSV 다운로드", data=_csv_data,
-                                  file_name=f"{tk}_daily_history_{_today_dl}.csv",
-                                  mime="text/csv", key=f"dl_csv_{key_sfx}", use_container_width=True)
-            _buf = _io.BytesIO()
-            with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
-                _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
-            _dl2.download_button("📥 엑셀 다운로드", data=_buf.getvalue(),
-                                  file_name=f"{tk}_daily_history_{_today_dl}.xlsx",
-                                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                  key=f"dl_xlsx_{key_sfx}", use_container_width=True)
-        else:
-            st.info("📭 시작일부터 오늘까지 데이터가 없습니다.")
+        import io as _io
+        _today_dl = str(datetime.today().date()).replace("-", "")
+        _dl1, _dl2, _ = st.columns([1, 1, 4])
+        _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        _dl1.download_button("📥 CSV 다운로드", data=_csv_data,
+                              file_name=f"{tk}_daily_history_{_today_dl}.csv",
+                              mime="text/csv", key=f"dl_csv_{key_sfx}", use_container_width=True)
+        _buf = _io.BytesIO()
+        with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+            _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
+        _dl2.download_button("📥 엑셀 다운로드", data=_buf.getvalue(),
+                              file_name=f"{tk}_daily_history_{_today_dl}.xlsx",
+                              mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                              key=f"dl_xlsx_{key_sfx}", use_container_width=True)
+    else:
+        st.info("📭 시작일부터 오늘까지 데이터가 없습니다.")
 
 
 with tab3:
