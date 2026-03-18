@@ -39,7 +39,8 @@ else:
         except:
             pass
 
-_SENSITIVE_KEYS = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
+_SENSITIVE_KEYS    = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
+_GLOBAL_CONFIG_KEYS = _SENSITIVE_KEYS  # ticker 네임스페이스가 아닌 루트 키들
 
 def load_config(ticker: str = None):
     """ticker 지정 시 해당 ticker 네임스페이스 반환, 없으면 전체 반환."""
@@ -112,6 +113,56 @@ if _IS_CLOUD:
             _CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
+
+# ── ticker별 설정 관리 (멀티 계좌) ────────────────────────────
+def _get_ticker_settings() -> dict:
+    """등록된 모든 ticker 설정 반환 {ticker: {a_buy, a_sell, os_start, ...}}"""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        raw = st.session_state.get("user_settings", {}).get("ticker_settings", "{}")
+        try:
+            ts = json.loads(raw) if isinstance(raw, str) else raw
+            return ts if isinstance(ts, dict) else {}
+        except:
+            return {}
+    else:
+        full_cfg = _load_full_config()
+        return {k: v for k, v in full_cfg.items()
+                if k not in _GLOBAL_CONFIG_KEYS and isinstance(v, dict)}
+
+def _save_ticker_setting(tk: str, data: dict):
+    """ticker별 설정 저장 (로컬 config.json + 클라우드 Google Sheets 동기)."""
+    save_config(data, tk)  # 로컬
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            raw = st.session_state.get("user_settings", {}).get("ticker_settings", "{}")
+            ts  = json.loads(raw) if isinstance(raw, str) else {}
+            if not isinstance(ts, dict):
+                ts = {}
+            ts[tk] = {**ts.get(tk, {}), **data}
+            ts_json = json.dumps(ts, ensure_ascii=False)
+            _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            st.session_state.user_settings["ticker_settings"] = ts_json
+        except Exception:
+            pass
+
+def _delete_ticker_setting(tk: str):
+    """ticker 설정 삭제 (로컬 + 클라우드)."""
+    full_cfg = _load_full_config()
+    full_cfg.pop(tk, None)
+    try:
+        _CONFIG.write_text(json.dumps(full_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except:
+        pass
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            raw = st.session_state.get("user_settings", {}).get("ticker_settings", "{}")
+            ts  = json.loads(raw) if isinstance(raw, str) else {}
+            ts.pop(tk, None)
+            ts_json = json.dumps(ts, ensure_ascii=False)
+            _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            st.session_state.user_settings["ticker_settings"] = ts_json
+        except Exception:
+            pass
 
 # ── gspread 인증 (로그인보다 먼저 정의되어야 함) ──────────────
 _GS_SCOPES = ["https://spreadsheets.google.com/feeds",
@@ -1422,193 +1473,144 @@ with tab2:
 
 
 # ══════════════════════════════════════════════
-# TAB 3 – 오늘의 주문표
+# TAB 3 – 오늘의 주문표 (멀티 계좌 렌더러)
 # ══════════════════════════════════════════════
-with tab3:
-    st.subheader("📋 오늘의 주문표")
-    st.caption("시뮬레이션 시작일부터 오늘까지 포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
+def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
+    """ticker별 주문표 탭 렌더링. key_sfx로 위젯 key 충돌 방지."""
+    _a_buy      = float(tk_cfg.get("a_buy",      -0.005))
+    _a_sell     = float(tk_cfg.get("a_sell",      0.009))
+    _sell_ratio = float(tk_cfg.get("sell_ratio",  100.0))
+    _divisions  = int  (tk_cfg.get("divisions",   5))
 
-    # URL 파라미터 > config.json > 기본값 순으로 초기값 결정
-    _qp  = st.query_params
-    _cfg = load_config(ticker)
-
-    _raw_start   = _qp.get("start")   or _cfg.get("os_start",   "2024-01-01")
-    _raw_capital = _qp.get("capital") or str(_cfg.get("os_capital", initial_capital))
-    try:    _default_start = datetime.strptime(_raw_start, "%Y-%m-%d").date()
+    _raw_start   = tk_cfg.get("os_start",   "2024-01-01")
+    _raw_capital = tk_cfg.get("os_capital",  10000.0)
+    try:    _default_start = datetime.strptime(str(_raw_start), "%Y-%m-%d").date()
     except: _default_start = datetime(2024, 1, 1).date()
     try:    _default_capital = float(_raw_capital)
-    except: _default_capital = float(initial_capital)
+    except: _default_capital = 10000.0
 
+    # ── 계좌 삭제 ──
+    _del_col, _ = st.columns([1, 5])
+    if _del_col.button(f"🗑️ {tk} 계좌 삭제", key=f"del_{key_sfx}", type="secondary"):
+        st.session_state[f"del_confirm_{key_sfx}"] = True
+    if st.session_state.get(f"del_confirm_{key_sfx}", False):
+        st.warning(f"⚠️ **{tk} 계좌를 삭제하시겠습니까?** 저장된 설정이 모두 삭제됩니다.")
+        _dc1, _dc2, _ = st.columns([1, 1, 4])
+        if _dc1.button("✅ 삭제", key=f"del_ok_{key_sfx}", type="primary"):
+            _delete_ticker_setting(tk)
+            st.session_state.pop(f"del_confirm_{key_sfx}", None)
+            st.rerun()
+        if _dc2.button("❌ 취소", key=f"del_cancel_{key_sfx}"):
+            st.session_state[f"del_confirm_{key_sfx}"] = False
+            st.rerun()
+
+    # ── 시작일 / 자본금 ──
     c1, c2 = st.columns(2)
-    os_start = c1.date_input(
-        "시작일",
-        value=_default_start,
-        min_value=datetime(2000, 1, 1).date(),
-        max_value=datetime.today().date(),
-        key="os_start",
-    )
+    os_start   = c1.date_input("시작일", value=_default_start,
+                                min_value=datetime(2000, 1, 1).date(),
+                                max_value=datetime.today().date(),
+                                key=f"os_start_{key_sfx}")
     os_capital = c2.number_input("시작 자본 ($)", value=_default_capital,
-                                  step=1000.0, key="os_capital")
+                                  step=1000.0, key=f"os_capital_{key_sfx}")
 
-    # ── 자본 조정 (증액/감액) ──────────────────────────────
+    # ── 자본 조정 ──
     with st.expander("💰 자본 조정 (증액 / 감액)"):
-        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 조정 이력이 날짜별로 기록됩니다.")
-
-        # 조정 이력 로드
-        _cfg_adj = load_config(ticker)
-        if _IS_CLOUD and st.session_state.get("logged_in"):
-            _adj_history_raw = st.session_state.get("user_settings", {}).get("capital_adj_history", "[]")
-        else:
-            _adj_history_raw = _cfg_adj.get("capital_adj_history", "[]")
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요.")
+        _adj_history_raw = tk_cfg.get("capital_adj_history", "[]")
         try:
             _adj_history = json.loads(_adj_history_raw) if isinstance(_adj_history_raw, str) else _adj_history_raw
-            if not isinstance(_adj_history, list):
-                _adj_history = []
-        except Exception:
-            _adj_history = []
+            if not isinstance(_adj_history, list): _adj_history = []
+        except: _adj_history = []
 
-        # 조정 입력
         _adj_c1, _adj_c2 = st.columns([2, 1])
-        _adj_amount = _adj_c1.number_input(
-            "조정 금액 ($)",
-            value=0.0, step=500.0,
-            help="증액: 양수 입력 (예: 3000) · 감액: 음수 입력 (예: -3000)",
-            key="capital_adj_input"
-        )
-        _new_cap_preview = _default_capital + _adj_amount
+        _adj_amount = _adj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
+                                            help="증액: 양수 · 감액: 음수",
+                                            key=f"capital_adj_input_{key_sfx}")
         _adj_c1.caption(
-            f"적용 후 자본금: **${_new_cap_preview:,.0f}** "
+            f"적용 후 자본금: **${_default_capital + _adj_amount:,.0f}** "
             f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
             f"${abs(_adj_amount):,.0f})"
         )
-        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금", key="adj_memo")
-
-        if _adj_c2.button("💰 적용", use_container_width=True, key="apply_adj",
-                          disabled=(_adj_amount == 0)):
+        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
+                                        key=f"adj_memo_{key_sfx}")
+        if _adj_c2.button("💰 적용", use_container_width=True,
+                          key=f"apply_adj_{key_sfx}", disabled=(_adj_amount == 0)):
             _new_capital = _default_capital + _adj_amount
             if _new_capital <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
             else:
-                # 이력에 추가
                 _adj_history.append({
                     "날짜": datetime.today().strftime("%Y-%m-%d"),
                     "조정금액": float(_adj_amount),
                     "누적자본금": float(_new_capital),
                     "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
                 })
-                _adj_history_json = json.dumps(_adj_history, ensure_ascii=False)
-
-                # 저장
-                st.query_params["capital"] = str(int(_new_capital))
-                save_config({"os_capital": _new_capital, "capital_adj_history": _adj_history_json}, ticker)
-                if _IS_CLOUD and st.session_state.get("logged_in"):
-                    try:
-                        _save_user_settings_to_sheet(
-                            st.session_state.username,
-                            {"os_capital": float(_new_capital),
-                             "capital_adj_history": _adj_history_json}
-                        )
-                        st.session_state.user_settings.update({
-                            "os_capital": float(_new_capital),
-                            "capital_adj_history": _adj_history_json
-                        })
-                    except Exception:
-                        pass
-                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다. 주문표를 다시 로드해주세요.")
+                _save_ticker_setting(tk, {
+                    "os_capital": _new_capital,
+                    "capital_adj_history": json.dumps(_adj_history, ensure_ascii=False)
+                })
+                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다.")
                 st.rerun()
 
-        # 조정 이력 테이블
         if _adj_history:
             st.markdown("---")
             st.markdown("**📋 자본 조정 이력**")
             _df_adj = pd.DataFrame(_adj_history)
-            _df_adj["조정금액"] = _df_adj["조정금액"].apply(
-                lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}"
-            )
+            _df_adj["조정금액"]  = _df_adj["조정금액"].apply(lambda x: f"{'↑' if x>0 else '↓'} ${abs(x):,.0f}")
             _df_adj["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
             st.dataframe(_df_adj[["날짜","조정금액","누적자본금","메모"]],
                          use_container_width=True, hide_index=True)
         else:
             st.info("아직 자본 조정 이력이 없습니다.")
 
-        # ── 전체 초기화 ──────────────────────────────────────
+        # 전체 초기화
         st.markdown("---")
         st.markdown("**🔄 전체 초기화**")
-        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다. 새로운 투자를 처음부터 시작할 때 사용하세요.")
-        _reset_c1, _reset_c2, _reset_c3 = st.columns(3)
-        _reset_start   = _reset_c1.date_input("새 시작일", value=datetime.today().date(), key="reset_start")
-        _reset_capital = _reset_c2.number_input("새 시작 자본 ($)", value=_default_capital,
-                                                 step=1000.0, key="reset_capital")
-        if _reset_c3.button("🔄 초기화", use_container_width=True, key="do_reset", type="secondary"):
-            if "reset_confirmed" not in st.session_state:
-                st.session_state.reset_confirmed = False
-            st.session_state.reset_confirmed = True
-
-        if st.session_state.get("reset_confirmed", False):
+        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다.")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        _reset_start   = _rc1.date_input("새 시작일", value=datetime.today().date(),
+                                          key=f"reset_start_{key_sfx}")
+        _reset_capital = _rc2.number_input("새 시작 자본 ($)", value=_default_capital,
+                                            step=1000.0, key=f"reset_capital_{key_sfx}")
+        if _rc3.button("🔄 초기화", use_container_width=True,
+                       key=f"do_reset_{key_sfx}", type="secondary"):
+            st.session_state[f"reset_confirmed_{key_sfx}"] = True
+        if st.session_state.get(f"reset_confirmed_{key_sfx}", False):
             st.warning(f"⚠️ **정말 초기화하시겠습니까?**  \n"
                        f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
             _conf_c1, _conf_c2 = st.columns(2)
-            if _conf_c1.button("✅ 확인 (초기화)", type="primary", key="confirm_reset"):
-                # 초기화 실행
-                _reset_data = {
+            if _conf_c1.button("✅ 확인 (초기화)", type="primary", key=f"confirm_reset_{key_sfx}"):
+                _save_ticker_setting(tk, {
                     "os_start": str(_reset_start),
                     "os_capital": float(_reset_capital),
                     "capital_adj_history": "[]",
-                }
-                st.query_params["start"]   = str(_reset_start)
-                st.query_params["capital"] = str(int(_reset_capital))
-                save_config(_reset_data, ticker)
-                if _IS_CLOUD and st.session_state.get("logged_in"):
-                    try:
-                        _save_user_settings_to_sheet(st.session_state.username, _reset_data)
-                        st.session_state.user_settings.update(_reset_data)
-                    except Exception:
-                        pass
-                st.session_state.reset_confirmed = False
+                })
+                st.session_state[f"reset_confirmed_{key_sfx}"] = False
                 st.success(f"✅ 초기화 완료! 시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f}")
                 st.rerun()
-            if _conf_c2.button("❌ 취소", key="cancel_reset"):
-                st.session_state.reset_confirmed = False
+            if _conf_c2.button("❌ 취소", key=f"cancel_reset_{key_sfx}"):
+                st.session_state[f"reset_confirmed_{key_sfx}"] = False
                 st.rerun()
 
-    if st.button("📋 주문표 로드", type="primary", key="run_os"):
-        # URL 파라미터 & config.json 동시 저장
-        st.query_params["start"]   = str(os_start)
-        st.query_params["capital"] = str(int(os_capital))
-        save_config({"os_start": str(os_start), "os_capital": os_capital}, ticker)
-        # 클라우드 로그인 시 users 시트에도 저장 (자동 알림에서 사용)
-        if _IS_CLOUD and st.session_state.get("logged_in"):
-            try:
-                _save_user_settings_to_sheet(
-                    st.session_state.username,
-                    {"os_start": str(os_start), "os_capital": float(os_capital)}
-                )
-                st.session_state.user_settings.update(
-                    {"os_start": str(os_start), "os_capital": float(os_capital)}
-                )
-            except Exception:
-                pass
-        st.info(f"🔗 설정이 URL에 저장되었습니다. 주소창 URL을 즐겨찾기에 추가하면 다음에 같은 설정으로 바로 접속됩니다.\n\n`?start={os_start}&capital={int(os_capital)}`")
+    # ── 주문표 로드 ──
+    if st.button("📋 주문표 로드", type="primary", key=f"run_os_{key_sfx}"):
+        _save_ticker_setting(tk, {"os_start": str(os_start), "os_capital": os_capital})
         today = datetime.today().date()
         with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
-            price_df_os = load_price_data(ticker, os_start, today, data_source, excel_file)
-
+            price_df_os = load_price_data(tk, os_start, today, "야후파이낸스 (yfinance)", None)
         if price_df_os.empty:
             st.error("가격 데이터를 불러오지 못했습니다.")
-            st.stop()
+            return
 
         res = run_portfolio_for_ordersheet(
-            price_df_os, os_start, ticker,
-            a_buy, a_sell, sell_ratio, divisions, os_capital,
+            price_df_os, os_start, tk,
+            _a_buy, _a_sell, _sell_ratio, _divisions, os_capital,
         )
         if res is None:
             st.warning("시뮬레이션 데이터가 없습니다.")
-            st.stop()
+            return
 
-        # ── 날짜 헤더 ──
         st.markdown(f"**{res['start_date']} ~ {res['end_date']}**")
-
-        # ── 요약 카드 ──
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}")
         m2.metric("현재 자산",  f"${res['current_asset']:,.0f}",
@@ -1619,187 +1621,179 @@ with tab3:
                   delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
         m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
 
-        # ── 오늘의 LOC 주문 ──
-        lp   = res["latest_price"]
-        p1   = res["p1_now"]
-        p2   = res["p2_now"]
+        # 오늘의 LOC 주문
+        lp, p1, p2 = res["latest_price"], res["p1_now"], res["p2_now"]
         st.subheader("📑 오늘의 LOC 주문")
-        st.caption(
-            f"기준: p1(전일 종가) = **${p1:,.2f}** · "
-            f"p2(전전일 종가) = **${p2:,.2f}** · "
-            f"최근 확인 가격 = **${lp:,.2f}**"
-        )
+        st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
 
         today_orders = []
-
-        # 매도 LOC (보유 시)
         if res["shares"] > 0:
-            sell_qty_today = math.floor(res["shares"] * (sell_ratio / 100.0))
-            sell_tgt       = res["next_sell_target"]
-            vs_lp_sell     = (sell_tgt / lp - 1) * 100 if lp > 0 else 0
-            vs_avg_sell    = (sell_tgt / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
+            sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+            sell_tgt = res["next_sell_target"]
             today_orders.append({
-                "구분":         "매도",
-                "티커":         ticker,
-                "LOC 기준가":   f"${sell_tgt:,.2f}",
-                "1회매수금":    "-",
-                "예상수량":     f"{sell_qty_today:,}주",
-                "예상금액":     f"${sell_qty_today * sell_tgt:,.2f}",
-                "전일종가 대비": f"{vs_lp_sell:+.2f}%",
-                "비고":         (f"평단 ${res['avg_cost']:.2f} 대비 {vs_avg_sell:+.2f}%  |  "
-                                  f"보유 {res['shares']:,}주 × {sell_ratio:.0f}%"),
+                "구분": "매도", "티커": tk,
+                "LOC 기준가": f"${sell_tgt:,.2f}", "1회매수금": "-",
+                "예상수량": f"{sell_qty:,}주",
+                "예상금액": f"${sell_qty * sell_tgt:,.2f}",
+                "전일종가 대비": f"{(sell_tgt/lp-1)*100:+.2f}%" if lp > 0 else "-",
+                "비고": (f"평단 ${res['avg_cost']:.2f} 대비 "
+                         f"{(sell_tgt/res['avg_cost']-1)*100:+.2f}%  |  "
+                         f"보유 {res['shares']:,}주 × {_sell_ratio:.0f}%"),
             })
-
-        # 매수 LOC
-        buy_p    = res["next_buy_primary"]
-        qty_p    = res["pending_buys"][0]["수량"]
-        chunk    = res["current_asset"] / divisions
-        vs_lp_bp = (buy_p / lp - 1) * 100 if lp > 0 else 0
+        buy_p = res["next_buy_primary"]
+        qty_p = res["pending_buys"][0]["수량"]
         today_orders.append({
-            "구분":         "매수",
-            "티커":         ticker,
-            "LOC 기준가":   f"${buy_p:,.2f}",
-            "1회매수금":    f"${chunk:,.2f}",
-            "예상수량":     f"{qty_p:,}주",
-            "예상금액":     f"${qty_p * buy_p:,.2f}",
-            "전일종가 대비": f"{vs_lp_bp:+.2f}%",
-            "비고":         res["pending_buys"][0]["비고"],
+            "구분": "매수", "티커": tk,
+            "LOC 기준가": f"${buy_p:,.2f}",
+            "1회매수금": f"${res['current_asset'] / _divisions:,.2f}",
+            "예상수량": f"{qty_p:,}주",
+            "예상금액": f"${qty_p * buy_p:,.2f}",
+            "전일종가 대비": f"{(buy_p/lp-1)*100:+.2f}%" if lp > 0 else "-",
+            "비고": res["pending_buys"][0]["비고"],
         })
 
-        df_order = pd.DataFrame(today_orders)
+        def _style_gubun(row):
+            s = [""] * len(row)
+            if "구분" in row.index:
+                i = list(row.index).index("구분")
+                s[i] = "color: #1565C0; font-weight: bold" if row["구분"] == "매도" else \
+                        "color: #C62828; font-weight: bold" if row["구분"] == "매수" else ""
+            return s
 
-        def style_gubun(row):
-            styles = [""] * len(row)
-            col_list = list(row.index)
-            if "구분" in col_list:
-                idx = col_list.index("구분")
-                if row["구분"] == "매도":
-                    styles[idx] = "color: #1565C0; font-weight: bold"
-                elif row["구분"] == "매수":
-                    styles[idx] = "color: #C62828; font-weight: bold"
-            return styles
+        st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
+                     use_container_width=True, hide_index=True,
+                     height=38 + 35 * len(today_orders))
 
-        st.dataframe(
-            df_order.style.apply(style_gubun, axis=1),
-            use_container_width=True,
-            hide_index=True,
-            height=38 + 35 * len(today_orders),
-        )
-
-        # ── 현재 보유 현황 ──
+        # 현재 보유 현황
         st.subheader("📦 현재 보유 현황")
         if res["shares"] > 0:
-            lp       = res["latest_price"]
-            avg_c    = res["avg_cost"]
-            unrealized = (lp - avg_c) * res["shares"]
-            hold_cols = st.columns(6)
-            hold_cols[0].metric("보유주수",  f"{res['shares']:,}주")
-            hold_cols[1].metric("평균단가",  f"${avg_c:.2f}")
-            hold_cols[2].metric("현재가",    f"${lp:.2f}")
-            hold_cols[3].metric("평가금액",  f"${res['shares']*lp:,.2f}")
-            hold_cols[4].metric("평가손익",  f"${unrealized:,.2f}",
-                                delta=f"{(lp/avg_c-1)*100:+.2f}%" if avg_c > 0 else "")
-            hold_cols[5].metric("보유현금",  f"${res['cash']:,.2f}")
-
-            # 티어 상세
+            avg_c = res["avg_cost"]
+            hc = st.columns(6)
+            hc[0].metric("보유주수",  f"{res['shares']:,}주")
+            hc[1].metric("평균단가",  f"${avg_c:.2f}")
+            hc[2].metric("현재가",    f"${lp:.2f}")
+            hc[3].metric("평가금액",  f"${res['shares']*lp:,.2f}")
+            hc[4].metric("평가손익",  f"${(lp-avg_c)*res['shares']:,.2f}",
+                          delta=f"{(lp/avg_c-1)*100:+.2f}%" if avg_c > 0 else "")
+            hc[5].metric("보유현금",  f"${res['cash']:,.2f}")
             if res["open_tiers"]:
-                with st.expander(f"보유 티어 상세  ({len(res['open_tiers'])}개 배치)"):
+                with st.expander(f"보유 티어 상세 ({len(res['open_tiers'])}개 배치)"):
                     tiers_rows = []
                     for t in res["open_tiers"]:
-                        buy_date = t["date"].date() if hasattr(t["date"], "date") else t["date"]
-                        holding  = (datetime.today().date() - buy_date).days
-                        pnl_pct  = (lp / t["price"] - 1) * 100 if t["price"] > 0 else 0
+                        bd = t["date"].date() if hasattr(t["date"], "date") else t["date"]
                         tiers_rows.append({
-                            "매수일":    str(buy_date),
-                            "매수가":    f"${t['price']:.2f}",
-                            "수량":      f"{t['qty']:,}주",
-                            "매수금액":  f"${t['price']*t['qty']:,.2f}",
-                            "현재손익률": f"{pnl_pct:+.2f}%",
-                            "보유일수":  f"{holding}일",
+                            "매수일": str(bd),
+                            "매수가": f"${t['price']:.2f}",
+                            "수량": f"{t['qty']:,}주",
+                            "매수금액": f"${t['price']*t['qty']:,.2f}",
+                            "현재손익률": f"{(lp/t['price']-1)*100:+.2f}%" if t['price'] > 0 else "-",
+                            "보유일수": f"{(datetime.today().date()-bd).days}일",
                         })
-                    st.dataframe(pd.DataFrame(tiers_rows),
-                                 hide_index=True, use_container_width=True)
+                    st.dataframe(pd.DataFrame(tiers_rows), hide_index=True, use_container_width=True)
         else:
             st.info("현재 보유 주식 없음 (전량 현금)")
             st.metric("보유현금", f"${res['cash']:,.2f}")
 
-        # ── 일별 매매 상세 히스토리 (시작일 ~ 오늘 전체) ──
+        # 일별 매매 상세표
         st.divider()
         st.subheader("📅 일별 매매 상세표")
         _dl = res.get("daily_log", [])
         if _dl:
-            _df_daily = pd.DataFrame(_dl)
-            # 최신 날짜 먼저
-            _df_daily = _df_daily.sort_values("날짜", ascending=False).reset_index(drop=True)
-
-            # 요약 카운트
-            _buy_cnt  = (_df_daily["매매"] == "BUY").sum()
-            _sell_cnt = (_df_daily["매매"] == "SELL").sum()
-            _total_cnt = _buy_cnt + _sell_cnt
-            st.caption(
-                f"시작일 {res['start_date']} ~ {res['end_date']} | "
-                f"총 {_total_cnt}건 (매수 {_buy_cnt}회 · 매도 {_sell_cnt}회)"
-            )
-
-            # 표시용 포맷
+            _df_daily = pd.DataFrame(_dl).sort_values("날짜", ascending=False).reset_index(drop=True)
+            _bc = (_df_daily["매매"] == "BUY").sum()
+            _sc = (_df_daily["매매"] == "SELL").sum()
+            st.caption(f"시작일 {res['start_date']} ~ {res['end_date']} | "
+                       f"총 {_bc+_sc}건 (매수 {_bc}회 · 매도 {_sc}회)")
             _df_show = _df_daily.copy()
             for _col in ["종가(x)", "전날(p1)", "전전날(p2)", "매수경계가", "매도경계가"]:
                 _df_show[_col] = _df_show[_col].apply(lambda v: f"${v:,.4f}")
-            _df_show["거래금액($)"] = _df_show["거래금액($)"].apply(
-                lambda v: f"${v:,.2f}" if v != 0 else "-"
-            )
-            _df_show["현금($)"]   = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
-            _df_show["총자산($)"] = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
-            _df_show["거래주수"] = _df_show["거래주수"].apply(
-                lambda v: f"{v:,}" if v != 0 else "-"
-            )
+            _df_show["거래금액($)"] = _df_show["거래금액($)"].apply(lambda v: f"${v:,.2f}" if v != 0 else "-")
+            _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
+            _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
+            _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
 
-            # 행 색상: BUY=연분홍, SELL=연초록
             def _style_daily(row):
-                if row["매매"] == "BUY":
-                    return ["background-color: #FFF0F0"] * len(row)
-                elif row["매매"] == "SELL":
-                    return ["background-color: #F0FFF4"] * len(row)
+                if row["매매"] == "BUY":  return ["background-color: #FFF0F0"] * len(row)
+                if row["매매"] == "SELL": return ["background-color: #F0FFF4"] * len(row)
                 return [""] * len(row)
-
-            # 매매 컬럼 글자색
             def _style_action(val):
-                if val == "BUY":
-                    return "color: #C62828; font-weight: bold"
-                elif val == "SELL":
-                    return "color: #1565C0; font-weight: bold"
+                if val == "BUY":  return "color: #C62828; font-weight: bold"
+                if val == "SELL": return "color: #1565C0; font-weight: bold"
                 return "color: #999"
 
-            st.dataframe(
-                _df_show.style
-                    .apply(_style_daily, axis=1)
-                    .applymap(_style_action, subset=["매매"]),
-                hide_index=True,
-                use_container_width=True,
-                height=min(38 + 35 * len(_df_show), 600),
-            )
+            st.dataframe(_df_show.style.apply(_style_daily, axis=1)
+                                        .applymap(_style_action, subset=["매매"]),
+                         hide_index=True, use_container_width=True,
+                         height=min(38 + 35 * len(_df_show), 600))
 
-            # ── 다운로드 버튼 ──
             import io as _io
             _today_dl = str(datetime.today().date()).replace("-", "")
             _dl1, _dl2, _ = st.columns([1, 1, 4])
             _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            _dl1.download_button(
-                "📥 CSV 다운로드", data=_csv_data,
-                file_name=f"{ticker}_daily_history_{_today_dl}.csv",
-                mime="text/csv", key="dl_csv", use_container_width=True,
-            )
+            _dl1.download_button("📥 CSV 다운로드", data=_csv_data,
+                                  file_name=f"{tk}_daily_history_{_today_dl}.csv",
+                                  mime="text/csv", key=f"dl_csv_{key_sfx}", use_container_width=True)
             _buf = _io.BytesIO()
             with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
                 _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
-            _dl2.download_button(
-                "📥 엑셀 다운로드", data=_buf.getvalue(),
-                file_name=f"{ticker}_daily_history_{_today_dl}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_xlsx", use_container_width=True,
-            )
+            _dl2.download_button("📥 엑셀 다운로드", data=_buf.getvalue(),
+                                  file_name=f"{tk}_daily_history_{_today_dl}.xlsx",
+                                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                  key=f"dl_xlsx_{key_sfx}", use_container_width=True)
         else:
             st.info("📭 시작일부터 오늘까지 데이터가 없습니다.")
+
+
+with tab3:
+    st.subheader("📋 오늘의 주문표")
+    st.caption("종목별 포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
+
+    # 등록된 ticker 설정 전체 로드
+    _all_tk_settings  = _get_ticker_settings()
+    _registered_tickers = list(_all_tk_settings.keys())
+
+    # ── 계좌 추가 ─────────────────────────────────────────────
+    with st.expander("➕ 계좌 추가"):
+        _add_presets = ["SOXL", "USD", "TQQQ", "직접입력"]
+        _add_select  = st.selectbox("종목코드", _add_presets, key="add_tk_select")
+        if _add_select == "직접입력":
+            _add_tk = st.text_input("직접 입력", placeholder="예: NVDA, SPY, QQQ",
+                                    key="add_tk_input").strip().upper()
+        else:
+            _add_tk = _add_select
+
+        if _add_tk:
+            _ac1, _ac2 = st.columns(2)
+            _add_a_buy   = _ac1.number_input("매수 a값",    value=-0.005, step=0.001, format="%.4f", key="add_a_buy")
+            _add_a_sell  = _ac2.number_input("매도 a값",    value=0.009,  step=0.001, format="%.4f", key="add_a_sell")
+            _add_sr      = _ac1.number_input("매도비율 (%)", value=100.0,  step=10.0,                 key="add_sr")
+            _add_div     = _ac2.number_input("분할수",       value=5,      min_value=1, step=1,        key="add_div")
+            _add_start   = _ac1.date_input(  "시작일",       value=datetime(2024, 1, 1).date(),        key="add_os_start")
+            _add_capital = _ac2.number_input("시작 자본 ($)", value=10000.0, step=1000.0,              key="add_os_capital")
+
+            if st.button(f"✅ {_add_tk} 계좌 등록", type="primary", key="add_tk_btn"):
+                if _add_tk in _registered_tickers:
+                    st.warning(f"⚠️ {_add_tk} 계좌가 이미 등록되어 있습니다.")
+                else:
+                    _save_ticker_setting(_add_tk, {
+                        "a_buy": float(_add_a_buy), "a_sell": float(_add_a_sell),
+                        "sell_ratio": float(_add_sr), "divisions": int(_add_div),
+                        "os_start": str(_add_start), "os_capital": float(_add_capital),
+                    })
+                    st.success(f"✅ {_add_tk} 계좌가 등록되었습니다!")
+                    st.rerun()
+
+    # ── 등록된 계좌 표시 ──────────────────────────────────────
+    if not _registered_tickers:
+        st.info("📭 등록된 계좌가 없습니다. '➕ 계좌 추가'를 눌러 첫 계좌를 등록하세요.")
+    elif len(_registered_tickers) == 1:
+        _tk = _registered_tickers[0]
+        _render_account_tab(_tk, _all_tk_settings[_tk], _tk)
+    else:
+        _tabs_os = st.tabs([f"📊 {t}" for t in _registered_tickers])
+        for _i, _tk in enumerate(_registered_tickers):
+            with _tabs_os[_i]:
+                _render_account_tab(_tk, _all_tk_settings[_tk], _tk)
 
 
 # ══════════════════════════════════════════════
