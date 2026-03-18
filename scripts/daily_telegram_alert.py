@@ -59,7 +59,7 @@ def calc_today_order(df: pd.DataFrame,
                      sell_ratio: float, divisions: int,
                      capital: float) -> dict:
     closes = df["Close"].values
-    if len(closes) < 3:
+    if len(closes) < 2:
         return {}
 
     shares, cash, avg_cost = 0, capital, 0.0
@@ -237,7 +237,7 @@ def main():
                 fail_count += 1
                 continue
 
-            if df.empty or len(df) < 3:
+            if df.empty or len(df) < 2:
                 print(f"    ❌ [{tk}] 데이터 부족")
                 fail_count += 1
                 continue
