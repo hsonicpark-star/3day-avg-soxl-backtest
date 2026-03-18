@@ -1,6 +1,7 @@
 """
 매일 15:00 KST에 GitHub Actions로 실행되는 텔레그램 자동 알림 스크립트.
-Google Sheets users 탭의 모든 사용자에게 각자 설정 기준으로 LOC 주문을 발송.
+Google Sheets users 탭의 모든 사용자에게
+각자 등록된 ticker_settings 기준으로 ticker별 LOC 주문을 발송.
 """
 
 import os, json, math, requests
@@ -10,8 +11,7 @@ from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ── 상수 ───────────────────────────────────────────────
-TICKER             = "SOXL"
+# ── 기본값 (ticker_settings에 값 없을 때 fallback) ────────
 DEFAULT_A_BUY      = -0.005
 DEFAULT_A_SELL     =  0.009
 DEFAULT_SELL_RATIO = 100.0
@@ -40,11 +40,9 @@ def get_users(client, sheet_url: str) -> list[dict]:
 
 # ── 가격 데이터 ────────────────────────────────────────
 def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
-    """start_date부터 오늘까지 종가 데이터 로드."""
-    end = datetime.today() + timedelta(days=1)  # yfinance end는 exclusive
+    end = datetime.today() + timedelta(days=1)
     df = yf.download(ticker, start=start_date,
                      end=end.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
-    # yfinance 최신버전 멀티컬럼 대응
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df[["Close"]].dropna()
@@ -55,12 +53,11 @@ def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
 def buy_limit_price(p1: float, p2: float, a: float) -> float:
     return (p1 + p2) * (1 + a) / (2 - a)
 
-# ── 포트폴리오 시뮬레이션 (os_start부터 전체 시뮬레이션) ─────
+# ── 포트폴리오 시뮬레이션 ──────────────────────────────
 def calc_today_order(df: pd.DataFrame,
                      a_buy: float, a_sell: float,
                      sell_ratio: float, divisions: int,
                      capital: float) -> dict:
-    """앱과 동일하게 os_start부터 전체 시뮬레이션하여 오늘 주문 산출."""
     closes = df["Close"].values
     if len(closes) < 3:
         return {}
@@ -96,7 +93,6 @@ def calc_today_order(df: pd.DataFrame,
                     avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
                 else:
                     avg_cost, open_tiers = 0.0, []
-
         elif x <= tb:
             buy_qty = min(
                 math.floor(chunk / x + 1e-9),
@@ -111,7 +107,6 @@ def calc_today_order(df: pd.DataFrame,
 
         prev_asset = cash + shares * x
 
-    # ── 다음 주문 계산 (마지막 2일 종가로) ──
     p1_now = float(closes[-1])
     p2_now = float(closes[-2])
     tb_next = buy_limit_price(p1_now, p2_now, a_buy)
@@ -119,62 +114,80 @@ def calc_today_order(df: pd.DataFrame,
     current_asset = cash + shares * p1_now
     chunk_now = current_asset / divisions
 
-    buy_qty_next = min(
+    buy_qty_next  = min(
         math.floor(chunk_now / tb_next + 1e-9),
         math.floor(cash / tb_next + 1e-9),
     ) if cash > 0 else 0
-
     sell_qty_next = math.floor(shares * (sell_ratio / 100.0)) if shares > 0 else 0
 
     return {
-        "p1": p1_now,
-        "p2": p2_now,
-        "tb": round(tb_next, 2),
-        "ts": round(ts_next, 2),
-        "shares": shares,
-        "buy_qty": buy_qty_next,
-        "sell_qty": sell_qty_next,
-        "cash": cash,
-        "avg_cost": avg_cost,
+        "p1": p1_now, "p2": p2_now,
+        "tb": round(tb_next, 2), "ts": round(ts_next, 2),
+        "shares": shares, "buy_qty": buy_qty_next,
+        "sell_qty": sell_qty_next, "cash": cash, "avg_cost": avg_cost,
     }
 
 # ── 텔레그램 메시지 생성 ────────────────────────────────
 def build_message(res: dict, ticker: str) -> str:
     today = datetime.today().strftime("%Y-%m-%d")
-    lines = [f"📋 *종가평균 주문* ({ticker})"]
-    lines.append(f"기준일: {today}")
-    lines.append(f"기준가: p1={res['p1']:.2f} / p2={res['p2']:.2f}")
-    lines.append("")
-
+    lines = [
+        f"📋 *종가평균 주문* ({ticker})",
+        f"기준일: {today}",
+        f"기준가: p1={res['p1']:.2f} / p2={res['p2']:.2f}",
+        "",
+    ]
     has_order = False
-
     if res["buy_qty"] > 0:
         lines.append(f"🔴 매수 LOC {res['buy_qty']}주  ${res['tb']:.2f}")
         has_order = True
-
     if res["shares"] > 0 and res["sell_qty"] > 0:
         lines.append(f"🔵 매도 LOC {res['sell_qty']}주  ${res['ts']:.2f}")
         has_order = True
-
     if not has_order:
         lines.append("⬜ 오늘은 주문 없음")
-
     if res["shares"] > 0:
         lines.append(f"\n📦 보유: {res['shares']}주  |  평단 ${res['avg_cost']:.2f}")
     else:
         lines.append("\n📦 보유 없음 (전량 현금)")
-
     return "\n".join(lines)
 
 # ── 텔레그램 발송 ──────────────────────────────────────
 def send_telegram(chat_id: str, token: str, text: str):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     resp = requests.post(url, json={
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "Markdown",
+        "chat_id": chat_id, "text": text, "parse_mode": "Markdown",
     }, timeout=10)
     return resp.ok, resp.text
+
+# ── ticker_settings 파싱 ───────────────────────────────
+def parse_ticker_settings(user: dict) -> dict:
+    """
+    users 시트 row에서 ticker_settings JSON 컬럼 파싱.
+    반환: {"SOXL": {a_buy, a_sell, ...}, "USD": {...}}
+    구 flat 컬럼 방식도 fallback으로 지원 (마이그레이션 호환).
+    """
+    raw = str(user.get("ticker_settings", "")).strip()
+    if raw:
+        try:
+            ts = json.loads(raw)
+            if isinstance(ts, dict) and ts:
+                return ts
+        except Exception:
+            pass
+
+    # fallback: 구 flat 컬럼 (a_buy 등이 직접 있는 경우)
+    if user.get("a_buy"):
+        return {
+            "SOXL": {
+                "a_buy":      float(user.get("a_buy",      DEFAULT_A_BUY)),
+                "a_sell":     float(user.get("a_sell",     DEFAULT_A_SELL)),
+                "sell_ratio": float(user.get("sell_ratio", DEFAULT_SELL_RATIO)),
+                "divisions":  int(float(user.get("divisions", DEFAULT_DIVISIONS))),
+                "os_start":   str(user.get("os_start",    DEFAULT_OS_START)).strip() or DEFAULT_OS_START,
+                "os_capital": float(user.get("os_capital", DEFAULT_CAPITAL)),
+            }
+        }
+    return {}
 
 # ── 메인 ───────────────────────────────────────────────
 def main():
@@ -188,7 +201,7 @@ def main():
     users  = get_users(client, sheet_url)
     print(f"✅ {len(users)}명 로드")
 
-    ok_count, skip_count, fail_count = 0, 0, 0
+    ok_count = skip_count = fail_count = 0
 
     for user in users:
         username = user.get("username", "")
@@ -200,46 +213,53 @@ def main():
             skip_count += 1
             continue
 
-        # 사용자별 파라미터
-        a_buy      = float(user.get("a_buy",      DEFAULT_A_BUY))      if user.get("a_buy")      else DEFAULT_A_BUY
-        a_sell     = float(user.get("a_sell",     DEFAULT_A_SELL))     if user.get("a_sell")     else DEFAULT_A_SELL
-        sell_ratio = float(user.get("sell_ratio", DEFAULT_SELL_RATIO)) if user.get("sell_ratio") else DEFAULT_SELL_RATIO
-        divisions  = int(float(user.get("divisions", DEFAULT_DIVISIONS))) if user.get("divisions") else DEFAULT_DIVISIONS
-        capital    = float(user.get("os_capital", DEFAULT_CAPITAL))    if user.get("os_capital") else DEFAULT_CAPITAL
-        os_start   = str(user.get("os_start",    DEFAULT_OS_START)).strip() or DEFAULT_OS_START
-
-        # os_start부터 전체 가격 데이터 로드 (앱과 동일한 방식)
-        print(f"  📊 {username}: {os_start}부터 데이터 로드 중...")
-        try:
-            df = fetch_prices(TICKER, os_start)
-        except Exception as e:
-            print(f"  ❌ {username}: 데이터 로드 실패 → {e}")
-            fail_count += 1
+        tk_settings = parse_ticker_settings(user)
+        if not tk_settings:
+            print(f"  ⏭️  {username}: 등록된 계좌 없음 → 건너뜀")
+            skip_count += 1
             continue
 
-        if df.empty or len(df) < 3:
-            print(f"  ❌ {username}: 데이터 부족")
-            fail_count += 1
-            continue
+        print(f"  👤 {username}: {list(tk_settings.keys())} 처리 중...")
 
-        print(f"     최근 종가: {float(df['Close'].iloc[-1]):.2f} (p1={float(df['Close'].iloc[-2]):.2f})")
+        for tk, cfg in tk_settings.items():
+            a_buy      = float(cfg.get("a_buy",      DEFAULT_A_BUY))
+            a_sell     = float(cfg.get("a_sell",     DEFAULT_A_SELL))
+            sell_ratio = float(cfg.get("sell_ratio", DEFAULT_SELL_RATIO))
+            divisions  = int(float(cfg.get("divisions", DEFAULT_DIVISIONS)))
+            capital    = float(cfg.get("os_capital", DEFAULT_CAPITAL))
+            os_start   = str(cfg.get("os_start",    DEFAULT_OS_START)).strip() or DEFAULT_OS_START
 
-        res = calc_today_order(df, a_buy, a_sell, sell_ratio, divisions, capital)
-        if not res:
-            print(f"  ❌ {username}: 주문 계산 실패")
-            fail_count += 1
-            continue
+            print(f"    📊 [{tk}] {os_start}부터 데이터 로드 중...")
+            try:
+                df = fetch_prices(tk, os_start)
+            except Exception as e:
+                print(f"    ❌ [{tk}] 데이터 로드 실패 → {e}")
+                fail_count += 1
+                continue
 
-        msg = build_message(res, TICKER)
-        ok, resp = send_telegram(chat_id, token, msg)
-        if ok:
-            print(f"  ✅ {username}: 발송 성공 (매수 {res['buy_qty']}주 ${res['tb']:.2f})")
-            ok_count += 1
-        else:
-            print(f"  ❌ {username}: 발송 실패 → {resp}")
-            fail_count += 1
+            if df.empty or len(df) < 3:
+                print(f"    ❌ [{tk}] 데이터 부족")
+                fail_count += 1
+                continue
 
-    print(f"\n🏁 완료: 성공 {ok_count}명 / 건너뜀 {skip_count}명 / 실패 {fail_count}명")
+            print(f"       최근 종가: {float(df['Close'].iloc[-1]):.2f}")
+
+            res = calc_today_order(df, a_buy, a_sell, sell_ratio, divisions, capital)
+            if not res:
+                print(f"    ❌ [{tk}] 주문 계산 실패")
+                fail_count += 1
+                continue
+
+            msg = build_message(res, tk)
+            ok, resp = send_telegram(chat_id, token, msg)
+            if ok:
+                print(f"    ✅ [{tk}] 발송 성공 (매수 {res['buy_qty']}주 ${res['tb']:.2f})")
+                ok_count += 1
+            else:
+                print(f"    ❌ [{tk}] 발송 실패 → {resp}")
+                fail_count += 1
+
+    print(f"\n🏁 완료: 성공 {ok_count}건 / 건너뜀 {skip_count}명 / 실패 {fail_count}건")
 
 if __name__ == "__main__":
     main()
