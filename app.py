@@ -619,9 +619,11 @@ def run_portfolio_for_ordersheet(
         ts   = tgt_sell[i]
         date = sim.index[i]
         current_chunk = prev_asset / divisions
-        _day_action = "-"
-        _day_qty    = 0
-        _day_amt    = 0.0
+        _day_action  = "-"
+        _day_qty     = 0
+        _day_amt     = 0.0
+        _day_pnl_amt = None   # 실현손익($) — SELL 시에만 기록
+        _day_pnl_pct = None   # 실현손익률(%) — SELL 시에만 기록
 
         if shares > 0 and x >= ts:
             sell_qty = math.floor(shares * (sell_ratio / 100.0))
@@ -629,6 +631,8 @@ def run_portfolio_for_ordersheet(
                 oldest_date  = open_tiers[0]["date"] if open_tiers else date
                 holding_days = (date - oldest_date).days
                 factor       = x / avg_cost if avg_cost > 0 else 0.0
+                _day_pnl_amt = round((x - avg_cost) * sell_qty, 2) if avg_cost > 0 else 0.0
+                _day_pnl_pct = round((x / avg_cost - 1) * 100, 2)  if avg_cost > 0 else 0.0
 
                 _date_val = date.date() if hasattr(date, "date") else date
                 sell_trades.append({
@@ -703,19 +707,21 @@ def run_portfolio_for_ordersheet(
         _oldest_date = _oldest.date() if _oldest and hasattr(_oldest, "date") else _oldest
         _hdays       = (date.date() - _oldest_date).days if _oldest_date else "-"
         daily_log.append({
-            "날짜":       str(_date_val2),
-            "종가(x)":    round(x, 4),
-            "전날(p1)":   round(p1s[i], 4),
-            "전전날(p2)": round(p2s[i], 4),
-            "매수경계가": round(tb, 4),
-            "매도경계가": round(ts, 4),
-            "매매":       _day_action,
-            "거래주수":   _day_qty,
-            "거래금액($)":_day_amt,
-            "보유주수":   shares,
-            "보유기간":   _hdays if shares > 0 else "-",
-            "현금($)":    round(cash, 2),
-            "총자산($)":  round(asset, 2),
+            "날짜":          str(_date_val2),
+            "종가(x)":       round(x, 4),
+            "전날(p1)":      round(p1s[i], 4),
+            "전전날(p2)":    round(p2s[i], 4),
+            "매수경계가":    round(tb, 4),
+            "매도경계가":    round(ts, 4),
+            "매매":          _day_action,
+            "거래주수":      _day_qty,
+            "거래금액($)":   _day_amt,
+            "실현손익($)":   _day_pnl_amt,   # SELL 시 실현손익, 나머지는 None
+            "실현손익률(%)": _day_pnl_pct,   # SELL 시 실현손익률, 나머지는 None
+            "보유주수":      shares,
+            "보유기간":      _hdays if shares > 0 else "-",
+            "현금($)":       round(cash, 2),
+            "총자산($)":     round(asset, 2),
         })
 
     latest_price  = float(all_closes[-1])
@@ -1912,6 +1918,14 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
         _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
         _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
+        _df_show["실현손익($)"] = _df_daily["실현손익($)"].apply(
+            lambda v: f"+${v:,.2f}" if (v is not None and v > 0)
+               else (f"-${abs(v):,.2f}" if (v is not None and v < 0)
+               else ("-" if v is None else "$0.00"))
+        )
+        _df_show["실현손익률(%)"] = _df_daily["실현손익률(%)"].apply(
+            lambda v: f"{v:+.2f}%" if v is not None else "-"
+        )
         # 매매 컬럼에 체결가 포함 (원본 _df_daily의 float 종가 사용)
         _df_show["매매"] = _df_daily.apply(
             lambda r: f"BUY (${r['종가(x)']:.2f})"  if r["매매"] == "BUY"
@@ -1927,9 +1941,14 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             if str(val).startswith("BUY"):  return "color: #C62828; font-weight: bold"
             if str(val).startswith("SELL"): return "color: #1565C0; font-weight: bold"
             return "color: #999"
+        def _style_pnl(val):
+            if isinstance(val, str) and val.startswith("+"):  return "color: #1565C0; font-weight: bold"
+            if isinstance(val, str) and val.startswith("-"):  return "color: #C62828; font-weight: bold"
+            return "color: #999"
 
         st.dataframe(_df_show.style.apply(_style_daily, axis=1)
-                                    .applymap(_style_action, subset=["매매"]),
+                                    .applymap(_style_action, subset=["매매"])
+                                    .applymap(_style_pnl, subset=["실현손익($)", "실현손익률(%)"]),
                      hide_index=True, use_container_width=True,
                      height=min(38 + 35 * len(_df_show), 600))
 
