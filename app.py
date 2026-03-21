@@ -1918,13 +1918,16 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
         _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
         _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
-        _df_show["실현손익($)"] = _df_daily["실현손익($)"].apply(
-            lambda v: f"+${v:,.2f}" if (v is not None and v > 0)
-               else (f"-${abs(v):,.2f}" if (v is not None and v < 0)
-               else ("-" if v is None else "$0.00"))
+        # 구버전 캐시 호환: 컬럼 없으면 None으로 채움
+        _pnl_amt_src = _df_daily["실현손익($)"]   if "실현손익($)"   in _df_daily.columns else [None] * len(_df_daily)
+        _pnl_pct_src = _df_daily["실현손익률(%)"] if "실현손익률(%)" in _df_daily.columns else [None] * len(_df_daily)
+        _df_show["실현손익($)"] = pd.Series(_pnl_amt_src, index=_df_daily.index).apply(
+            lambda v: f"+${v:,.2f}" if (v is not None and not pd.isna(v) and v > 0)
+               else (f"-${abs(v):,.2f}" if (v is not None and not pd.isna(v) and v < 0)
+               else "-")
         )
-        _df_show["실현손익률(%)"] = _df_daily["실현손익률(%)"].apply(
-            lambda v: f"{v:+.2f}%" if v is not None else "-"
+        _df_show["실현손익률(%)"] = pd.Series(_pnl_pct_src, index=_df_daily.index).apply(
+            lambda v: f"{v:+.2f}%" if (v is not None and not pd.isna(v)) else "-"
         )
         # 매매 컬럼에 체결가 포함 (원본 _df_daily의 float 종가 사용)
         _df_show["매매"] = _df_daily.apply(
