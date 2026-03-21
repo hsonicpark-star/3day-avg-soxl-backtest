@@ -1151,7 +1151,13 @@ with tab1:
 
         # 일별 상세표
         st.subheader("🗓️ 일별 매매 상세표")
-        colored = hist_df.style.format({
+        _hist_disp = hist_df.copy()
+        _hist_disp["매매"] = _hist_disp.apply(
+            lambda r: f"BUY (${r['종가(x)']:.2f})"  if r["매매"] == "BUY"
+                 else (f"SELL (${r['종가(x)']:.2f})" if r["매매"] == "SELL" else "-"),
+            axis=1,
+        )
+        colored = _hist_disp.style.format({
             "종가(x)": "${:,.4f}", "전날(p1)": "${:,.4f}",
             "전전날(p2)": "${:,.4f}", "매수경계가": "${:,.4f}",
             "매도경계가": "${:,.4f}", "거래주수": "{:,}",
@@ -1159,8 +1165,8 @@ with tab1:
             "현금($)": "${:,.2f}", "총자산($)": "${:,.2f}",
         }).apply(
             lambda row: [
-                "background-color: #ffdddd" if row["매매"] == "BUY"
-                else ("background-color: #ddffdd" if row["매매"] == "SELL" else "")
+                "background-color: #ffdddd" if str(row["매매"]).startswith("BUY")
+                else ("background-color: #ddffdd" if str(row["매매"]).startswith("SELL") else "")
                 for _ in row
             ], axis=1,
         )
@@ -1906,14 +1912,20 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
         _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
         _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
+        # 매매 컬럼에 체결가 포함 (원본 _df_daily의 float 종가 사용)
+        _df_show["매매"] = _df_daily.apply(
+            lambda r: f"BUY (${r['종가(x)']:.2f})"  if r["매매"] == "BUY"
+                 else (f"SELL (${r['종가(x)']:.2f})" if r["매매"] == "SELL" else "-"),
+            axis=1,
+        )
 
         def _style_daily(row):
-            if row["매매"] == "BUY":  return ["background-color: #FFF0F0"] * len(row)
-            if row["매매"] == "SELL": return ["background-color: #F0FFF4"] * len(row)
+            if str(row["매매"]).startswith("BUY"):  return ["background-color: #FFF0F0"] * len(row)
+            if str(row["매매"]).startswith("SELL"): return ["background-color: #F0FFF4"] * len(row)
             return [""] * len(row)
         def _style_action(val):
-            if val == "BUY":  return "color: #C62828; font-weight: bold"
-            if val == "SELL": return "color: #1565C0; font-weight: bold"
+            if str(val).startswith("BUY"):  return "color: #C62828; font-weight: bold"
+            if str(val).startswith("SELL"): return "color: #1565C0; font-weight: bold"
             return "color: #999"
 
         st.dataframe(_df_show.style.apply(_style_daily, axis=1)
