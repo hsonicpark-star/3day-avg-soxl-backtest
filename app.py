@@ -235,14 +235,42 @@ def _save_ticker_setting(tk: str, data: dict) -> str:
             return f"저장 중 오류: {e}"
     return ""
 
+def _delete_ticker_history(tk: str):
+    """ticker 매매 히스토리 삭제 (로컬 CSV + 클라우드 GSheets 워크시트)."""
+    # 로컬 CSV 삭제
+    f = _get_ticker_history_file(tk)
+    try:
+        if f.exists():
+            f.unlink()
+    except Exception:
+        pass
+    # Cloud: GSheets 워크시트 삭제
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws_name = f"{tk}_매매기록"
+                try:
+                    ws = sh.worksheet(ws_name)
+                    sh.del_worksheet(ws)
+                except _gs.WorksheetNotFound:
+                    pass
+        except Exception:
+            pass
+
 def _delete_ticker_setting(tk: str) -> str:
-    """ticker 설정 삭제 (로컬 + 클라우드). 성공 시 '' 반환, 실패 시 오류 메시지 반환."""
+    """ticker 설정 + 매매 히스토리 삭제 (로컬 + 클라우드). 성공 시 '' 반환, 실패 시 오류 메시지 반환."""
     full_cfg = _load_full_config()
     full_cfg.pop(tk, None)
     try:
         _CONFIG.write_text(json.dumps(full_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
+    # 매매 히스토리도 함께 삭제
+    _delete_ticker_history(tk)
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
             raw = st.session_state.get("user_settings", {}).get("ticker_settings", "") or ""
@@ -1747,7 +1775,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     if _del_col.button(f"🗑️ {tk} 계좌 삭제", key=f"del_{key_sfx}", type="secondary"):
         st.session_state[f"del_confirm_{key_sfx}"] = True
     if st.session_state.get(f"del_confirm_{key_sfx}", False):
-        st.warning(f"⚠️ **{tk} 계좌를 삭제하시겠습니까?** 저장된 설정이 모두 삭제됩니다.")
+        st.warning(f"⚠️ **{tk} 계좌를 삭제하시겠습니까?** 저장된 설정 및 매매 히스토리가 모두 삭제됩니다.")
         _dc1, _dc2, _ = st.columns([1, 1, 4])
         if _dc1.button("✅ 삭제", key=f"del_ok_{key_sfx}", type="primary"):
             _delete_ticker_setting(tk)
