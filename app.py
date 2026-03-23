@@ -103,6 +103,85 @@ def append_order_history(rows: list):
     _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     df_combined.to_csv(_HISTORY_FILE, index=False, encoding="utf-8-sig")
 
+# ── ticker별 실제 매매 히스토리 (B방식: 누적 파일 기반) ─────────────
+def _get_ticker_history_file(tk: str) -> Path:
+    if _IS_CLOUD:
+        return Path(__file__).parent / f"history_{tk}.csv"
+    return Path.home() / ".usd-avg" / f"history_{tk}.csv"
+
+def _load_ticker_daily_history(tk: str) -> pd.DataFrame:
+    """ticker별 누적 매매 히스토리 로드. Cloud: GSheets 우선, 로컬: CSV."""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws_name = f"{tk}_매매기록"
+                try:
+                    ws = sh.worksheet(ws_name)
+                    records = ws.get_all_records()
+                    return pd.DataFrame(records) if records else pd.DataFrame()
+                except _gs.WorksheetNotFound:
+                    return pd.DataFrame()
+        except Exception:
+            pass
+    f = _get_ticker_history_file(tk)
+    if f.exists():
+        try:
+            return pd.read_csv(f, encoding="utf-8-sig")
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+def _save_ticker_daily_history(tk: str, daily_log: list):
+    """시뮬레이션 결과 중 기존 히스토리에 없는 날짜만 누적 저장.
+    파라미터를 바꿔도 과거 기록은 절대 변경되지 않음."""
+    if not daily_log:
+        return
+    df_new = pd.DataFrame(daily_log)
+    df_existing = _load_ticker_daily_history(tk)
+
+    # 이미 기록된 날짜 제외
+    if not df_existing.empty and "날짜" in df_existing.columns:
+        existing_dates = set(df_existing["날짜"].astype(str))
+        df_add = df_new[~df_new["날짜"].astype(str).isin(existing_dates)].copy()
+    else:
+        df_add = df_new.copy()
+
+    if df_add.empty:
+        return
+
+    # 로컬 CSV 저장
+    f = _get_ticker_history_file(tk)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    df_combined = pd.concat([df_existing, df_add], ignore_index=True) \
+                  if not df_existing.empty else df_add.copy()
+    df_combined = df_combined.sort_values("날짜").reset_index(drop=True)
+    df_combined.to_csv(f, index=False, encoding="utf-8-sig")
+
+    # Cloud: Google Sheets 워크시트에도 저장
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws_name = f"{tk}_매매기록"
+                try:
+                    ws = sh.worksheet(ws_name)
+                except _gs.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=ws_name, rows=5000, cols=25)
+                    ws.append_row(df_add.columns.tolist())  # 헤더 추가
+                # 새 행 일괄 추가
+                rows_to_add = [[str(v) for v in row] for row in df_add.values.tolist()]
+                if rows_to_add:
+                    ws.append_rows(rows_to_add, value_input_option="RAW")
+        except Exception:
+            pass
+
 # 클라우드 서버에 혹시 남은 민감 정보 제거
 if _IS_CLOUD:
     try:
@@ -1816,6 +1895,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             st.warning("시뮬레이션 데이터가 없습니다.")
             return
         st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
+        # 새 날짜 데이터만 누적 저장 (파라미터 바꿔도 기존 기록 불변)
+        _save_ticker_daily_history(tk, res.get("daily_log", []))
 
     res = st.session_state.get(_ss_key)
     if res is None:
@@ -1905,16 +1986,23 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         st.info("현재 보유 주식 없음 (전량 현금)")
         st.metric("보유현금", f"${res['cash']:,.2f}")
 
-    # 일별 매매 상세표
+    # 일별 매매 상세표 (파일 기반 누적 기록 — 파라미터 변경 무관)
     st.divider()
     st.subheader("📅 일별 매매 상세표")
-    _dl = res.get("daily_log", [])
-    if _dl:
-        _df_daily = pd.DataFrame(_dl).sort_values("날짜", ascending=False).reset_index(drop=True)
+    _df_hist = _load_ticker_daily_history(tk)
+    if _df_hist.empty:
+        # 히스토리 파일 없을 때 시뮬레이션 결과를 fallback으로 사용
+        _dl = res.get("daily_log", [])
+        _df_hist = pd.DataFrame(_dl) if _dl else pd.DataFrame()
+    if not _df_hist.empty:
+        _df_daily = _df_hist.sort_values("날짜", ascending=False).reset_index(drop=True)
         _bc = (_df_daily["매매"] == "BUY").sum()
         _sc = (_df_daily["매매"] == "SELL").sum()
-        st.caption(f"시작일 {res['start_date']} ~ {res['end_date']} | "
+        _hist_start = _df_daily["날짜"].iloc[-1]
+        _hist_end   = _df_daily["날짜"].iloc[0]
+        st.caption(f"기록 {_hist_start} ~ {_hist_end} | "
                    f"총 {_bc+_sc}건 (매수 {_bc}회 · 매도 {_sc}회)")
+        st.info("📌 이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다. 파라미터를 변경해도 과거 기록은 변경되지 않습니다.", icon="ℹ️")
         _df_show = _df_daily.copy()
         for _col in ["종가(x)", "전날(p1)", "전전날(p2)", "매수경계가", "매도경계가"]:
             _df_show[_col] = _df_show[_col].apply(lambda v: f"${v:,.4f}")
@@ -1974,7 +2062,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                               key=f"dl_xlsx_{key_sfx}", use_container_width=True)
     else:
-        st.info("📭 시작일부터 오늘까지 데이터가 없습니다.")
+        st.info("📭 아직 기록된 매매 데이터가 없습니다. 주문표 로드 후 데이터가 누적됩니다.")
 
 
 with tab3:
