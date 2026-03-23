@@ -94,9 +94,10 @@ def calc_today_order(df: pd.DataFrame,
                 else:
                     avg_cost, open_tiers = 0.0, []
         elif x <= tb:
+            # LOC 주문: 수량은 기준가(tb) 기준, 체결은 실제 종가(x)
             buy_qty = min(
-                math.floor(chunk / x + 1e-9),
-                math.floor(cash / x + 1e-9),
+                math.floor(chunk / tb + 1e-9),
+                math.floor(cash / tb + 1e-9),
             )
             if buy_qty > 0:
                 total_inv = avg_cost * shares + x * buy_qty

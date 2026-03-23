@@ -529,7 +529,8 @@ def run_backtest(
                 if shares == 0:
                     avg_cost = 0.0
         elif x <= tb:
-            buy_qty = min(math.floor(current_chunk / x + 1e-9), math.floor(cash / x + 1e-9))
+            # LOC 주문: 수량은 기준가(tb) 기준, 체결은 실제 종가(x)
+            buy_qty = min(math.floor(current_chunk / tb + 1e-9), math.floor(cash / tb + 1e-9))
             if buy_qty > 0:
                 avg_cost  = (avg_cost * shares + x * buy_qty) / (shares + buy_qty)
                 action = "BUY"; trade_shares = buy_qty; trade_amount = buy_qty * x
@@ -673,9 +674,10 @@ def run_portfolio_for_ordersheet(
                     open_tiers = []
 
         elif x <= tb:
+            # LOC 주문: 수량은 기준가(tb) 기준, 체결은 실제 종가(x)
             buy_qty = min(
-                math.floor(current_chunk / x + 1e-9),
-                math.floor(cash / x + 1e-9),
+                math.floor(current_chunk / tb + 1e-9),
+                math.floor(cash / tb + 1e-9),
             )
             if buy_qty > 0:
                 total_inv = avg_cost * shares + x * buy_qty
@@ -894,9 +896,10 @@ def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio
                     cycle_buys = []   # 포지션 청산 → 사이클 초기화
 
         elif x <= tb:
+            # LOC 주문: 수량은 기준가(tb) 기준, 체결은 실제 종가(x)
             buy_qty = min(
-                math.floor(current_chunk / x + 1e-9),
-                math.floor(cash / x + 1e-9),
+                math.floor(current_chunk / tb + 1e-9),
+                math.floor(cash / tb + 1e-9),
             )
             if buy_qty > 0:
                 total_inv = avg_cost * shares + x * buy_qty
@@ -1000,9 +1003,10 @@ def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, s
                         avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
 
         elif x <= tb:
+            # LOC 주문: 수량은 기준가(tb) 기준, 체결은 실제 종가(x)
             buy_qty = min(
-                math.floor(current_chunk / x + 1e-9),
-                math.floor(cash / x + 1e-9),
+                math.floor(current_chunk / tb + 1e-9),
+                math.floor(cash / tb + 1e-9),
             )
             if buy_qty > 0:
                 total_inv             = avg_cost * shares + x * buy_qty
