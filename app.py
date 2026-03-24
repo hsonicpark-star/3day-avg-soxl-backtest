@@ -3004,41 +3004,64 @@ a   = 파라미터값
     else:
         st.caption("사이드바의 공통 설정(티커 · 파라미터 · 기간 · 초기 자본)을 기준으로 분석합니다.")
 
-    if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
+    def _resolve_params(ptk, pcfg):
+        """사이드바에서 선택 중인 ticker → 사이드바 현재값 사용.
+        다른 ticker → 각자 저장된 값 사용."""
+        if ptk == ticker:
+            return float(a_buy), float(a_sell), float(sell_ratio), int(divisions)
+        return (
+            float(pcfg.get("a_buy",      a_buy)),
+            float(pcfg.get("a_sell",     a_sell)),
+            float(pcfg.get("sell_ratio", sell_ratio)),
+            int  (pcfg.get("divisions",  divisions)),
+        )
 
-        def _resolve_params(ptk, pcfg):
-            """사이드바에서 선택 중인 ticker → 사이드바 현재값 사용.
-            다른 ticker → 각자 저장된 값 사용."""
-            if ptk == ticker:
-                return float(a_buy), float(a_sell), float(sell_ratio), int(divisions)
+    if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
+        # 실행 파라미터를 session_state에 저장 → rerun 후에도 유지
+        st.session_state["perf_run_params"] = {
+            "tk_settings": dict(_perf_tk_settings) if _perf_tk_settings else None,
+            "ticker": ticker, "a_buy": float(a_buy), "a_sell": float(a_sell),
+            "sell_ratio": float(sell_ratio), "divisions": int(divisions),
+            "initial_capital": initial_capital,
+            "start_date": start_date, "end_date": end_date,
+        }
+
+    def _do_render_perf():
+        """session_state에 저장된 파라미터로 성과 분석 렌더링."""
+        _prm = st.session_state.get("perf_run_params")
+        if not _prm:
+            return
+        _p_tk_settings = _prm["tk_settings"]
+        _p_ticker      = _prm["ticker"]
+        _p_ab          = _prm["a_buy"];   _p_as = _prm["a_sell"]
+        _p_sr          = _prm["sell_ratio"]; _p_dv = _prm["divisions"]
+        _p_cap         = _prm["initial_capital"]
+        _p_sd          = _prm["start_date"]; _p_ed = _prm["end_date"]
+
+        def _resolve_saved(ptk, pcfg):
+            if ptk == _p_ticker:
+                return _p_ab, _p_as, _p_sr, _p_dv
             return (
-                float(pcfg.get("a_buy",      a_buy)),
-                float(pcfg.get("a_sell",     a_sell)),
-                float(pcfg.get("sell_ratio", sell_ratio)),
-                int  (pcfg.get("divisions",  divisions)),
+                float(pcfg.get("a_buy",      _p_ab)),
+                float(pcfg.get("a_sell",     _p_as)),
+                float(pcfg.get("sell_ratio", _p_sr)),
+                int  (pcfg.get("divisions",  _p_dv)),
             )
 
-        if _perf_tk_settings:
-            # 등록된 ticker가 있으면 → 전체 순서대로 분석
-            _tk_list = list(_perf_tk_settings.keys())
+        if _p_tk_settings:
+            _tk_list = list(_p_tk_settings.keys())
             if len(_tk_list) > 1:
                 _perf_tabs = st.tabs([f"📊 {t}" for t in _tk_list])
                 for _pi, _ptk in enumerate(_tk_list):
                     with _perf_tabs[_pi]:
-                        _pcfg = _perf_tk_settings[_ptk]
-                        _pb, _ps, _psr, _pdv = _resolve_params(_ptk, _pcfg)
-                        _render_perf_analysis(
-                            _ptk, _pb, _ps, _psr, _pdv,
-                            initial_capital, start_date, end_date,
-                        )
+                        _pcfg = _p_tk_settings[_ptk]
+                        _pb, _ps, _psr, _pdv = _resolve_saved(_ptk, _pcfg)
+                        _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _p_sd, _p_ed)
             else:
                 _ptk  = _tk_list[0]
-                _pcfg = _perf_tk_settings[_ptk]
-                _pb, _ps, _psr, _pdv = _resolve_params(_ptk, _pcfg)
-                _render_perf_analysis(
-                    _ptk, _pb, _ps, _psr, _pdv,
-                    initial_capital, start_date, end_date,
-                )
+                _pcfg = _p_tk_settings[_ptk]
+                _pb, _ps, _psr, _pdv = _resolve_saved(_ptk, _pcfg)
+                _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _p_sd, _p_ed)
 
             # ── 종목 간 비교 (2개 이상 등록 시) ─────────────────
             if len(_tk_list) > 1:
@@ -3049,25 +3072,19 @@ a   = 파라미터값
                 _fig_cmp = go.Figure()
                 _cmp_rows = []
                 for _ci, _ctk in enumerate(_tk_list):
-                    _ccfg = _perf_tk_settings[_ctk]
-                    _cpdf = load_price_data(_ctk, start_date, end_date, "야후파이낸스 (yfinance)", None)
+                    _ccfg = _p_tk_settings[_ctk]
+                    _cpdf = load_price_data(_ctk, _p_sd, _p_ed, "야후파이낸스 (yfinance)", None)
                     if _cpdf.empty:
                         continue
-                    _cb, _cs, _csr, _cdv = _resolve_params(_ctk, _ccfg)
-                    _cr = run_backtest(
-                        _cpdf, start_date, end_date,
-                        _cb, _cs, _csr, _cdv,
-                        initial_capital,
-                    )
+                    _cb, _cs, _csr, _cdv = _resolve_saved(_ctk, _ccfg)
+                    _cr = run_backtest(_cpdf, _p_sd, _p_ed, _cb, _cs, _csr, _cdv, _p_cap)
                     if not _cr:
                         continue
                     _sharpe_c, _sortino_c = compute_sharpe_sortino(_cr["assets"])
-                    _norm = _cr["assets"] / initial_capital * 100
+                    _norm = _cr["assets"] / _p_cap * 100
                     _fig_cmp.add_trace(go.Scatter(
-                        x=[str(d.date()) for d in _cr["dates"]],
-                        y=_norm.tolist(),
-                        name=_ctk,
-                        line=dict(color=_colors[_ci % len(_colors)], width=2),
+                        x=[str(d.date()) for d in _cr["dates"]], y=_norm.tolist(),
+                        name=_ctk, line=dict(color=_colors[_ci % len(_colors)], width=2),
                     ))
                     _cmp_rows.append({
                         "종목": _ctk,
@@ -3079,23 +3096,19 @@ a   = 파라미터값
                         "Sortino": f"{_sortino_c:.3f}",
                         "승률": f"{_cr['win_count']/_cr['sell_count']*100:.1f}%" if _cr['sell_count'] > 0 else "-",
                     })
-                _fig_cmp.add_hline(y=100, line_dash="dash", line_color="#aaa",
-                                   annotation_text="시작(100)")
+                _fig_cmp.add_hline(y=100, line_dash="dash", line_color="#aaa", annotation_text="시작(100)")
                 _fig_cmp.update_layout(
                     title="종목별 정규화 수익 곡선 (시작=100)",
                     yaxis_title="자산 지수 (시작=100)",
-                    legend=dict(orientation="h", y=1.08),
-                    height=400,
+                    legend=dict(orientation="h", y=1.08), height=400,
                 )
                 st.plotly_chart(_fig_cmp, use_container_width=True)
                 if _cmp_rows:
                     st.dataframe(pd.DataFrame(_cmp_rows), hide_index=True, use_container_width=True)
         else:
-            # 등록된 계좌 없으면 → 사이드바 ticker로 분석 (기존 동작)
-            _render_perf_analysis(
-                ticker, a_buy, a_sell, sell_ratio, divisions,
-                initial_capital, start_date, end_date,
-            )
+            _render_perf_analysis(_p_ticker, _p_ab, _p_as, _p_sr, _p_dv, _p_cap, _p_sd, _p_ed)
+
+    _do_render_perf()
 
 
 # ══════════════════════════════════════════════
