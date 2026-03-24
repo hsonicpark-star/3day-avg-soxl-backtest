@@ -2623,12 +2623,10 @@ a   = 파라미터값
             )
             _total_days = (_ratio_s.index[-1] - _ratio_s.index[0]).days
             # 추세선용 이동평균 (원본은 건드리지 않음)
-            if _total_days > 365 * 3:
-                _win, _win_label = 20, "20일 이동평균 추세선"
-            elif _total_days > 365:
-                _win, _win_label = 10, "10일 이동평균 추세선"
+            if _total_days > 365:
+                _win, _win_label = 5, "5일 이동평균 추세선"
             else:
-                _win, _win_label = 0,  ""
+                _win, _win_label = 0, ""
             _trend_s = _ratio_s.rolling(_win, min_periods=1).mean() if _win > 0 else None
 
             _x_dates   = [str(d.date()) for d in _ratio_s.index]
