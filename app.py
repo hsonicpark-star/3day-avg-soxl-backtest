@@ -2617,16 +2617,40 @@ a   = 파라미터값
             _cu2.metric("최대 투자 비율", f"{np.max(_inv_ratio):.1f}%")
             _cu3.metric("현금 보유 비율", f"{100 - np.mean(_inv_ratio):.1f}%")
             _fig_cu = go.Figure()
+            _x_dates = [str(d.date()) for d in _res["dates"]]
+            _cash_ratio = (100 - _inv_ratio).tolist()
+            _stk_ratio  = _inv_ratio.tolist()
+            # 주식(ETF) 영역 — 아래
             _fig_cu.add_trace(go.Scatter(
-                x=[str(d.date()) for d in _res["dates"]],
-                y=_inv_ratio.tolist(),
-                fill="tozeroy", name="투자 비율(%)",
-                line=dict(color="#1565C0", width=1),
-                fillcolor="rgba(21,101,192,0.2)",
+                x=_x_dates, y=_stk_ratio,
+                name="주식(ETF)",
+                mode="lines",
+                line=dict(width=0),
+                fill="tozeroy",
+                fillcolor="rgba(255,179,0,0.75)",
+                stackgroup="alloc",
+            ))
+            # 현금 영역 — 위 (합계 100%)
+            _fig_cu.add_trace(go.Scatter(
+                x=_x_dates, y=_cash_ratio,
+                name="현금",
+                mode="lines",
+                line=dict(width=0),
+                fill="tonexty",
+                fillcolor="rgba(200,200,200,0.55)",
+                stackgroup="alloc",
             ))
             _fig_cu.update_layout(
-                yaxis_title="주식 투자 비율 (%)", yaxis=dict(range=[0, 105]),
+                yaxis_title="비율 (%)",
+                yaxis=dict(range=[0, 100], tickformat=".0f", ticksuffix="%"),
                 height=280,
+                legend=dict(
+                    orientation="h", x=1.0, y=1.02,
+                    xanchor="right", yanchor="bottom",
+                    bgcolor="rgba(255,255,255,0.85)",
+                    bordercolor="#ccc", borderwidth=1,
+                ),
+                hovermode="x unified",
             )
             st.plotly_chart(_fig_cu, use_container_width=True)
 
