@@ -2616,20 +2616,21 @@ a   = 파라미터값
                         help="현금이 아닌 주식에 투자된 비율의 평균")
             _cu2.metric("최대 투자 비율", f"{np.max(_inv_ratio):.1f}%")
             _cu3.metric("현금 보유 비율", f"{100 - np.mean(_inv_ratio):.1f}%")
-            # 스파이크 완화: 기간에 따라 이동평균 적용 (일별 데이터 유지)
+            # 일별 원본 시리즈 (실제 피크 100% 보존)
             _ratio_s = pd.Series(
                 _inv_ratio,
                 index=pd.to_datetime([d.date() for d in _res["dates"]])
             )
             _total_days = (_ratio_s.index[-1] - _ratio_s.index[0]).days
-            if _total_days > 365 * 3:       # 3년 초과 → 20일 이동평균
-                _win, _win_label = 20, "20일 이동평균"
-            elif _total_days > 365:         # 1~3년 → 10일 이동평균
-                _win, _win_label = 10, "10일 이동평균"
-            else:                           # 1년 이내 → 일별 원본
-                _win, _win_label = 1,  "일별"
-            if _win > 1:
-                _ratio_s = _ratio_s.rolling(_win, min_periods=1).mean()
+            # 추세선용 이동평균 (원본은 건드리지 않음)
+            if _total_days > 365 * 3:
+                _win, _win_label = 20, "20일 이동평균 추세선"
+            elif _total_days > 365:
+                _win, _win_label = 10, "10일 이동평균 추세선"
+            else:
+                _win, _win_label = 0,  ""
+            _trend_s = _ratio_s.rolling(_win, min_periods=1).mean() if _win > 0 else None
+
             _x_dates   = [str(d.date()) for d in _ratio_s.index]
             _stk_ratio = _ratio_s.tolist()
             _ones      = [100.0] * len(_x_dates)
@@ -2644,15 +2645,24 @@ a   = 파라미터값
                 fillcolor="rgba(200,200,200,0.6)",
                 hoverinfo="skip",
             ))
-            # ② 주식(ETF, 노란) — 투자비율만큼 위에 덮어서 그림
+            # ② 주식(ETF, 노란) — 일별 원본 영역 (100% 피크 보존)
             _fig_cu.add_trace(go.Scatter(
                 x=_x_dates, y=_stk_ratio,
                 name="주식(ETF)",
                 mode="lines", line=dict(width=0),
                 fill="tozeroy",
-                fillcolor="rgba(255,179,0,0.85)",
+                fillcolor="rgba(255,179,0,0.75)",
                 hovertemplate="%{x}<br>주식(ETF): %{y:.1f}%<extra></extra>",
             ))
+            # ③ 추세선 — 이동평균 라인 (긴 기간일 때만)
+            if _trend_s is not None:
+                _fig_cu.add_trace(go.Scatter(
+                    x=_x_dates, y=_trend_s.tolist(),
+                    name=_win_label,
+                    mode="lines",
+                    line=dict(color="rgba(180,80,0,0.85)", width=1.5, dash="solid"),
+                    hoverinfo="skip",
+                ))
             _fig_cu.update_layout(
                 yaxis_title="비율 (%)",
                 yaxis=dict(
@@ -2671,7 +2681,8 @@ a   = 파라미터값
                 margin=dict(l=60, r=20, t=20, b=40),
             )
             st.plotly_chart(_fig_cu, use_container_width=True)
-            st.caption(f"※ {_win_label} 기준 표시 | 1년 이내: 일별 / 1~3년: 10일 이동평균 / 3년 초과: 20일 이동평균")
+            if _win > 0:
+                st.caption(f"※ 영역: 일별 실제 투자비율 (100% 피크 보존) | 주황 선: {_win_label}")
 
         if not _hist.empty:
             _buy_hist  = _hist[_hist["매매"] == "BUY"].copy()
