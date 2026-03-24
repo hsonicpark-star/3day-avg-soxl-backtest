@@ -2752,7 +2752,6 @@ a   = 파라미터값
                             "bnh_ret":   _mc_bnh_ret,   "bnh_mdd":   _mc_bnh_mdd,
                             "periods":   _mc_periods,
                         }
-                        st.rerun()
 
             _mc_res = st.session_state.get(f"mc_result_{tk}")
             if _mc_res:
