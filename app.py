@@ -2221,6 +2221,61 @@ a   = 파라미터값
     # ── 성과 분석 ──────────────────────────────
     st.subheader("📊 전략 성과 분석")
 
+    def _compute_recovery_table(assets, dates, threshold=10.0):
+        """고점 대비 threshold% 이상 하락 에피소드별 회복력 분석 테이블 반환."""
+        records = []
+        n = len(assets)
+        if n == 0:
+            return records
+        peak_val  = float(assets[0])
+        peak_idx  = 0
+        in_dd     = False
+        trough_val = peak_val
+        trough_idx = 0
+        for i in range(1, n):
+            curr   = float(assets[i])
+            dd_pct = (curr - peak_val) / peak_val * 100
+            if not in_dd:
+                if curr > peak_val:
+                    peak_val  = curr
+                    peak_idx  = i
+                elif dd_pct <= -threshold:
+                    in_dd      = True
+                    trough_val = curr
+                    trough_idx = i
+            else:
+                if curr < trough_val:
+                    trough_val = curr
+                    trough_idx = i
+                if curr >= peak_val:
+                    drop_rate = (trough_val - peak_val) / peak_val * 100
+                    records.append({
+                        "고점":         str(dates[peak_idx].date()),
+                        "고점 평가액":   round(peak_val),
+                        "최대하락 시점": str(dates[trough_idx].date()),
+                        "저점 평가액":  round(trough_val),
+                        "하락율(%)":    round(drop_rate, 2),
+                        "회복 시점":    str(dates[i].date()),
+                        "기간(일)":     (dates[i] - dates[peak_idx]).days,
+                    })
+                    in_dd      = False
+                    peak_val   = curr
+                    peak_idx   = i
+                    trough_val = curr
+                    trough_idx = i
+        if in_dd:
+            drop_rate = (trough_val - peak_val) / peak_val * 100
+            records.append({
+                "고점":         str(dates[peak_idx].date()),
+                "고점 평가액":   round(peak_val),
+                "최대하락 시점": str(dates[trough_idx].date()),
+                "저점 평가액":  round(trough_val),
+                "하락율(%)":    round(drop_rate, 2),
+                "회복 시점":    "미회복",
+                "기간(일)":     (dates[-1] - dates[peak_idx]).days,
+            })
+        return records
+
     def _render_perf_analysis(tk, a_b, a_s, sr, div, init_cap, s_date, e_date):
         """ticker 하나의 성과 분석 전체를 렌더링."""
         with st.spinner(f"{tk} 데이터 로드 및 분석 중..."):
@@ -2361,6 +2416,124 @@ a   = 파라미터값
             st.markdown("**Top 5 최대 낙폭 구간**")
             st.dataframe(_dd_df.style.format({"최대낙폭(%)": "{:.2f}%"}),
                          hide_index=False, use_container_width=True)
+        st.divider()
+
+        # ── 고점 회복력 분석 ──────────────────────────────────
+        st.subheader("🔄 고점 회복력 분석")
+        st.caption("고점 대비 10% 이상 하락이 발생한 모든 에피소드와 회복까지 걸린 기간을 정리합니다.")
+
+        _rec_records = _compute_recovery_table(_res["assets"], _res["dates"], threshold=10.0)
+
+        if _rec_records:
+            _rec_df = pd.DataFrame(_rec_records).reset_index(drop=True)
+            _rec_df.index += 1
+
+            # 하락율 절댓값 표시용 복사본
+            _rec_df_show = _rec_df.copy()
+            _rec_df_show["고점 평가액"]  = _rec_df_show["고점 평가액"].apply(lambda v: f"${v:,}")
+            _rec_df_show["저점 평가액"]  = _rec_df_show["저점 평가액"].apply(lambda v: f"${v:,}")
+            _rec_df_show["하락율(%)"]    = _rec_df_show["하락율(%)"].apply(lambda v: f"{abs(v):.2f}%")
+            _rec_df_show["기간(일)"]     = _rec_df_show["기간(일)"].apply(
+                lambda v: f"{v}일" if isinstance(v, (int, float)) else str(v))
+
+            # 미회복 행 강조
+            def _highlight_unrecovered(row):
+                return ["background-color: #fff3e0"] * len(row) \
+                    if row["회복 시점"] == "미회복" else [""] * len(row)
+
+            st.dataframe(
+                _rec_df_show.style.apply(_highlight_unrecovered, axis=1),
+                hide_index=False,
+                use_container_width=True,
+            )
+
+            # 요약 지표
+            _rc1, _rc2, _rc3, _rc4 = st.columns(4)
+            _completed = [r for r in _rec_records if r["회복 시점"] != "미회복"]
+            _avg_days   = int(np.mean([r["기간(일)"] for r in _completed])) if _completed else 0
+            _max_days   = max([r["기간(일)"] for r in _completed], default=0)
+            _max_drop   = min([r["하락율(%)"] for r in _rec_records])
+            _rc1.metric("총 에피소드",        f"{len(_rec_records)}회")
+            _rc2.metric("평균 회복 기간",     f"{_avg_days}일" if _completed else "-")
+            _rc3.metric("최장 회복 기간",     f"{_max_days}일" if _completed else "-")
+            _rc4.metric("최대 낙폭",          f"{abs(_max_drop):.2f}%")
+
+            st.divider()
+
+            # ── 회복력 차트 (전략 + B&H + 하락 음영 + 마커) ──
+            st.markdown("**📊 고점 회복 구간 시각화**")
+            st.caption("노란 음영: 10% 이상 하락 구간 / 초록 점: 고점 / 빨간 점: 저점")
+
+            _fig_rec = go.Figure()
+
+            # 전략 라인
+            _str_dates_r = [str(d.date()) for d in _res["dates"]]
+            _fig_rec.add_trace(go.Scatter(
+                x=_str_dates_r, y=_res["assets"].tolist(),
+                name="종가평균매매 전략",
+                line=dict(color="#1565C0", width=2),
+            ))
+
+            # B&H 라인
+            _bnh_a2, _bnh_d2 = compute_bnh(_pdf, s_date, e_date, init_cap)
+            if len(_bnh_a2) > 0:
+                _fig_rec.add_trace(go.Scatter(
+                    x=[str(d.date()) for d in _bnh_d2], y=_bnh_a2.tolist(),
+                    name="Buy & Hold",
+                    line=dict(color="#FB8C00", width=1.5, dash="dot"),
+                ))
+
+            # 날짜 → 인덱스 맵
+            _date_str_map = {str(d.date()): i for i, d in enumerate(_res["dates"])}
+
+            for _ep in _rec_records:
+                _xs = _ep["고점"]
+                _xe = _ep["회복 시점"] if _ep["회복 시점"] != "미회복" else _str_dates_r[-1]
+                # 노란 음영 (drawdown 구간)
+                _fig_rec.add_vrect(
+                    x0=_xs, x1=_xe,
+                    fillcolor="rgba(255,236,153,0.35)",
+                    layer="below", line_width=0,
+                )
+                # 고점 마커 (초록)
+                _pi = _date_str_map.get(_xs)
+                if _pi is not None:
+                    _fig_rec.add_trace(go.Scatter(
+                        x=[_xs], y=[float(_res["assets"][_pi])],
+                        mode="markers",
+                        marker=dict(color="#43A047", size=8, symbol="circle"),
+                        showlegend=False, hovertemplate=f"고점: {_xs}<br>${float(_res['assets'][_pi]):,.0f}<extra></extra>",
+                    ))
+                # 저점 마커 (빨강)
+                _ti = _date_str_map.get(_ep["최대하락 시점"])
+                if _ti is not None:
+                    _fig_rec.add_trace(go.Scatter(
+                        x=[_ep["최대하락 시점"]], y=[float(_res["assets"][_ti])],
+                        mode="markers",
+                        marker=dict(color="#E53935", size=8, symbol="circle"),
+                        showlegend=False, hovertemplate=f"저점: {_ep['최대하락 시점']}<br>${float(_res['assets'][_ti]):,.0f}<extra></extra>",
+                    ))
+
+            # 범례용 더미 트레이스
+            _fig_rec.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(color="#43A047", size=8), name="고점",
+            ))
+            _fig_rec.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(color="#E53935", size=8), name="저점",
+            ))
+
+            _fig_rec.update_layout(
+                yaxis_title="자산 ($)",
+                height=420,
+                legend=dict(orientation="h", y=1.08),
+                hovermode="x unified",
+            )
+            st.plotly_chart(_fig_rec, use_container_width=True)
+        else:
+            st.info(f"분석 기간 중 10% 이상 하락 에피소드가 없습니다.")
+
         st.divider()
 
         # ── 롤링 성과 분석 ───────────────────────────────────
