@@ -2751,87 +2751,135 @@ a   = 파라미터값
                             "strat_ret": _mc_strat_ret, "strat_mdd": _mc_strat_mdd,
                             "bnh_ret":   _mc_bnh_ret,   "bnh_mdd":   _mc_bnh_mdd,
                             "periods":   _mc_periods,
+                            "bnh_ret_per":  _mc_bnh_ret,
+                            "bnh_mdd_per":  _mc_bnh_mdd,
                         }
 
             _mc_res = st.session_state.get(f"mc_result_{tk}")
             if _mc_res:
                 _sr_arr = np.array(_mc_res["strat_ret"])
                 _sm_arr = np.array(_mc_res["strat_mdd"])
-                _br_arr = np.array(_mc_res["bnh_ret"])   if _mc_res["bnh_ret"]  else None
-                _bm_arr = np.array(_mc_res["bnh_mdd"])   if _mc_res["bnh_mdd"]  else None
+                _br_arr = np.array(_mc_res["bnh_ret"]) if _mc_res["bnh_ret"] else None
+                _bm_arr = np.array(_mc_res["bnh_mdd"]) if _mc_res["bnh_mdd"] else None
                 _n_mc   = len(_sr_arr)
+                _strat_label = "종가평균 전략"
+                _bnh_label   = f"{tk} B&H"
 
-                # 요약 통계 표
+                # ── 요약 통계 표 ──
                 def _mc_stats(arr, label):
                     return {
                         "구분": label,
-                        "평균":    f"{np.mean(arr):+.1f}%",
-                        "중앙값":  f"{np.median(arr):+.1f}%",
-                        "표준편차":f"{np.std(arr):.1f}%",
-                        "최솟값":  f"{np.min(arr):+.1f}%",
-                        "최댓값":  f"{np.max(arr):+.1f}%",
+                        "평균":       f"{np.mean(arr):+.1f}%",
+                        "중앙값":     f"{np.median(arr):+.1f}%",
+                        "표준편차":   f"{np.std(arr):.1f}%",
+                        "최솟값":     f"{np.min(arr):+.1f}%",
+                        "최댓값":     f"{np.max(arr):+.1f}%",
                         "양(+) 비율": f"{(arr > 0).sum() / len(arr) * 100:.0f}%",
                     }
-                _mc_stat_rows = [_mc_stats(_sr_arr, f"{tk} 전략 (1년 수익률)")]
+                _mc_stat_rows = [_mc_stats(_sr_arr, f"{_strat_label} (1년 수익률)")]
                 if _br_arr is not None:
-                    _mc_stat_rows.append(_mc_stats(_br_arr, f"{tk} B&H (1년 수익률)"))
+                    _mc_stat_rows.append(_mc_stats(_br_arr, f"{_bnh_label} (1년 수익률)"))
                 _mc_stat_rows.append({
-                    "구분": f"{tk} 전략 (MDD)", "평균": f"{np.mean(_sm_arr):.1f}%",
-                    "중앙값": f"{np.median(_sm_arr):.1f}%", "표준편차": f"{np.std(_sm_arr):.1f}%",
-                    "최솟값": f"{np.min(_sm_arr):.1f}%", "최댓값": f"{np.max(_sm_arr):.1f}%",
-                    "양(+) 비율": "-",
+                    "구분": f"{_strat_label} (MDD)",
+                    "평균": f"{np.mean(_sm_arr):.1f}%", "중앙값": f"{np.median(_sm_arr):.1f}%",
+                    "표준편차": f"{np.std(_sm_arr):.1f}%", "최솟값": f"{np.min(_sm_arr):.1f}%",
+                    "최댓값": f"{np.max(_sm_arr):.1f}%", "양(+) 비율": "-",
                 })
                 if _bm_arr is not None:
                     _mc_stat_rows.append({
-                        "구분": f"{tk} B&H (MDD)", "평균": f"{np.mean(_bm_arr):.1f}%",
-                        "중앙값": f"{np.median(_bm_arr):.1f}%", "표준편차": f"{np.std(_bm_arr):.1f}%",
-                        "최솟값": f"{np.min(_bm_arr):.1f}%", "최댓값": f"{np.max(_bm_arr):.1f}%",
-                        "양(+) 비율": "-",
+                        "구분": f"{_bnh_label} (MDD)",
+                        "평균": f"{np.mean(_bm_arr):.1f}%", "중앙값": f"{np.median(_bm_arr):.1f}%",
+                        "표준편차": f"{np.std(_bm_arr):.1f}%", "최솟값": f"{np.min(_bm_arr):.1f}%",
+                        "최댓값": f"{np.max(_bm_arr):.1f}%", "양(+) 비율": "-",
                     })
                 st.markdown(f"**📋 요약 통계 (n={_n_mc})**")
                 st.dataframe(pd.DataFrame(_mc_stat_rows), hide_index=True, use_container_width=True)
 
+                # ── 100구간 상세 결과 표 ──
+                with st.expander("📄 100구간 상세 결과 보기"):
+                    _detail_rows = []
+                    for _di, (_psd, _ped) in enumerate(_mc_res["periods"]):
+                        _row = {
+                            "#": _di + 1,
+                            "시작일": _psd, "종료일": _ped,
+                            "전략 수익률(%)": f"{_mc_res['strat_ret'][_di]:+.1f}%",
+                            "전략 MDD(%)":    f"{_mc_res['strat_mdd'][_di]:.1f}%",
+                        }
+                        if _br_arr is not None and _di < len(_mc_res["bnh_ret"]):
+                            _row[f"{tk} B&H 수익률(%)"] = f"{_mc_res['bnh_ret'][_di]:+.1f}%"
+                            _row[f"{tk} B&H MDD(%)"]    = f"{_mc_res['bnh_mdd'][_di]:.1f}%"
+                        _detail_rows.append(_row)
+                    _detail_df = pd.DataFrame(_detail_rows)
+
+                    def _highlight_detail(row):
+                        try:
+                            ret = float(row["전략 수익률(%)"].replace("%","").replace("+",""))
+                            color = "background-color: #e8f5e9" if ret > 0 else "background-color: #ffebee"
+                            return [color] * len(row)
+                        except Exception:
+                            return [""] * len(row)
+
+                    st.dataframe(
+                        _detail_df.style.apply(_highlight_detail, axis=1),
+                        hide_index=True, use_container_width=True,
+                        height=min(38 + 35 * len(_detail_df), 500),
+                    )
+
                 # ── 차트: 수익률 분포 + MDD 분포 ──
                 from scipy.stats import gaussian_kde as _kde
-                _fig_mc = make_subplots(rows=1, cols=2,
-                                        subplot_titles=["수익률 분포 (1년)", "최대 낙폭(MDD) 분포"])
 
-                def _add_hist_kde(fig, arr, color, name, row, col, rev_x=False):
-                    """히스토그램 + KDE 추가."""
+                # B&H 먼저(뒤), 전략 나중(앞) 순서로 그려야 전략이 앞에 표시됨
+                _fig_mc = make_subplots(
+                    rows=1, cols=2,
+                    subplot_titles=["수익률 분포 (1년)", "최대 낙폭(MDD) 분포"],
+                    horizontal_spacing=0.12,
+                )
+
+                def _add_hist_kde(fig, arr, color, name, row, col, legendgroup, showlegend):
                     fig.add_trace(go.Histogram(
-                        x=arr.tolist(), nbinsx=20,
-                        name=name, opacity=0.55,
-                        marker_color=color,
+                        x=arr.tolist(), nbinsx=20, name=name,
+                        opacity=0.55, marker_color=color,
+                        legendgroup=legendgroup, showlegend=showlegend,
                     ), row=row, col=col)
                     if len(arr) > 5:
                         _kd = _kde(arr)
                         _xr = np.linspace(arr.min() - arr.std(), arr.max() + arr.std(), 200)
                         _yr = _kd(_xr) * len(arr) * (arr.max() - arr.min()) / 20
                         fig.add_trace(go.Scatter(
-                            x=_xr.tolist(), y=_yr.tolist(),
-                            name=name, line=dict(color=color, width=2),
-                            showlegend=False,
+                            x=_xr.tolist(), y=_yr.tolist(), name=name,
+                            line=dict(color=color, width=2.5),
+                            legendgroup=legendgroup, showlegend=False,
                         ), row=row, col=col)
 
-                _add_hist_kde(_fig_mc, _sr_arr, "#1565C0", f"{tk} 전략", 1, 1)
+                # B&H 먼저 (뒤에 배치)
                 if _br_arr is not None:
-                    _add_hist_kde(_fig_mc, _br_arr, "#FB8C00", f"{tk} B&H",  1, 1)
-                _add_hist_kde(_fig_mc, _sm_arr, "#1565C0", f"{tk} 전략 MDD", 1, 2)
+                    _add_hist_kde(_fig_mc, _br_arr, "#FB8C00", _bnh_label,   1, 1, "bnh",    True)
                 if _bm_arr is not None:
-                    _add_hist_kde(_fig_mc, _bm_arr, "#FB8C00", f"{tk} B&H MDD",  1, 2)
+                    _add_hist_kde(_fig_mc, _bm_arr, "#FB8C00", _bnh_label,   1, 2, "bnh",    False)
+                # 전략 나중 (앞에 배치)
+                _add_hist_kde(_fig_mc, _sr_arr, "#1565C0", _strat_label, 1, 1, "strat",  True)
+                _add_hist_kde(_fig_mc, _sm_arr, "#1565C0", _strat_label, 1, 2, "strat",  False)
 
                 _fig_mc.add_vline(x=0, line_dash="dash", line_color="#555", row=1, col=1)
                 _fig_mc.update_xaxes(title_text="1년 수익률 (%)", row=1, col=1)
                 _fig_mc.update_xaxes(title_text="MDD (%)",        row=1, col=2)
-                _fig_mc.update_yaxes(title_text="빈도 (구간수)")
+                _fig_mc.update_yaxes(title_text="빈도 (구간수)",   row=1, col=1)
+                _fig_mc.update_yaxes(title_text="빈도 (구간수)",   row=1, col=2)
                 _fig_mc.update_layout(
-                    height=420, barmode="overlay",
-                    legend=dict(orientation="h", y=1.12),
+                    height=460, barmode="overlay",
+                    legend=dict(
+                        orientation="v",
+                        x=1.02, y=1.0,
+                        xanchor="left", yanchor="top",
+                        bgcolor="rgba(255,255,255,0.85)",
+                        bordercolor="#ccc", borderwidth=1,
+                    ),
+                    margin=dict(r=140),
                 )
                 st.plotly_chart(_fig_mc, use_container_width=True)
                 st.caption(
-                    f"전략이 B&H 대비 수익률 분포가 오른쪽으로 치우치고(높은 수익), "
-                    f"MDD 분포가 왼쪽(낮은 손실)에 집중될수록 강건한 전략입니다."
+                    "전략이 B&H 대비 수익률 분포가 오른쪽에 집중(높은 수익)되고, "
+                    "MDD 분포가 왼쪽에 집중(낮은 손실)될수록 강건한 전략입니다."
                 )
 
         st.divider()
