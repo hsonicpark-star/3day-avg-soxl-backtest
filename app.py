@@ -5,6 +5,7 @@ import numpy as np
 import math
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
@@ -2696,6 +2697,144 @@ a   = 파라미터값
             _fig_heat.update_layout(height=380)
             st.plotly_chart(_fig_heat, use_container_width=True)
             st.caption("녹색일수록 Calmar Ratio가 높습니다. 현재 파라미터(★) 주변이 고르게 녹색이면 과최적화 위험이 낮습니다.")
+        st.divider()
+
+        # ── 무작위 기간 강건성 분석 ──────────────────────────────
+        st.subheader("🎲 무작위 기간 강건성 분석")
+        st.caption(
+            "2014~현재까지 1년(252 거래일) 구간 100개를 무작위 추출하여 백테스트를 반복합니다. "
+            "시작 시점과 무관하게 전략이 일관된 성과를 내는지 확인합니다."
+        )
+        with st.expander("🔍 강건성 분석 실행 (클릭)", expanded=False):
+            if st.button("▶ 무작위 100구간 분석 시작", key=f"mc_run_{tk}"):
+                st.session_state[f"mc_result_{tk}"] = None  # 초기화
+                with st.spinner("전체 가격 데이터 로드 중..."):
+                    _mc_pdf = load_price_data(tk, "2014-01-01", str(pd.Timestamp.today().date()),
+                                              "야후파이낸스 (yfinance)", None)
+                if _mc_pdf.empty:
+                    st.error("가격 데이터를 불러오지 못했습니다.")
+                else:
+                    _mc_closes = _mc_pdf["Close"].dropna()
+                    _mc_idx    = _mc_closes.index
+                    _WINDOW    = 252  # 1년 거래일
+                    _mc_valid_starts = [i for i in range(len(_mc_idx) - _WINDOW)]
+                    if len(_mc_valid_starts) < 100:
+                        st.warning("데이터가 100구간 분석에 충분하지 않습니다.")
+                    else:
+                        import random as _rand
+                        _rand.seed(None)  # 매 실행마다 다른 무작위
+                        _mc_chosen = _rand.sample(_mc_valid_starts, 100)
+                        _mc_strat_ret  = []
+                        _mc_strat_mdd  = []
+                        _mc_bnh_ret    = []
+                        _mc_bnh_mdd    = []
+                        _mc_periods    = []
+                        _mc_prog = st.progress(0, text="시뮬레이션 중...")
+                        for _ci, _si in enumerate(_mc_chosen):
+                            _s_dt = str(_mc_idx[_si].date())
+                            _e_dt = str(_mc_idx[_si + _WINDOW - 1].date())
+                            _r = run_backtest(_mc_pdf, _s_dt, _e_dt, a_b, a_s, sr, div, init_cap)
+                            if _r:
+                                _mc_strat_ret.append(round(_r["total_return"] * 100, 2))
+                                _mc_strat_mdd.append(round(abs(_r["mdd"]) * 100, 2))
+                                _ba, _ = compute_bnh(_mc_pdf, _s_dt, _e_dt, init_cap)
+                                if len(_ba) > 0:
+                                    _bnh_tr = (_ba[-1] / _ba[0] - 1) * 100
+                                    _bnh_pk = np.maximum.accumulate(_ba)
+                                    _bnh_md = abs(float(((np.array(_ba) - _bnh_pk) / _bnh_pk).min())) * 100
+                                    _mc_bnh_ret.append(round(_bnh_tr, 2))
+                                    _mc_bnh_mdd.append(round(_bnh_md, 2))
+                                _mc_periods.append((_s_dt, _e_dt))
+                            _mc_prog.progress((_ci + 1) / 100, text=f"시뮬레이션 중... {_ci+1}/100")
+                        _mc_prog.empty()
+                        st.session_state[f"mc_result_{tk}"] = {
+                            "strat_ret": _mc_strat_ret, "strat_mdd": _mc_strat_mdd,
+                            "bnh_ret":   _mc_bnh_ret,   "bnh_mdd":   _mc_bnh_mdd,
+                            "periods":   _mc_periods,
+                        }
+                        st.rerun()
+
+            _mc_res = st.session_state.get(f"mc_result_{tk}")
+            if _mc_res:
+                _sr_arr = np.array(_mc_res["strat_ret"])
+                _sm_arr = np.array(_mc_res["strat_mdd"])
+                _br_arr = np.array(_mc_res["bnh_ret"])   if _mc_res["bnh_ret"]  else None
+                _bm_arr = np.array(_mc_res["bnh_mdd"])   if _mc_res["bnh_mdd"]  else None
+                _n_mc   = len(_sr_arr)
+
+                # 요약 통계 표
+                def _mc_stats(arr, label):
+                    return {
+                        "구분": label,
+                        "평균":    f"{np.mean(arr):+.1f}%",
+                        "중앙값":  f"{np.median(arr):+.1f}%",
+                        "표준편차":f"{np.std(arr):.1f}%",
+                        "최솟값":  f"{np.min(arr):+.1f}%",
+                        "최댓값":  f"{np.max(arr):+.1f}%",
+                        "양(+) 비율": f"{(arr > 0).sum() / len(arr) * 100:.0f}%",
+                    }
+                _mc_stat_rows = [_mc_stats(_sr_arr, f"{tk} 전략 (1년 수익률)")]
+                if _br_arr is not None:
+                    _mc_stat_rows.append(_mc_stats(_br_arr, f"{tk} B&H (1년 수익률)"))
+                _mc_stat_rows.append({
+                    "구분": f"{tk} 전략 (MDD)", "평균": f"{np.mean(_sm_arr):.1f}%",
+                    "중앙값": f"{np.median(_sm_arr):.1f}%", "표준편차": f"{np.std(_sm_arr):.1f}%",
+                    "최솟값": f"{np.min(_sm_arr):.1f}%", "최댓값": f"{np.max(_sm_arr):.1f}%",
+                    "양(+) 비율": "-",
+                })
+                if _bm_arr is not None:
+                    _mc_stat_rows.append({
+                        "구분": f"{tk} B&H (MDD)", "평균": f"{np.mean(_bm_arr):.1f}%",
+                        "중앙값": f"{np.median(_bm_arr):.1f}%", "표준편차": f"{np.std(_bm_arr):.1f}%",
+                        "최솟값": f"{np.min(_bm_arr):.1f}%", "최댓값": f"{np.max(_bm_arr):.1f}%",
+                        "양(+) 비율": "-",
+                    })
+                st.markdown(f"**📋 요약 통계 (n={_n_mc})**")
+                st.dataframe(pd.DataFrame(_mc_stat_rows), hide_index=True, use_container_width=True)
+
+                # ── 차트: 수익률 분포 + MDD 분포 ──
+                from scipy.stats import gaussian_kde as _kde
+                _fig_mc = make_subplots(rows=1, cols=2,
+                                        subplot_titles=["수익률 분포 (1년)", "최대 낙폭(MDD) 분포"])
+
+                def _add_hist_kde(fig, arr, color, name, row, col, rev_x=False):
+                    """히스토그램 + KDE 추가."""
+                    fig.add_trace(go.Histogram(
+                        x=arr.tolist(), nbinsx=20,
+                        name=name, opacity=0.55,
+                        marker_color=color,
+                    ), row=row, col=col)
+                    if len(arr) > 5:
+                        _kd = _kde(arr)
+                        _xr = np.linspace(arr.min() - arr.std(), arr.max() + arr.std(), 200)
+                        _yr = _kd(_xr) * len(arr) * (arr.max() - arr.min()) / 20
+                        fig.add_trace(go.Scatter(
+                            x=_xr.tolist(), y=_yr.tolist(),
+                            name=name, line=dict(color=color, width=2),
+                            showlegend=False,
+                        ), row=row, col=col)
+
+                _add_hist_kde(_fig_mc, _sr_arr, "#1565C0", f"{tk} 전략", 1, 1)
+                if _br_arr is not None:
+                    _add_hist_kde(_fig_mc, _br_arr, "#FB8C00", f"{tk} B&H",  1, 1)
+                _add_hist_kde(_fig_mc, _sm_arr, "#1565C0", f"{tk} 전략 MDD", 1, 2)
+                if _bm_arr is not None:
+                    _add_hist_kde(_fig_mc, _bm_arr, "#FB8C00", f"{tk} B&H MDD",  1, 2)
+
+                _fig_mc.add_vline(x=0, line_dash="dash", line_color="#555", row=1, col=1)
+                _fig_mc.update_xaxes(title_text="1년 수익률 (%)", row=1, col=1)
+                _fig_mc.update_xaxes(title_text="MDD (%)",        row=1, col=2)
+                _fig_mc.update_yaxes(title_text="빈도 (구간수)")
+                _fig_mc.update_layout(
+                    height=420, barmode="overlay",
+                    legend=dict(orientation="h", y=1.12),
+                )
+                st.plotly_chart(_fig_mc, use_container_width=True)
+                st.caption(
+                    f"전략이 B&H 대비 수익률 분포가 오른쪽으로 치우치고(높은 수익), "
+                    f"MDD 분포가 왼쪽(낮은 손실)에 집중될수록 강건한 전략입니다."
+                )
+
         st.divider()
 
         # ── 티어별 매수 사이클 분석 ────────────────────────────
