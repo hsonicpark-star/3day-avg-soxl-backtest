@@ -2617,28 +2617,26 @@ a   = 파라미터값
             _cu2.metric("최대 투자 비율", f"{np.max(_inv_ratio):.1f}%")
             _cu3.metric("현금 보유 비율", f"{100 - np.mean(_inv_ratio):.1f}%")
             _fig_cu = go.Figure()
-            _x_dates = [str(d.date()) for d in _res["dates"]]
-            _cash_ratio = (100 - _inv_ratio).tolist()
-            _stk_ratio  = _inv_ratio.tolist()
-            # 주식(ETF) 영역 — 아래
+            _x_dates   = [str(d.date()) for d in _res["dates"]]
+            _stk_ratio = _inv_ratio.tolist()
+            _ones      = [100.0] * len(_x_dates)
+            # ① 현금(회색) — 100% 채우는 배경
+            _fig_cu.add_trace(go.Scatter(
+                x=_x_dates, y=_ones,
+                name="현금",
+                mode="lines", line=dict(width=0),
+                fill="tozeroy",
+                fillcolor="rgba(200,200,200,0.6)",
+                hoverinfo="skip",
+            ))
+            # ② 주식(ETF, 노란) — 투자비율만큼 위에 덮어서 그림
             _fig_cu.add_trace(go.Scatter(
                 x=_x_dates, y=_stk_ratio,
                 name="주식(ETF)",
-                mode="lines",
-                line=dict(width=0),
+                mode="lines", line=dict(width=0),
                 fill="tozeroy",
-                fillcolor="rgba(255,179,0,0.75)",
-                stackgroup="alloc",
-            ))
-            # 현금 영역 — 위 (합계 100%)
-            _fig_cu.add_trace(go.Scatter(
-                x=_x_dates, y=_cash_ratio,
-                name="현금",
-                mode="lines",
-                line=dict(width=0),
-                fill="tonexty",
-                fillcolor="rgba(200,200,200,0.55)",
-                stackgroup="alloc",
+                fillcolor="rgba(255,179,0,0.85)",
+                hovertemplate="%{y:.1f}%<extra>주식(ETF)</extra>",
             ))
             _fig_cu.update_layout(
                 yaxis_title="비율 (%)",
