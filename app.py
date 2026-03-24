@@ -2882,6 +2882,57 @@ a   = 파라미터값
                     "MDD 분포가 왼쪽에 집중(낮은 손실)될수록 강건한 전략입니다."
                 )
 
+                # ── 박스플롯: 수익률 + MDD ──
+                st.markdown("**📦 박스플롯 — 분포 요약 (중앙값 · 사분위 · 이상치)**")
+                _fig_box = make_subplots(
+                    rows=1, cols=2,
+                    subplot_titles=["수익률 박스플롯", "최대 낙폭(MDD) 박스플롯"],
+                    horizontal_spacing=0.12,
+                )
+                # 수익률 박스플롯 — B&H 먼저(뒤), 전략 나중(앞)
+                if _br_arr is not None:
+                    _fig_box.add_trace(go.Box(
+                        y=_br_arr.tolist(), name=_bnh_label,
+                        marker_color="#FB8C00", boxmean=True,
+                        legendgroup="bnh_box", showlegend=True,
+                    ), row=1, col=1)
+                _fig_box.add_trace(go.Box(
+                    y=_sr_arr.tolist(), name=_strat_label,
+                    marker_color="#1565C0", boxmean=True,
+                    legendgroup="strat_box", showlegend=True,
+                ), row=1, col=1)
+                # MDD 박스플롯
+                if _bm_arr is not None:
+                    _fig_box.add_trace(go.Box(
+                        y=_bm_arr.tolist(), name=_bnh_label,
+                        marker_color="#FB8C00", boxmean=True,
+                        legendgroup="bnh_box", showlegend=False,
+                    ), row=1, col=2)
+                _fig_box.add_trace(go.Box(
+                    y=_sm_arr.tolist(), name=_strat_label,
+                    marker_color="#1565C0", boxmean=True,
+                    legendgroup="strat_box", showlegend=False,
+                ), row=1, col=2)
+
+                _fig_box.add_hline(y=0, line_dash="dash", line_color="#888", row=1, col=1)
+                _fig_box.update_yaxes(title_text="수익률 (%)", row=1, col=1)
+                _fig_box.update_yaxes(title_text="MDD (%)",    row=1, col=2)
+                _fig_box.update_layout(
+                    height=420,
+                    legend=dict(
+                        orientation="v",
+                        x=1.02, y=1.0,
+                        xanchor="left", yanchor="top",
+                        bgcolor="rgba(255,255,255,0.85)",
+                        bordercolor="#ccc", borderwidth=1,
+                    ),
+                    margin=dict(r=140),
+                )
+                st.plotly_chart(_fig_box, use_container_width=True)
+                st.caption(
+                    "박스: 25~75 백분위 구간 / 선: 중앙값 / 삼각형(▲): 평균 / 점: 이상치"
+                )
+
         st.divider()
 
         # ── 티어별 매수 사이클 분석 ────────────────────────────
