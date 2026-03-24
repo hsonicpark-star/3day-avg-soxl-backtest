@@ -2616,14 +2616,20 @@ a   = 파라미터값
                         help="현금이 아닌 주식에 투자된 비율의 평균")
             _cu2.metric("최대 투자 비율", f"{np.max(_inv_ratio):.1f}%")
             _cu3.metric("현금 보유 비율", f"{100 - np.mean(_inv_ratio):.1f}%")
-            # 일별 → 주간 평균으로 리샘플링 (긴 기간 스파이크 방지)
+            # 스파이크 완화: 기간에 따라 이동평균 적용 (일별 데이터 유지)
             _ratio_s = pd.Series(
                 _inv_ratio,
                 index=pd.to_datetime([d.date() for d in _res["dates"]])
             )
             _total_days = (_ratio_s.index[-1] - _ratio_s.index[0]).days
-            if _total_days > 365:           # 1년 초과 → 주간 평균
-                _ratio_s = _ratio_s.resample("W").mean().dropna()
+            if _total_days > 365 * 3:       # 3년 초과 → 20일 이동평균
+                _win, _win_label = 20, "20일 이동평균"
+            elif _total_days > 365:         # 1~3년 → 10일 이동평균
+                _win, _win_label = 10, "10일 이동평균"
+            else:                           # 1년 이내 → 일별 원본
+                _win, _win_label = 1,  "일별"
+            if _win > 1:
+                _ratio_s = _ratio_s.rolling(_win, min_periods=1).mean()
             _x_dates   = [str(d.date()) for d in _ratio_s.index]
             _stk_ratio = _ratio_s.tolist()
             _ones      = [100.0] * len(_x_dates)
@@ -2664,9 +2670,8 @@ a   = 파라미터값
                 hovermode="x unified",
                 margin=dict(l=60, r=20, t=20, b=40),
             )
-            _label = "주간 평균" if _total_days > 365 else "일별"
             st.plotly_chart(_fig_cu, use_container_width=True)
-            st.caption(f"※ {_label} 데이터 기준 (기간이 1년 초과 시 주간 평균으로 표시)")
+            st.caption(f"※ {_win_label} 기준 표시 | 1년 이내: 일별 / 1~3년: 10일 이동평균 / 3년 초과: 20일 이동평균")
 
         if not _hist.empty:
             _buy_hist  = _hist[_hist["매매"] == "BUY"].copy()
