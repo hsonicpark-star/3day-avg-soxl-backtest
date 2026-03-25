@@ -960,6 +960,8 @@ def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio
     p2s      = sim["p2"].values.astype(float)
     tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
     tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+    # 거래일 인덱스 매핑 (Timestamp → 거래일 순번)
+    _tday_idx = {ts: idx for idx, ts in enumerate(sim.index)}
 
     for i in range(len(closes)):
         x    = closes[i]
@@ -974,7 +976,7 @@ def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio
                 # N티어 이상 매수 사이클이면 이벤트 기록
                 if len(cycle_buys) >= divisions:
                     nth  = cycle_buys[divisions - 1]
-                    hold = (date.date() - nth["date"].date()).days
+                    hold = _tday_idx[date] - _tday_idx[nth["date"]]
                     events.append({
                         "No":           len(events) + 1,
                         "5번째 매수일": str(nth["date"].date()),
@@ -1058,6 +1060,8 @@ def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, s
     p2s      = sim["p2"].values.astype(float)
     tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
     tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+    # 거래일 인덱스 매핑 (Timestamp → 거래일 순번)
+    _tday_idx = {ts: idx for idx, ts in enumerate(sim.index)}
 
     for i in range(len(closes)):
         x    = closes[i]
@@ -1087,7 +1091,7 @@ def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, s
                 if shares == 0:
                     # 포지션 완전 청산 → 사이클 기록
                     n_tiers   = len(cycle_buys)
-                    hold_days = (date.date() - cycle_start_date.date()).days if cycle_start_date else 0
+                    hold_days = (_tday_idx[date] - _tday_idx[cycle_start_date]) if cycle_start_date else 0
                     pnl       = (cycle_total_received - cycle_total_invested) / cycle_total_invested * 100 \
                                 if cycle_total_invested > 0 else 0.0
                     events.append({
