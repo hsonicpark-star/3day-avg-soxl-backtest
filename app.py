@@ -481,8 +481,13 @@ with st.sidebar:
     a_sell     = st.number_input("매도기준 (a값)", value=_def_a_sell, step=0.001, format="%.4f")
     sell_ratio = st.number_input("매도비율 (%)", value=_def_sr, step=10.0, min_value=0.0, max_value=100.0)
     divisions  = st.number_input("분할수", value=_def_div, min_value=1, step=1)
-    n_days     = st.slider("이동평균 N일", min_value=2, max_value=10, value=int(_def_ndays), step=1,
-                           help="매수/매도 경계가 계산에 사용할 과거 종가 일수. N=2: 직전 2일 평균(기본), N=4: 5일 평균")
+    _ndays_display = st.select_slider(
+        "이동평균 일수",
+        options=[f"{i}일" for i in range(3, 12)],
+        value=f"{int(_def_ndays) + 1}일",
+        help="매수/매도 경계가 계산에 사용할 이동평균 일수. 3일 = 직전 2일 종가 평균(기본), 5일 = 직전 4일 종가 평균",
+    )
+    n_days = int(_ndays_display.replace("일", "")) - 1  # 내부 계산은 직전 N일 사용
 
     st.caption("📌 파라미터 저장은 오늘의 주문표 탭에서 할 수 있습니다.")
 
@@ -1800,7 +1805,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _p2.metric("매도기준 (a_sell)", f"{_a_sell:.4f}")
         _p3.metric("매도비율",          f"{_sell_ratio:.0f}%")
         _p4.metric("분할수",            f"{_divisions}회")
-        _p5.metric("이동평균 N일",      f"{_n_days}일")
+        _p5.metric("이동평균",          f"{_n_days + 1}일 평균")
 
         with st.expander("✏️ 파라미터 수정"):
             _ep1, _ep2, _ep3, _ep4, _ep5 = st.columns(5)
@@ -1813,14 +1818,16 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                                              key=f"edit_sr_{key_sfx}")
             _new_div    = _ep4.number_input("분할수",            value=_divisions,
                                              min_value=1, step=1, key=f"edit_div_{key_sfx}")
-            _new_ndays  = _ep5.number_input("N일 평균",          value=_n_days,
-                                             min_value=2, max_value=10, step=1, key=f"edit_ndays_{key_sfx}")
+            _ndays_edit = _ep5.select_slider(
+                "이동평균 일수", options=[f"{i}일" for i in range(3, 12)],
+                value=f"{_n_days + 1}일", key=f"edit_ndays_{key_sfx}",
+            )
             if st.button("💾 파라미터 저장", key=f"save_param_{key_sfx}", type="primary",
                          use_container_width=True):
                 _new_param = {
                     "a_buy": float(_new_a_buy), "a_sell": float(_new_a_sell),
                     "sell_ratio": float(_new_sr), "divisions": int(_new_div),
-                    "n_days": int(_new_ndays),
+                    "n_days": int(_ndays_edit.replace("일", "")) - 1,  # 내부값 저장
                 }
                 _save_ticker_setting(tk, _new_param)
                 st.success(f"✅ {tk} 파라미터가 저장되었습니다!")
