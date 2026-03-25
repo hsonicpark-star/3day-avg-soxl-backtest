@@ -712,6 +712,7 @@ def run_portfolio_for_ordersheet(
     sell_trades = []
     buy_trades  = []
     daily_log   = []
+    _hold_tday  = 0    # 거래일 기준 보유기간 카운터 (첫 매수일 = 0)
 
     if not sim.empty:
         closes   = sim["Close"].values.astype(float)
@@ -737,8 +738,7 @@ def run_portfolio_for_ordersheet(
         if shares > 0 and x >= ts:
             sell_qty = math.floor(shares * (sell_ratio / 100.0))
             if sell_qty > 0:
-                oldest_date  = open_tiers[0]["date"] if open_tiers else date
-                holding_days = (date - oldest_date).days
+                holding_days = _hold_tday  # 거래일 기준 보유기간
                 factor       = x / avg_cost if avg_cost > 0 else 0.0
                 _day_pnl_amt = round((x - avg_cost) * sell_qty, 2) if avg_cost > 0 else 0.0
                 _day_pnl_pct = round((x / avg_cost - 1) * 100, 2)  if avg_cost > 0 else 0.0
@@ -813,9 +813,13 @@ def run_portfolio_for_ordersheet(
 
         # 전체 날짜 기록 (백테스트 일별 상세표와 동일 형식)
         _date_val2   = date.date() if hasattr(date, "date") else date
-        _oldest      = open_tiers[0]["date"] if open_tiers else None
-        _oldest_date = _oldest.date() if _oldest and hasattr(_oldest, "date") else _oldest
-        _hdays       = (date.date() - _oldest_date).days if _oldest_date else "-"
+        # 거래일 기준 보유기간: 매수 진입 시 0, 이후 거래일마다 +1, 전량 매도 시 리셋
+        if shares > 0:
+            _hdays = _hold_tday
+            _hold_tday += 1  # 다음 거래일 카운터 증가
+        else:
+            _hdays = "-"
+            _hold_tday = 0  # 포지션 없을 때 리셋 (다음 매수 시 0부터 시작)
         daily_log.append({
             "날짜":          str(_date_val2),
             "종가(x)":       round(x, 4),
