@@ -3141,6 +3141,83 @@ a   = 파라미터값
             st.info(f"선택 기간 내 {div}티어 완전 투자 이벤트가 없습니다.")
         st.divider()
 
+        # ── 이동평균 N일별 성과 비교 ─────────────────────────────
+        st.subheader("📐 이동평균 일수별 성과 비교")
+        st.caption("이동평균 3일(N=2)~10일(N=9)까지 동일 파라미터로 백테스트하여 최적 이동평균 일수를 확인합니다.")
+        with st.spinner("N일별 백테스트 실행 중..."):
+            _nday_rows = []
+            for _nd in range(2, 10):   # 내부 n_days: 2~9 → 표시: 3일~10일
+                _nr = run_backtest(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, n_days=_nd)
+                if _nr is None:
+                    continue
+                _nsh, _nso = compute_sharpe_sortino(_nr["assets"])
+                _nday_rows.append({
+                    "이동평균": f"{_nd + 1}일",
+                    "CAGR (%)":    round(_nr["cagr"]         * 100, 2),
+                    "MDD (%)":     round(_nr["mdd"]          * 100, 2),
+                    "Calmar":      round(_nr["calmar"],              3),
+                    "Sharpe":      round(_nsh,                       3),
+                    "Sortino":     round(_nso,                       3),
+                    "총수익률 (%)": round(_nr["total_return"] * 100, 2),
+                    "_nd": _nd,
+                })
+
+        if _nday_rows:
+            _ndf = pd.DataFrame(_nday_rows)
+            _cur_label = f"{n_days + 1}일"   # 현재 선택된 이동평균
+
+            # ── 표 ──
+            def _style_nday(row):
+                bg = "background-color: #fff9c4; font-weight:bold" if row["이동평균"] == _cur_label else ""
+                return [bg] * len(row)
+
+            _ndf_show = _ndf.drop(columns=["_nd"]).copy()
+            _ndf_show["CAGR (%)"]     = _ndf_show["CAGR (%)"].apply(lambda v: f"{v:+.2f}%")
+            _ndf_show["MDD (%)"]      = _ndf_show["MDD (%)"].apply(lambda v: f"{v:.2f}%")
+            _ndf_show["총수익률 (%)"] = _ndf_show["총수익률 (%)"].apply(lambda v: f"{v:+.2f}%")
+            st.dataframe(
+                _ndf_show.style.apply(_style_nday, axis=1),
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(f"🟡 노란색 행 = 현재 설정값 ({_cur_label})")
+
+            # ── 차트: CAGR / MDD / Calmar 3개 나란히 ──
+            _fc1, _fc2, _fc3 = st.columns(3)
+
+            def _bar_chart(col, y_col, title, color, higher_better=True):
+                _fig = go.Figure()
+                for _, row in _ndf.iterrows():
+                    is_cur = row["이동평균"] == _cur_label
+                    _fig.add_trace(go.Bar(
+                        x=[row["이동평균"]], y=[abs(row[y_col])],
+                        marker_color="#FDD835" if is_cur else color,
+                        marker_line_color="#F57F17" if is_cur else color,
+                        marker_line_width=2 if is_cur else 0,
+                        showlegend=False,
+                        hovertemplate=f"{row['이동평균']}: {row[y_col]:+.3f}<extra></extra>",
+                    ))
+                _fig.update_layout(
+                    title=dict(text=title, font=dict(size=13)),
+                    height=280, margin=dict(l=30, r=10, t=40, b=30),
+                    xaxis_title="이동평균", yaxis_title=y_col,
+                    plot_bgcolor="white",
+                )
+                col.plotly_chart(_fig, use_container_width=True)
+
+            _bar_chart(_fc1, "CAGR (%)",  "CAGR (%)",  "#1565C0")
+            _bar_chart(_fc2, "MDD (%)",   "MDD (%)",   "#C62828")
+            _bar_chart(_fc3, "Calmar",    "Calmar",    "#2E7D32")
+
+            # 최적 N 자동 탐지 (Calmar 기준)
+            _best_row = _ndf.loc[_ndf["Calmar"].idxmax()]
+            _best_label = _best_row["이동평균"]
+            if _best_label == _cur_label:
+                st.success(f"✅ 현재 설정 **{_cur_label}**이 분석 기간 기준 Calmar 최적값입니다!")
+            else:
+                st.info(f"💡 분석 기간 기준 Calmar 최적 이동평균은 **{_best_label}** (현재: {_cur_label})")
+
+        st.divider()
+
         st.subheader("💡 전략 인사이트 & 맥락 참고")
         st.warning(f"**다음 내용은 {tk} 백테스트 결과 해석입니다. 과거 성과가 미래 수익을 보장하지 않습니다.**")
         with st.container(border=True):
