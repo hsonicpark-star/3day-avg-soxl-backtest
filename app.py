@@ -475,11 +475,14 @@ with st.sidebar:
     _def_a_sell = _sfloat(_usercfg_sb.get("a_sell"),       0.009)
     _def_sr     = _sfloat(_usercfg_sb.get("sell_ratio"),  100.0)
     _def_div    = _sint  (_usercfg_sb.get("divisions"),   5)
+    _def_ndays  = _sint  (_usercfg_sb.get("n_days"),      2)
 
     a_buy      = st.number_input("매수기준 (a값)", value=_def_a_buy,  step=0.001, format="%.4f")
     a_sell     = st.number_input("매도기준 (a값)", value=_def_a_sell, step=0.001, format="%.4f")
     sell_ratio = st.number_input("매도비율 (%)", value=_def_sr, step=10.0, min_value=0.0, max_value=100.0)
     divisions  = st.number_input("분할수", value=_def_div, min_value=1, step=1)
+    n_days     = st.slider("이동평균 N일", min_value=2, max_value=10, value=int(_def_ndays), step=1,
+                           help="매수/매도 경계가 계산에 사용할 과거 종가 일수. N=2: 직전 2일 평균(기본), N=4: 5일 평균")
 
     st.caption("📌 파라미터 저장은 오늘의 주문표 탭에서 할 수 있습니다.")
 
@@ -521,6 +524,27 @@ with st.sidebar:
 # ──────────────────────────────────────────────
 def buy_limit_price(p1, p2, a):
     return (p1 + p2) * (1 + a) / (2 - a)
+
+
+def calc_boundary(prices, a):
+    """N일 종가 리스트 [p1,p2,...,pN]로 LOC 경계가 계산. N=2이면 기존 공식과 동일."""
+    n = len(prices)
+    return sum(prices) * (1 + a) / (n - a)
+
+
+def _prep_sim(sim_raw, n_days, a_buy, a_sell):
+    """N일 이동평균 기반 매수/매도 경계가 벡터 계산.
+    Returns: (sim_df, closes_arr, tgt_buy_arr, tgt_sell_arr)"""
+    for k in range(1, n_days + 1):
+        sim_raw[f"p{k}"] = sim_raw["Close"].shift(k)
+    sim = sim_raw.dropna(subset=[f"p{n_days}"])
+    if sim.empty:
+        return sim, np.array([]), np.array([]), np.array([])
+    psum = sum(sim[f"p{k}"].values.astype(float) for k in range(1, n_days + 1))
+    closes   = sim["Close"].values.astype(float)
+    tgt_buy  = psum * (1 + a_buy)  / (n_days - a_buy)
+    tgt_sell = psum * (1 + a_sell) / (n_days - a_sell)
+    return sim, closes, tgt_buy, tgt_sell
 
 
 def scalar(v):
@@ -595,20 +619,12 @@ def load_price_data(ticker, start, end, data_source, excel_file):
 def run_backtest(
     price_df, start_date, end_date,
     a_buy, a_sell, sell_ratio, divisions, initial_capital,
-    return_history=False,
+    return_history=False, n_days=2,
 ):
     sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
-    sim_raw["p1"] = sim_raw["Close"].shift(1)
-    sim_raw["p2"] = sim_raw["Close"].shift(2)
-    sim = sim_raw.dropna(subset=["p1", "p2"])
+    sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw, n_days, a_buy, a_sell)
     if sim.empty:
         return None
-
-    closes   = sim["Close"].values.astype(float)
-    p1s      = sim["p1"].values.astype(float)
-    p2s      = sim["p2"].values.astype(float)
-    tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
-    tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
 
     cash       = float(initial_capital)
     shares     = 0
@@ -652,7 +668,7 @@ def run_backtest(
         if return_history:
             history.append({
                 "날짜": sim.index[i].date(), "종가(x)": x,
-                "전날(p1)": p1s[i], "전전날(p2)": p2s[i],
+                "전날(p1)": float(sim["p1"].values[i]), "전전날(p2)": float(sim["p2"].values[i]) if "p2" in sim.columns else float("nan"),
                 "매수경계가": tb, "매도경계가": ts,
                 "매매": action, "거래주수": trade_shares,
                 "거래금액($)": trade_amount, "보유주수": shares,
@@ -690,17 +706,14 @@ def run_backtest(
 def run_portfolio_for_ordersheet(
     price_df, start_date, ticker_name,
     a_buy, a_sell, sell_ratio, divisions, initial_capital,
+    n_days=2,
 ):
     """백테스트를 오늘까지 실행하며 평균단가·티어·매도이력을 추적."""
     today = datetime.today().date()
     sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(today)].copy()
-    sim_raw["p1"] = sim_raw["Close"].shift(1)
-    sim_raw["p2"] = sim_raw["Close"].shift(2)
-    sim = sim_raw.dropna(subset=["p1", "p2"])
-
-    # p1/p2 계산에는 최소 2개 종가 필요
     all_closes = sim_raw["Close"].dropna().values.astype(float)
-    if len(all_closes) < 2:
+    # N일 계산에는 최소 N개 종가 필요
+    if len(all_closes) < n_days:
         return None
 
     cash        = float(initial_capital)
@@ -714,14 +727,12 @@ def run_portfolio_for_ordersheet(
     daily_log   = []
     _hold_tday  = 0    # 거래일 기준 보유기간 카운터 (첫 매수일 = 0)
 
-    if not sim.empty:
-        closes   = sim["Close"].values.astype(float)
-        p1s      = sim["p1"].values.astype(float)
-        p2s      = sim["p2"].values.astype(float)
-        tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
-        tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
+    if not sim_raw.empty:
+        sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw.copy(), n_days, a_buy, a_sell)
     else:
-        closes = np.array([])  # 거래 없음, 빈 배열
+        sim    = sim_raw
+        closes = np.array([])
+        tgt_buy = tgt_sell = np.array([])
 
     for i in range(len(closes)):
         x    = closes[i]
@@ -823,8 +834,8 @@ def run_portfolio_for_ordersheet(
         daily_log.append({
             "날짜":          str(_date_val2),
             "종가(x)":       round(x, 4),
-            "전날(p1)":      round(p1s[i], 4),
-            "전전날(p2)":    round(p2s[i], 4),
+            "전날(p1)":      round(float(sim["p1"].values[i]), 4),
+            "전전날(p2)":    round(float(sim["p2"].values[i]), 4) if "p2" in sim.columns else float("nan"),
             "매수경계가":    round(tb, 4),
             "매도경계가":    round(ts, 4),
             "매매":          _day_action,
@@ -846,12 +857,13 @@ def run_portfolio_for_ordersheet(
     years         = (today - pd.to_datetime(start_date).date()).days / 365.25
     cagr          = ((current_asset / initial_capital) ** (1.0 / years) - 1.0) if years > 0 else 0.0
 
-    # 오늘 LOC 기준: 가장 최근 2개 종가
-    p1_now = float(all_closes[-1])
-    p2_now = float(all_closes[-2])
-    next_buy_primary   = buy_limit_price(p1_now, p2_now, a_buy)
+    # 오늘 LOC 기준: 가장 최근 N개 종가
+    p_now = [float(all_closes[-(k)]) for k in range(1, n_days + 1)]
+    p1_now = p_now[0]
+    p2_now = p_now[1] if len(p_now) > 1 else p_now[0]
+    next_buy_primary   = calc_boundary(p_now, a_buy)
     next_buy_secondary = next_buy_primary * 0.95
-    next_sell_target   = buy_limit_price(p1_now, p2_now, a_sell)
+    next_sell_target   = calc_boundary(p_now, a_sell)
 
     min_tier_price = min(t["price"] for t in open_tiers) if open_tiers else 0.0
     chunk_now      = current_asset / divisions
@@ -938,12 +950,10 @@ def compute_monthly_pivot(history_df, initial_capital):
 # ──────────────────────────────────────────────
 # 5티어 완전 투자 이벤트 분석
 # ──────────────────────────────────────────────
-def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio, divisions, initial_capital):
+def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio, divisions, initial_capital, n_days=2):
     """분할수(N) 이상 매수 후 매도된 사이클(N티어 완전 투자) 이벤트 추출."""
     sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
-    sim_raw["p1"] = sim_raw["Close"].shift(1)
-    sim_raw["p2"] = sim_raw["Close"].shift(2)
-    sim = sim_raw.dropna(subset=["p1", "p2"])
+    sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw, n_days, a_buy, a_sell)
     if sim.empty:
         return []
 
@@ -955,11 +965,6 @@ def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio
     cycle_buys = []   # 현재 사이클의 매수 목록
     events     = []
 
-    closes   = sim["Close"].values.astype(float)
-    p1s      = sim["p1"].values.astype(float)
-    p2s      = sim["p2"].values.astype(float)
-    tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
-    tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
     # 거래일 인덱스 매핑 (Timestamp → 거래일 순번)
     _tday_idx = {ts: idx for idx, ts in enumerate(sim.index)}
 
@@ -1029,15 +1034,13 @@ def run_5tier_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio
     return events
 
 
-def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio, divisions, initial_capital):
+def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, sell_ratio, divisions, initial_capital, n_days=2):
     """티어별 완전 청산 사이클 분석.
     포지션이 0이 될 때까지 추적하여, 각 사이클에서 몇 티어까지 매수됐는지 기록.
     1티어만 사고 매도, 2티어 사고 매도, ... N티어 사고 매도 각각 통계 산출.
     """
     sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
-    sim_raw["p1"] = sim_raw["Close"].shift(1)
-    sim_raw["p2"] = sim_raw["Close"].shift(2)
-    sim = sim_raw.dropna(subset=["p1", "p2"])
+    sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw, n_days, a_buy, a_sell)
     if sim.empty:
         return []
 
@@ -1055,11 +1058,6 @@ def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, s
 
     events = []
 
-    closes   = sim["Close"].values.astype(float)
-    p1s      = sim["p1"].values.astype(float)
-    p2s      = sim["p2"].values.astype(float)
-    tgt_buy  = (p1s + p2s) * (1 + a_buy)  / (2 - a_buy)
-    tgt_sell = (p1s + p2s) * (1 + a_sell) / (2 - a_sell)
     # 거래일 인덱스 매핑 (Timestamp → 거래일 순번)
     _tday_idx = {ts: idx for idx, ts in enumerate(sim.index)}
 
@@ -1202,7 +1200,7 @@ with tab1:
         result = run_backtest(
             price_df, start_date, end_date,
             a_buy, a_sell, sell_ratio, divisions, initial_capital,
-            return_history=True,
+            return_history=True, n_days=n_days,
         )
         if result is None:
             st.warning("선택된 기간 내 거래 데이터가 없습니다.")
@@ -1438,7 +1436,7 @@ with tab2:
                     for dv in dv_list:
                         for sr in sr_list:
                             r = run_backtest(price_df_opt, start_date, end_date,
-                                             ab, as_, sr, dv, initial_capital)
+                                             ab, as_, sr, dv, initial_capital, n_days=n_days)
                             if r:
                                 rows.append({
                                     "a_buy": ab, "a_sell": as_,
@@ -1491,7 +1489,7 @@ with tab2:
             rows = []
             for i, (ab, as_, dv, sr) in enumerate(sampled):
                 r = run_backtest(price_df_opt, start_date, end_date,
-                                 ab, as_, sr, dv, initial_capital)
+                                 ab, as_, sr, dv, initial_capital, n_days=n_days)
                 if r:
                     rows.append({
                         "a_buy": ab, "a_sell": as_,
@@ -1570,7 +1568,7 @@ with tab2:
                         for dv in dv_list:
                             for sr in sr_list:
                                 r = run_backtest(price_df_opt, str(is_s), str(is_e),
-                                                 ab, as_, sr, dv, initial_capital)
+                                                 ab, as_, sr, dv, initial_capital, n_days=n_days)
                                 if r:
                                     if "Calmar" in metric_key:    score = r["calmar"]
                                     elif "CAGR" in metric_key:    score = r["cagr"] * 100
@@ -1592,7 +1590,7 @@ with tab2:
 
                 ab_b, as_b, dv_b, sr_b = best_params
                 oos_r = run_backtest(price_df_opt, str(oos_s), str(oos_e),
-                                     ab_b, as_b, sr_b, dv_b, cur_capital)
+                                     ab_b, as_b, sr_b, dv_b, cur_capital, n_days=n_days)
                 if oos_r is None:
                     continue
 
@@ -1700,7 +1698,7 @@ with tab2:
                     dv  = trial.suggest_int("분할수",  int(dv_min), int(dv_max)) if dv_min != dv_max else int(dv_min)
                     sr  = trial.suggest_int("매도비율", int(sr_min), int(sr_max), step=int(sr_step)) if sr_min != sr_max else int(sr_min)
                     r   = run_backtest(price_df_opt, start_date, end_date,
-                                       ab, as_, sr, dv, initial_capital)
+                                       ab, as_, sr, dv, initial_capital, n_days=n_days)
                     if r is None:
                         return -999.0
                     if "Calmar" in metric_key:    score = r["calmar"]
@@ -1771,6 +1769,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _a_sell     = float(tk_cfg.get("a_sell",      0.009))
     _sell_ratio = float(tk_cfg.get("sell_ratio",  100.0))
     _divisions  = int  (tk_cfg.get("divisions",   5))
+    _n_days     = int  (tk_cfg.get("n_days",      2))
 
     _raw_start   = tk_cfg.get("os_start",   "2024-01-01")
     _raw_capital = tk_cfg.get("os_capital",  10000.0)
@@ -1796,15 +1795,15 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
     # ── 적용 파라미터 표시 + 수정 ──
     with st.container(border=True):
-        _p1, _p2, _p3, _p4 = st.columns(4)
+        _p1, _p2, _p3, _p4, _p5 = st.columns(5)
         _p1.metric("매수기준 (a_buy)",  f"{_a_buy:.4f}")
         _p2.metric("매도기준 (a_sell)", f"{_a_sell:.4f}")
         _p3.metric("매도비율",          f"{_sell_ratio:.0f}%")
         _p4.metric("분할수",            f"{_divisions}회")
+        _p5.metric("이동평균 N일",      f"{_n_days}일")
 
         with st.expander("✏️ 파라미터 수정"):
-            _ep1, _ep2 = st.columns(2)
-            _ep3, _ep4 = st.columns(2)
+            _ep1, _ep2, _ep3, _ep4, _ep5 = st.columns(5)
             _new_a_buy  = _ep1.number_input("매수기준 (a_buy)",  value=_a_buy,
                                              step=0.001, format="%.4f", key=f"edit_abuy_{key_sfx}")
             _new_a_sell = _ep2.number_input("매도기준 (a_sell)", value=_a_sell,
@@ -1814,11 +1813,14 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                                              key=f"edit_sr_{key_sfx}")
             _new_div    = _ep4.number_input("분할수",            value=_divisions,
                                              min_value=1, step=1, key=f"edit_div_{key_sfx}")
+            _new_ndays  = _ep5.number_input("N일 평균",          value=_n_days,
+                                             min_value=2, max_value=10, step=1, key=f"edit_ndays_{key_sfx}")
             if st.button("💾 파라미터 저장", key=f"save_param_{key_sfx}", type="primary",
                          use_container_width=True):
                 _new_param = {
                     "a_buy": float(_new_a_buy), "a_sell": float(_new_a_sell),
                     "sell_ratio": float(_new_sr), "divisions": int(_new_div),
+                    "n_days": int(_new_ndays),
                 }
                 _save_ticker_setting(tk, _new_param)
                 st.success(f"✅ {tk} 파라미터가 저장되었습니다!")
@@ -1927,6 +1929,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         res = run_portfolio_for_ordersheet(
             price_df_os, os_start, tk,
             _a_buy, _a_sell, _sell_ratio, _divisions, os_capital,
+            n_days=_n_days,
         )
         if res is None:
             st.warning("시뮬레이션 데이터가 없습니다.")
@@ -2293,7 +2296,7 @@ a   = 파라미터값
             st.error(f"{tk}: 가격 데이터를 불러오지 못했습니다.")
             return
 
-        _res = run_backtest(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, return_history=True)
+        _res = run_backtest(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, return_history=True, n_days=n_days)
         if _res is None:
             st.warning(f"{tk}: 선택된 기간 내 거래 데이터가 없습니다.")
             return
@@ -2738,7 +2741,7 @@ a   = 파라미터값
             with st.spinner("민감도 분석 중... (25회 시뮬레이션)"):
                 for _bi, _bv in enumerate(_buy_range):
                     for _si, _sv in enumerate(_sell_range):
-                        _hr = run_backtest(_pdf, s_date, e_date, _bv, _sv, sr, div, init_cap)
+                        _hr = run_backtest(_pdf, s_date, e_date, _bv, _sv, sr, div, init_cap, n_days=n_days)
                         _heat[_bi][_si] = _hr["calmar"] if _hr else 0.0
             _buy_labels  = [f"{v*100:.2f}%" for v in _buy_range]
             _sell_labels = [f"{v*100:.2f}%" for v in _sell_range]
@@ -2793,7 +2796,7 @@ a   = 파라미터값
                         for _ci, _si in enumerate(_mc_chosen):
                             _s_dt = str(_mc_idx[_si].date())
                             _e_dt = str(_mc_idx[_si + _WINDOW - 1].date())
-                            _r = run_backtest(_mc_pdf, _s_dt, _e_dt, a_b, a_s, sr, div, init_cap)
+                            _r = run_backtest(_mc_pdf, _s_dt, _e_dt, a_b, a_s, sr, div, init_cap, n_days=n_days)
                             if _r:
                                 _mc_strat_ret.append(round(_r["total_return"] * 100, 2))
                                 _mc_strat_mdd.append(round(abs(_r["mdd"]) * 100, 2))
@@ -2999,7 +3002,7 @@ a   = 파라미터값
         st.subheader("📊 티어별 매수 사이클 분석")
         st.caption("포지션이 완전히 청산될 때까지를 1사이클로 보고, 사이클마다 몇 번 분할 매수가 발생했는지 분석합니다.")
         with st.spinner("티어별 분석 중..."):
-            _tier_events = run_tier_breakdown_analysis(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap)
+            _tier_events = run_tier_breakdown_analysis(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, n_days=n_days)
         if _tier_events:
             _tier_df = pd.DataFrame(_tier_events)
             # 티어별 집계
@@ -3087,7 +3090,7 @@ a   = 파라미터값
         st.subheader(f"🎯 {div}티어 완전 투자 분석")
         st.caption(f"분할 매수 {div}회가 모두 체결된 사이클 분석")
         with st.spinner("5티어 분석 중..."):
-            _t5 = run_5tier_analysis(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap)
+            _t5 = run_5tier_analysis(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, n_days=n_days)
         if _t5:
             _df5 = pd.DataFrame(_t5)
             _tot, _wins = len(_df5), int((_df5["손익률"] > 0).sum())
@@ -3236,7 +3239,8 @@ a   = 파라미터값
                     if _cpdf.empty:
                         continue
                     _cb, _cs, _csr, _cdv = _resolve_saved(_ctk, _ccfg)
-                    _cr = run_backtest(_cpdf, _p_sd, _p_ed, _cb, _cs, _csr, _cdv, _p_cap)
+                    _c_ndays = int(_ccfg.get("n_days", 2))
+                    _cr = run_backtest(_cpdf, _p_sd, _p_ed, _cb, _cs, _csr, _cdv, _p_cap, n_days=_c_ndays)
                     if not _cr:
                         continue
                     _sharpe_c, _sortino_c = compute_sharpe_sortino(_cr["assets"])
@@ -3314,8 +3318,8 @@ def _send_telegram(token: str, chat_id: str, text: str) -> dict:
 
 
 def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
-                      _sell_ratio: float, _divisions: int,
-                      _os_start, _os_capital: float) -> str:
+                      _sell_ratio: float, _divisions: int, _n_days: int = 2,
+                      _os_start=None, _os_capital: float = 10000.0) -> str:
     """Tab3와 동일한 시뮬레이션 엔진으로 오늘의 주문표를 텔레그램 텍스트로 변환."""
     try:
         today = datetime.today().date()
@@ -3326,6 +3330,7 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         res = run_portfolio_for_ordersheet(
             price_df_tg, _os_start, ticker_name,
             _a_buy, _a_sell, _sell_ratio, _divisions, _os_capital,
+            n_days=_n_days,
         )
         if res is None:
             return "❌ 시뮬레이션 데이터가 없습니다."
@@ -3555,8 +3560,9 @@ with tab5:
                                     float(_tg_cfg.get("a_sell",      0.009)),
                                     float(_tg_cfg.get("sell_ratio",  100.0)),
                                     int  (_tg_cfg.get("divisions",   5)),
-                                    _tg_start_d,
-                                    float(_tg_cfg.get("os_capital",  initial_capital)),
+                                    n_days=int(_tg_cfg.get("n_days", 2)),
+                                    _os_start=_tg_start_d,
+                                    _os_capital=float(_tg_cfg.get("os_capital",  initial_capital)),
                                 )
                                 result = _send_telegram(tg_token, tg_chat_id, msg)
                             if result.get("ok"):
@@ -3741,15 +3747,17 @@ with tab5:
                                 try:    _gs_start_d = datetime.strptime(_gs_cfg.get("os_start", "2024-01-01"), "%Y-%m-%d").date()
                                 except: _gs_start_d = datetime(2024, 1, 1).date()
                                 _gs_cap  = float(_gs_cfg.get("os_capital", initial_capital))
-                                _gs_a_buy = float(_gs_cfg.get("a_buy",     -0.005))
-                                _gs_a_sell= float(_gs_cfg.get("a_sell",     0.009))
-                                _gs_sr    = float(_gs_cfg.get("sell_ratio", 100.0))
-                                _gs_div   = int  (_gs_cfg.get("divisions",  5))
+                                _gs_a_buy  = float(_gs_cfg.get("a_buy",     -0.005))
+                                _gs_a_sell = float(_gs_cfg.get("a_sell",     0.009))
+                                _gs_sr     = float(_gs_cfg.get("sell_ratio", 100.0))
+                                _gs_div    = int  (_gs_cfg.get("divisions",  5))
+                                _gs_ndays  = int  (_gs_cfg.get("n_days",    2))
                                 _pdf = load_price_data(_gs_tk, _gs_start_d, datetime.today().date(),
                                                        "야후파이낸스 (yfinance)", None)
                                 _res = run_portfolio_for_ordersheet(
                                     _pdf, _gs_start_d, _gs_tk,
                                     _gs_a_buy, _gs_a_sell, _gs_sr, _gs_div, _gs_cap,
+                                    n_days=_gs_ndays,
                                 )
                                 if _res is None:
                                     st.error(f"❌ {_gs_tk}: 시뮬레이션 데이터가 없습니다.")
