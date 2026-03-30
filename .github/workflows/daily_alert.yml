@@ -30,3 +30,9 @@ jobs:
           GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
           ADMIN_SHEET_URL: ${{ secrets.ADMIN_SHEET_URL }}
         run: python scripts/daily_telegram_alert.py
+
+      - name: Keep Streamlit app awake (절전 방지 ping)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 30 \
+            https://3day-avg-soxl-backtest.streamlit.app/ || true
