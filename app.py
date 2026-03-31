@@ -1963,7 +1963,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     m2.metric("평가 자산",  f"${res['current_asset']:,.0f}",
               delta=f"{res['total_return']*100:+.2f}%")
     m3.metric("실현손익",   f"${_realized_pnl:+,.2f}",
-              delta=f"시작자본 대비 {_realized_ret_pct:+.2f}%")
+              delta=f"CAGR {res['cagr']*100:.2f}%")
     m4.metric("현재 DD",    f"{abs(res['current_dd'])*100:.2f}%",
               delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
     m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
