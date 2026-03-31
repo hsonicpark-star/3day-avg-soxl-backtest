@@ -1844,19 +1844,31 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             else:
                 st.caption("ℹ️ 이 종목은 추천 프리셋이 없습니다. 직접 파라미터를 입력해 주세요.")
                 st.divider()
+            # session_state 초기화 (없을 때만 — 프리셋/저장 후 덮어쓰지 않음)
+            _sk = {
+                "abuy":  (f"edit_abuy_{key_sfx}",  _a_buy),
+                "asell": (f"edit_asell_{key_sfx}", _a_sell),
+                "sr":    (f"edit_sr_{key_sfx}",    _sell_ratio),
+                "div":   (f"edit_div_{key_sfx}",   _divisions),
+                "ndays": (f"edit_ndays_{key_sfx}", f"{_n_days + 1}일"),
+            }
+            for _k, (_skey, _sval) in _sk.items():
+                if _skey not in st.session_state:
+                    st.session_state[_skey] = _sval
+
             _ep1, _ep2, _ep3, _ep4, _ep5 = st.columns(5)
-            _new_a_buy  = _ep1.number_input("매수기준 (a_buy)",  value=_a_buy,
-                                             step=0.001, format="%.4f", key=f"edit_abuy_{key_sfx}")
-            _new_a_sell = _ep2.number_input("매도기준 (a_sell)", value=_a_sell,
-                                             step=0.001, format="%.4f", key=f"edit_asell_{key_sfx}")
-            _new_sr     = _ep3.number_input("매도비율 (%)",      value=_sell_ratio,
-                                             step=10.0, min_value=0.0, max_value=100.0,
+            _new_a_buy  = _ep1.number_input("매수기준 (a_buy)",  step=0.001, format="%.4f",
+                                             key=f"edit_abuy_{key_sfx}")
+            _new_a_sell = _ep2.number_input("매도기준 (a_sell)", step=0.001, format="%.4f",
+                                             key=f"edit_asell_{key_sfx}")
+            _new_sr     = _ep3.number_input("매도비율 (%)",      step=10.0,
+                                             min_value=0.0, max_value=100.0,
                                              key=f"edit_sr_{key_sfx}")
-            _new_div    = _ep4.number_input("분할수",            value=_divisions,
-                                             min_value=1, step=1, key=f"edit_div_{key_sfx}")
+            _new_div    = _ep4.number_input("분할수",            min_value=1, step=1,
+                                             key=f"edit_div_{key_sfx}")
             _ndays_edit = _ep5.select_slider(
                 "이동평균 일수", options=[f"{i}일" for i in range(3, 12)],
-                value=f"{_n_days + 1}일", key=f"edit_ndays_{key_sfx}",
+                key=f"edit_ndays_{key_sfx}",
             )
             if st.button("💾 파라미터 저장", key=f"save_param_{key_sfx}", type="primary",
                          use_container_width=True):
@@ -1866,6 +1878,9 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "n_days": int(_ndays_edit.replace("일", "")) - 1,
                 }
                 _save_ticker_setting(tk, _new_param)
+                # 저장 후 session_state 초기화 → 다음 렌더에서 저장값으로 새로 로드
+                for _skey, _ in _sk.values():
+                    st.session_state.pop(_skey, None)
                 st.success(f"✅ {tk} 파라미터가 저장되었습니다!")
                 st.rerun()
 
