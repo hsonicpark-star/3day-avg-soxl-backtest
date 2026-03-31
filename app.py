@@ -1812,10 +1812,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _PARAM_PRESETS = [
                 {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
                  "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
-                {"label": "⚖️ 균형형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-                 "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최고 Calmar 비율 — 수익/위험 균형 최적 (추천)"},
-                {"label": "🛡️ 안정형",   "a_buy": -0.0048, "a_sell": 0.0096, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-                 "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n낮은 MDD, 안정적 운용 선호"},
+                {"label": "⚖️ 균형형",   "a_buy": -0.0048, "a_sell": 0.0096, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+                 "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n수익률과 안정성의 중간"},
+                {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+                 "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
             ]
             st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
             _pc1, _pc2, _pc3 = st.columns(3)
@@ -2167,10 +2167,10 @@ with tab3:
             _ADD_PRESETS = [
                 {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "divisions": 4,
                  "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
-                {"label": "⚖️ 균형형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "divisions": 5,
-                 "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최고 Calmar 비율 — 수익/위험 균형 최적 (추천)"},
-                {"label": "🛡️ 안정형",   "a_buy": -0.0048, "a_sell": 0.0096, "divisions": 5,
-                 "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n낮은 MDD, 안정적 운용 선호"},
+                {"label": "⚖️ 균형형",   "a_buy": -0.0048, "a_sell": 0.0096, "divisions": 5,
+                 "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n수익률과 안정성의 중간"},
+                {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "divisions": 5,
+                 "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
             ]
             st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
             _apc1, _apc2, _apc3 = st.columns(3)
