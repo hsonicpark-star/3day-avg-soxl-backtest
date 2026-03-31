@@ -1808,6 +1808,27 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _p5.metric("이동평균",          f"{_n_days + 1}일 평균")
 
         with st.expander("✏️ 파라미터 수정"):
+            # ── 추천 프리셋 ──
+            _PARAM_PRESETS = [
+                {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
+                 "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
+                {"label": "⚖️ 균형형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+                 "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최고 Calmar 비율 — 수익/위험 균형 최적 (추천)"},
+                {"label": "🛡️ 안정형",   "a_buy": -0.0048, "a_sell": 0.0096, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+                 "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n낮은 MDD, 안정적 운용 선호"},
+            ]
+            st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
+            _pc1, _pc2, _pc3 = st.columns(3)
+            for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _PARAM_PRESETS)):
+                if _pcol.button(_pr["label"], key=f"preset_{_pi}_{key_sfx}",
+                                help=_pr["help"], use_container_width=True):
+                    st.session_state[f"edit_abuy_{key_sfx}"]  = _pr["a_buy"]
+                    st.session_state[f"edit_asell_{key_sfx}"] = _pr["a_sell"]
+                    st.session_state[f"edit_sr_{key_sfx}"]    = _pr["sell_ratio"]
+                    st.session_state[f"edit_div_{key_sfx}"]   = _pr["divisions"]
+                    st.session_state[f"edit_ndays_{key_sfx}"] = f"{_pr['n_days'] + 1}일"
+                    st.rerun()
+            st.divider()
             _ep1, _ep2, _ep3, _ep4, _ep5 = st.columns(5)
             _new_a_buy  = _ep1.number_input("매수기준 (a_buy)",  value=_a_buy,
                                              step=0.001, format="%.4f", key=f"edit_abuy_{key_sfx}")
@@ -1827,7 +1848,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 _new_param = {
                     "a_buy": float(_new_a_buy), "a_sell": float(_new_a_sell),
                     "sell_ratio": float(_new_sr), "divisions": int(_new_div),
-                    "n_days": int(_ndays_edit.replace("일", "")) - 1,  # 내부값 저장
+                    "n_days": int(_ndays_edit.replace("일", "")) - 1,
                 }
                 _save_ticker_setting(tk, _new_param)
                 st.success(f"✅ {tk} 파라미터가 저장되었습니다!")
@@ -2142,6 +2163,25 @@ with tab3:
             _add_tk = _add_select
 
         if _add_tk:
+            # ── 추천 프리셋 ──
+            _ADD_PRESETS = [
+                {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "divisions": 4,
+                 "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
+                {"label": "⚖️ 균형형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "divisions": 5,
+                 "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최고 Calmar 비율 — 수익/위험 균형 최적 (추천)"},
+                {"label": "🛡️ 안정형",   "a_buy": -0.0048, "a_sell": 0.0096, "divisions": 5,
+                 "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n낮은 MDD, 안정적 운용 선호"},
+            ]
+            st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
+            _apc1, _apc2, _apc3 = st.columns(3)
+            for _api, (_apcol, _apr) in enumerate(zip([_apc1, _apc2, _apc3], _ADD_PRESETS)):
+                if _apcol.button(_apr["label"], key=f"add_preset_{_api}",
+                                 help=_apr["help"], use_container_width=True):
+                    st.session_state["add_a_buy"]  = _apr["a_buy"]
+                    st.session_state["add_a_sell"] = _apr["a_sell"]
+                    st.session_state["add_div"]    = _apr["divisions"]
+                    st.rerun()
+            st.divider()
             _ac1, _ac2 = st.columns(2)
             _add_a_buy   = _ac1.number_input("매수 a값",    value=-0.005, step=0.001, format="%.4f", key="add_a_buy")
             _add_a_sell  = _ac2.number_input("매도 a값",    value=0.009,  step=0.001, format="%.4f", key="add_a_sell")
