@@ -1950,12 +1950,20 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         return
 
     st.markdown(f"**{res['start_date']} ~ {res['end_date']}**")
+    # 실현손익 합산 (SELL 거래의 실현손익($) 합계)
+    _dl_all = res.get("daily_log", [])
+    _realized_pnl = sum(
+        r["실현손익($)"] for r in _dl_all
+        if r.get("실현손익($)") is not None and r.get("실현손익($)") == r.get("실현손익($)")  # NaN 제외
+    )
+    _realized_ret_pct = (_realized_pnl / res['initial_capital'] * 100) if res['initial_capital'] else 0.0
+
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}")
-    m2.metric("현재 자산",  f"${res['current_asset']:,.0f}",
+    m2.metric("평가 자산",  f"${res['current_asset']:,.0f}",
               delta=f"{res['total_return']*100:+.2f}%")
-    m3.metric("수익률",     f"{res['total_return']*100:+.2f}%",
-              delta=f"CAGR {res['cagr']*100:.2f}%")
+    m3.metric("실현손익",   f"${_realized_pnl:+,.2f}",
+              delta=f"시작자본 대비 {_realized_ret_pct:+.2f}%")
     m4.metric("현재 DD",    f"{abs(res['current_dd'])*100:.2f}%",
               delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
     m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
