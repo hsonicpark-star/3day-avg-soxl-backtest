@@ -2151,8 +2151,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             return "color: #999"
 
         st.dataframe(_df_show.style.apply(_style_daily, axis=1)
-                                    .applymap(_style_action, subset=["매매"])
-                                    .applymap(_style_pnl, subset=["실현손익($)", "실현손익률(%)"]),
+                                    .map(_style_action, subset=["매매"])
+                                    .map(_style_pnl, subset=["실현손익($)", "실현손익률(%)"]),
                      hide_index=True, use_container_width=True,
                      height=min(38 + 35 * len(_df_show), 600))
 
@@ -2422,7 +2422,7 @@ a   = 파라미터값
                 if val < 0: return "color: #c62828; font-weight:bold"
             return ""
         st.dataframe(
-            _annual.style.applymap(_color_ret, subset=["연간수익률(%)"])
+            _annual.style.map(_color_ret, subset=["연간수익률(%)"])
                          .format({"연간수익률(%)": "{:+.2f}%", "MDD(%)": "{:.2f}%"}),
             hide_index=True, use_container_width=True)
         st.divider()
