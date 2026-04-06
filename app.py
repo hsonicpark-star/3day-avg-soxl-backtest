@@ -208,10 +208,21 @@ def _parse_ticker_settings_json(raw) -> dict:
 
 def _get_ticker_settings() -> dict:
     """종가평균매매 계좌 설정 반환 {ticker: {a_buy, a_sell, ...}}
-    sd_ 접두어 키(표준편차매매 계좌)는 제외 — 공유 config 오염 방지."""
+    sd_ 접두어 키(표준편차매매 계좌)는 로컬/클라우드 모두 제외 — 공유 config 오염 방지.
+    (과거 버그로 ticker_settings에 sd_SOXL 등이 잘못 저장된 경우도 걸러냄)"""
     if _IS_CLOUD and st.session_state.get("logged_in"):
         raw = st.session_state.get("user_settings", {}).get("ticker_settings", "") or ""
-        return _parse_ticker_settings_json(raw)
+        ts  = _parse_ticker_settings_json(raw)
+        clean = {k: v for k, v in ts.items() if not k.startswith("sd_")}
+        # 오염 데이터가 있으면 GSheets도 조용히 정리
+        if len(clean) != len(ts):
+            try:
+                ts_json = json.dumps(clean, ensure_ascii=False)
+                st.session_state.user_settings["ticker_settings"] = ts_json
+                _save_user_settings_to_sheet(st.session_state.username, {"ticker_settings": ts_json})
+            except Exception:
+                pass
+        return clean
     else:
         full_cfg = _load_full_config()
         return {k: v for k, v in full_cfg.items()
