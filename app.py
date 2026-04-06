@@ -206,14 +206,17 @@ def _parse_ticker_settings_json(raw) -> dict:
         return {}
 
 def _get_ticker_settings() -> dict:
-    """등록된 모든 ticker 설정 반환 {ticker: {a_buy, a_sell, os_start, ...}}"""
+    """등록된 모든 ticker 설정 반환 {ticker: {a_buy, a_sell, os_start, ...}}
+    sd_ 접두어 키(표준편차매매 계좌)는 제외한다 — 공유 config 오염 방지."""
     if _IS_CLOUD and st.session_state.get("logged_in"):
         raw = st.session_state.get("user_settings", {}).get("ticker_settings", "") or ""
         return _parse_ticker_settings_json(raw)
     else:
         full_cfg = _load_full_config()
         return {k: v for k, v in full_cfg.items()
-                if k not in _GLOBAL_CONFIG_KEYS and isinstance(v, dict)}
+                if k not in _GLOBAL_CONFIG_KEYS
+                and isinstance(v, dict)
+                and not k.startswith("sd_")}
 
 def _save_ticker_setting(tk: str, data: dict) -> str:
     """ticker별 설정 저장 (로컬 config.json + 클라우드 Google Sheets 동기).
