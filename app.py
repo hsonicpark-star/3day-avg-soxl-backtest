@@ -2974,8 +2974,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _sell_qty = _sd_res["est_sell_qty"]
     _nxt_t    = _sd_res["next_tier"]
 
-    st.subheader("📑 내일 LOC 주문")
-    st.caption(f"최근 종가: **${_lc:.2f}**  |  σ(내일 예상): **{_sd_res['sigma_next']*100:.4f}%**  |  "
+    st.subheader("📑 오늘의 LOC 주문")
+    st.caption(f"최근 종가: **${_lc:.2f}**  |  σ(오늘 예상): **{_sd_res['sigma_next']*100:.4f}%**  |  "
                f"다음 티어: **T{_nxt_t}**")
 
     _orders = []
@@ -3533,7 +3533,7 @@ with tab3:
   if _is_stdev:
     # ── 표준편차매매 멀티계좌 주문표 ─────────────
     st.subheader("📋 표준편차매매 — 오늘의 주문표")
-    st.caption("종목별 계좌를 등록하고 내일 LOC 매수/매도 주문가를 확인합니다.")
+    st.caption("종목별 계좌를 등록하고 오늘 LOC 매수/매도 주문가를 확인합니다.")
 
     _sd_all        = _get_sd_ticker_settings()
     _sd_registered = list(_sd_all.keys())
