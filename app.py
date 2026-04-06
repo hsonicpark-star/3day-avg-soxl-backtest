@@ -2974,7 +2974,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _sell_qty = _sd_res["est_sell_qty"]
     _nxt_t    = _sd_res["next_tier"]
 
-    st.subheader("📑 오늘의 LOC 주문")
+    st.subheader(f"📑 오늘의 LOC 주문  ({datetime.today().strftime('%Y-%m-%d')})")
     st.caption(f"최근 종가: **${_lc:.2f}**  |  σ(오늘 예상): **{_sd_res['sigma_next']*100:.4f}%**  |  "
                f"다음 티어: **T{_nxt_t}**")
 
@@ -3375,7 +3375,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
     # 오늘의 LOC 주문
     lp, p1, p2 = res["latest_price"], res["p1_now"], res["p2_now"]
-    st.subheader("📑 오늘의 LOC 주문")
+    st.subheader(f"📑 오늘의 LOC 주문  ({datetime.today().strftime('%Y-%m-%d')})")
     st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
 
     today_orders = []
