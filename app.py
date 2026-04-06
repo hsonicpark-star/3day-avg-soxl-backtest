@@ -474,8 +474,9 @@ with st.sidebar:
     else:
         _usercfg_sb = _cfg_sb
 
-    _def_a_buy  = _sfloat(_usercfg_sb.get("a_buy"),      -0.005)
-    _def_a_sell = _sfloat(_usercfg_sb.get("a_sell"),       0.009)
+    # 안정형 표준 파라미터: a_buy=-0.0063, a_sell=+0.0075, sell_ratio=100%, divisions=5, 3일
+    _def_a_buy  = _sfloat(_usercfg_sb.get("a_buy"),      -0.0063)
+    _def_a_sell = _sfloat(_usercfg_sb.get("a_sell"),       0.0075)
     _def_sr     = _sfloat(_usercfg_sb.get("sell_ratio"),  100.0)
     _def_div    = _sint  (_usercfg_sb.get("divisions"),   5)
     _def_ndays  = _sint  (_usercfg_sb.get("n_days"),      2)
