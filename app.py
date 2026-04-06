@@ -3825,6 +3825,22 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
 
 
 # ══════════════════════════════════════════════
+# 공통 헬퍼 함수 — 표준편차/종가평균 양쪽에서 사용
+# ══════════════════════════════════════════════
+def _send_telegram(token: str, chat_id: str, text: str) -> dict:
+    """텔레그램 Bot API로 메시지 전송. 결과 dict 반환."""
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
+
+
+# ══════════════════════════════════════════════
 # TAB 4 – 전략 소개 & 성과
 # ══════════════════════════════════════════════
 with tab4:
@@ -6016,17 +6032,7 @@ SOXL 같은 3× 레버리지 ETF는 일간 변동이 크기 때문에, 이 전�
         return len(rows)
 
 
-    def _send_telegram(token: str, chat_id: str, text: str) -> dict:
-        """텔레그램 Bot API로 메시지 전송. 결과 dict 반환."""
-        try:
-            resp = requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-                timeout=10,
-            )
-            return resp.json()
-        except Exception as e:
-            return {"ok": False, "description": str(e)}
+    # _send_telegram 은 최상위 스코프에 정의 (표준편차/종가평균 공용)
 
 
     def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
