@@ -327,17 +327,26 @@ def _save_sd_ticker_setting(tk: str, data: dict) -> str:
     return ""
 
 def _delete_sd_ticker_setting(tk: str) -> str:
-    """표준편차 ticker 설정 삭제.
-    로컬: config.json에서 'sd_{tk}' 키 제거.
-    Cloud: user_settings['sd_ticker_settings']에서 제거."""
+    """표준편차 ticker 설정 + 매매 히스토리 삭제.
+    로컬: config.json 'sd_{tk}' 키 제거 + sd_history_{tk}.csv 삭제.
+    Cloud: sd_ticker_settings 제거 + GSheets 'sd_{tk}_매매기록' 워크시트 삭제."""
+    # 로컬 config 제거
     full_cfg = _load_full_config()
     full_cfg.pop(f"{_SD_PFX}{tk}", None)
     try:
         _CONFIG.write_text(json.dumps(full_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     except:
         pass
+    # 로컬 히스토리 CSV 삭제
+    f = _get_sd_history_file(tk)
+    try:
+        if f.exists():
+            f.unlink()
+    except Exception:
+        pass
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
+            # 설정 제거
             raw = st.session_state.get("user_settings", {}).get("sd_ticker_settings", "") or ""
             ts  = _parse_ticker_settings_json(raw)
             ts.pop(tk, None)
@@ -346,6 +355,21 @@ def _delete_sd_ticker_setting(tk: str) -> str:
                 st.session_state.user_settings = {}
             st.session_state.user_settings["sd_ticker_settings"] = ts_json
             _save_user_settings_to_sheet(st.session_state.username, {"sd_ticker_settings": ts_json})
+            # GSheets 매매기록 워크시트 삭제
+            try:
+                import gspread as _gs
+                gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+                if gs_url:
+                    client = _get_gspread_client()
+                    sh = client.open_by_url(gs_url)
+                    ws_name = f"sd_{tk}_매매기록"
+                    try:
+                        ws = sh.worksheet(ws_name)
+                        sh.del_worksheet(ws)
+                    except _gs.WorksheetNotFound:
+                        pass
+            except Exception:
+                pass
             return ""
         except Exception as e:
             return f"삭제 중 오류: {e}"
@@ -2690,6 +2714,24 @@ def _get_sd_history_file(tk: str) -> Path:
     return Path.home() / ".usd-avg" / f"sd_history_{tk}.csv"
 
 def _load_sd_daily_history(tk: str) -> pd.DataFrame:
+    """Cloud: GSheets 우선 읽기. 로컬: CSV 읽기."""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws_name = f"sd_{tk}_매매기록"
+                try:
+                    ws = sh.worksheet(ws_name)
+                    records = ws.get_all_records()
+                    if records:
+                        return pd.DataFrame(records)
+                except _gs.WorksheetNotFound:
+                    return pd.DataFrame()
+        except Exception:
+            pass
     f = _get_sd_history_file(tk)
     if f.exists():
         try:
@@ -2699,7 +2741,8 @@ def _load_sd_daily_history(tk: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
-    """시뮬레이션 히스토리 중 새 날짜만 누적 저장 (B방식)."""
+    """시뮬레이션 히스토리 중 새 날짜만 누적 저장 (B방식).
+    로컬: CSV 저장. Cloud: CSV + Google Sheets 'sd_{tk}_매매기록' 워크시트 동기."""
     if hist_df is None or hist_df.empty:
         return
     df_new = hist_df.copy()
@@ -2712,12 +2755,32 @@ def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
         df_add = df_new.copy()
     if df_add.empty:
         return
+    # 로컬 CSV 저장
     f = _get_sd_history_file(tk)
     f.parent.mkdir(parents=True, exist_ok=True)
     df_combined = pd.concat([df_existing, df_add], ignore_index=True) \
                   if not df_existing.empty else df_add.copy()
     df_combined = df_combined.sort_values("날짜").reset_index(drop=True)
     df_combined.to_csv(f, index=False, encoding="utf-8-sig")
+    # Cloud: Google Sheets 워크시트에도 저장
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws_name = f"sd_{tk}_매매기록"
+                try:
+                    ws = sh.worksheet(ws_name)
+                except _gs.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=ws_name, rows=5000, cols=25)
+                    ws.append_row(df_add.columns.tolist())  # 헤더 추가
+                rows_to_add = [[str(v) for v in row] for row in df_add.values.tolist()]
+                if rows_to_add:
+                    ws.append_rows(rows_to_add, value_input_option="RAW")
+        except Exception:
+            pass
 
 # ══════════════════════════════════════════════
 # 표준편차매매 계좌별 주문표 렌더러
