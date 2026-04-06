@@ -445,6 +445,15 @@ st.set_page_config(page_title="📊 전략 백테스터", layout="wide")
 
 # ── 클라우드: 로그인 게이트 ────────────────────────────────────
 if _IS_CLOUD:
+    # ── 쿠키 컴포넌트 초기화 대기 ──────────────────────────────
+    # streamlit-cookies-controller 는 React 컴포넌트라서
+    # 첫 렌더링에서 get()이 항상 None을 반환함.
+    # JS가 쿠키값을 Python에 전달하면 자동 rerun이 발생하므로,
+    # _cookie_ready 플래그로 "로딩 중 None" vs "진짜 없음 None" 을 구분.
+    if not st.session_state.get("_cookie_ready", False):
+        st.session_state["_cookie_ready"] = True
+        st.stop()   # 컴포넌트 로딩 완료 후 자동 rerun 대기
+
     # 쿠키에서 자동 로그인 시도 (새로고침해도 로그인 유지)
     if not st.session_state.get("logged_in", False):
         try:
@@ -466,7 +475,7 @@ if _IS_CLOUD:
                         k: _row.get(k, "") for k in (
                             "tg_chat_id", "tg_token", "gs_url", "gs_sheet",
                             "a_buy", "a_sell", "sell_ratio", "divisions",
-                            "ticker_settings"
+                            "ticker_settings", "sd_ticker_settings",
                         )
                     }
                     st.rerun()
@@ -499,10 +508,12 @@ if _IS_CLOUD:
                             st.session_state.username     = _u
                             st.session_state.user_settings = _user
                             # 30일 자동 로그인 쿠키 저장
+                            # expires=30 : js-cookie 형식 (정수 = 일 수)
+                            # datetime 객체를 넘기면 JSON 직렬화 실패 → 세션쿠키로 저장됨
                             try:
                                 _cookie_mgr.set(
                                     "usd_avg_user", _u,
-                                    expires=datetime.now() + timedelta(days=30),
+                                    expires=30,
                                 )
                             except Exception:
                                 pass
