@@ -307,12 +307,49 @@ def _get_sd_ticker_settings() -> dict:
             if k.startswith(_SD_PFX) and isinstance(v, dict)}
 
 def _save_sd_ticker_setting(tk: str, data: dict) -> str:
-    """표준편차 ticker 설정 저장. 성공 시 '' 반환, 실패 시 오류 메시지."""
-    return _save_ticker_setting(f"{_SD_PFX}{tk}", data)
+    """표준편차 ticker 설정 저장. 성공 시 '' 반환, 실패 시 오류 메시지.
+    로컬: config.json에 'sd_{tk}' 키로 저장.
+    Cloud: user_settings['sd_ticker_settings']에 저장 (_get_sd_ticker_settings와 동일 키)."""
+    save_config(data, f"{_SD_PFX}{tk}")  # 로컬 저장
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            raw = st.session_state.get("user_settings", {}).get("sd_ticker_settings", "") or ""
+            ts  = _parse_ticker_settings_json(raw)
+            ts[tk] = {**ts.get(tk, {}), **data}
+            ts_json = json.dumps(ts, ensure_ascii=False)
+            if "user_settings" not in st.session_state:
+                st.session_state.user_settings = {}
+            st.session_state.user_settings["sd_ticker_settings"] = ts_json
+            _save_user_settings_to_sheet(st.session_state.username, {"sd_ticker_settings": ts_json})
+            return ""
+        except Exception as e:
+            return f"저장 중 오류: {e}"
+    return ""
 
 def _delete_sd_ticker_setting(tk: str) -> str:
-    """표준편차 ticker 설정 삭제."""
-    return _delete_ticker_setting(f"{_SD_PFX}{tk}")
+    """표준편차 ticker 설정 삭제.
+    로컬: config.json에서 'sd_{tk}' 키 제거.
+    Cloud: user_settings['sd_ticker_settings']에서 제거."""
+    full_cfg = _load_full_config()
+    full_cfg.pop(f"{_SD_PFX}{tk}", None)
+    try:
+        _CONFIG.write_text(json.dumps(full_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    except:
+        pass
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            raw = st.session_state.get("user_settings", {}).get("sd_ticker_settings", "") or ""
+            ts  = _parse_ticker_settings_json(raw)
+            ts.pop(tk, None)
+            ts_json = json.dumps(ts, ensure_ascii=False)
+            if "user_settings" not in st.session_state:
+                st.session_state.user_settings = {}
+            st.session_state.user_settings["sd_ticker_settings"] = ts_json
+            _save_user_settings_to_sheet(st.session_state.username, {"sd_ticker_settings": ts_json})
+            return ""
+        except Exception as e:
+            return f"삭제 중 오류: {e}"
+    return ""
 
 # ── gspread 인증 (로그인보다 먼저 정의되어야 함) ──────────────
 _GS_SCOPES = ["https://spreadsheets.google.com/feeds",
