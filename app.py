@@ -3516,10 +3516,10 @@ with tab3:
             for _sai, (_sapc, _sapp) in enumerate(zip(_sap_cols, _sd_ap)):
                 if _sapc.button(_sapp["label"], key=f"sd_addp_{_sai}",
                                 help=_sapp["help"], use_container_width=True):
-                    st.session_state["sd_add_kb"]  = _sapp["k_buy"]
-                    st.session_state["sd_add_ks"]  = _sapp["k_sell"]
-                    st.session_state["sd_add_sr"]  = _sapp["sell_ratio"]
-                    st.session_state["sd_add_dv"]  = _sapp["divisions"]
+                    st.session_state["sd_add_kb_inp"]  = _sapp["k_buy"]
+                    st.session_state["sd_add_ks_inp"]  = _sapp["k_sell"]
+                    st.session_state["sd_add_sr_inp"]  = _sapp["sell_ratio"]
+                    st.session_state["sd_add_dv_inp"]  = _sapp["divisions"]
                     st.rerun()
             st.divider()
 
