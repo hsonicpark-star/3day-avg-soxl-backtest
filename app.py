@@ -40,7 +40,8 @@ else:
         except:
             pass
 
-_SENSITIVE_KEYS    = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet"}
+_SENSITIVE_KEYS    = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet",
+                      "sd_tg_chat_id", "sd_tg_token"}   # 표준편차 전용 텔레그램 키
 _GLOBAL_CONFIG_KEYS = _SENSITIVE_KEYS  # ticker 네임스페이스가 아닌 루트 키들
 
 def load_config(ticker: str = None):
@@ -473,7 +474,9 @@ if _IS_CLOUD:
                     st.session_state.username     = str(_cookie_user).strip()
                     st.session_state.user_settings = {
                         k: _row.get(k, "") for k in (
-                            "tg_chat_id", "tg_token", "gs_url", "gs_sheet",
+                            "tg_chat_id",    "tg_token",        # 종가평균매매 텔레그램
+                            "sd_tg_chat_id", "sd_tg_token",     # 표준편차매매 텔레그램
+                            "gs_url", "gs_sheet",
                             "a_buy", "a_sell", "sell_ratio", "divisions",
                             "ticker_settings", "sd_ticker_settings",
                         )
@@ -6219,25 +6222,26 @@ if _is_stdev:
     """, unsafe_allow_html=True)
 
             c1, c2 = st.columns(2)
-            tg_chat_id = c1.text_input(
+            # 표준편차 전용 키 (sd_tg_*) — 종가평균매매(tg_*)와 분리 저장
+            sd_tg_chat_id = c1.text_input(
                 "텔레그램 Chat ID",
-                value=_cfg5.get("tg_chat_id", "") if not _IS_CLOUD else _usercfg.get("tg_chat_id", ""),
+                value=_cfg5.get("sd_tg_chat_id", "") if not _IS_CLOUD else _usercfg.get("sd_tg_chat_id", ""),
                 placeholder="예: 1234567890",
-                key="tg_chat_id_input",
+                key="sd_tg_chat_id_input",
             )
-            tg_token = c2.text_input(
+            sd_tg_token = c2.text_input(
                 "Bot Token",
-                value=_cfg5.get("tg_token", "") if not _IS_CLOUD else _usercfg.get("tg_token", ""),
+                value=_cfg5.get("sd_tg_token", "") if not _IS_CLOUD else _usercfg.get("sd_tg_token", ""),
                 placeholder="예: 123456789:AAF...",
                 type="password",
-                key="tg_token_input",
+                key="sd_tg_token_input",
             )
             st.caption("📅 주문표는 매주 월~금 오후 3:00 (KST)에 텔레그램으로 자동 발송됩니다")
 
             btn_col1, btn_col2, spacer = st.columns([1, 1, 4])
             with btn_col1:
-                if st.button("📨 주문표 테스트 발송", use_container_width=True, key="tg_test"):
-                    if not tg_chat_id or not tg_token:
+                if st.button("📨 주문표 테스트 발송", use_container_width=True, key="sd_tg_test"):
+                    if not sd_tg_chat_id or not sd_tg_token:
                         st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
                     else:
                         _sd_settings = _get_sd_ticker_settings()
@@ -6262,29 +6266,29 @@ if _is_stdev:
                                         _os_start    = _sd_start_d,
                                         _os_capital  = float(_sd_cfg.get("os_capital",  20000.0)),
                                     )
-                                    result = _send_telegram(tg_token, tg_chat_id, msg)
+                                    result = _send_telegram(sd_tg_token, sd_tg_chat_id, msg)
                                 if result.get("ok"):
                                     st.success(f"✅ {_sd_tk} 발송 성공!")
                                 else:
                                     st.error(f"❌ {_sd_tk} 발송 실패: {result.get('description', '알 수 없는 오류')}")
 
             with btn_col2:
-                if st.button("💾 저장하기", use_container_width=True, key="tg_save", type="primary"):
-                    if not tg_chat_id or not tg_token:
+                if st.button("💾 저장하기", use_container_width=True, key="sd_tg_save", type="primary"):
+                    if not sd_tg_chat_id or not sd_tg_token:
                         st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
                     elif _IS_CLOUD:
                         with st.spinner("저장 중..."):
                             try:
                                 _save_user_settings_to_sheet(
                                     st.session_state.username,
-                                    {"tg_chat_id": tg_chat_id, "tg_token": tg_token})
+                                    {"sd_tg_chat_id": sd_tg_chat_id, "sd_tg_token": sd_tg_token})
                                 st.session_state.user_settings.update(
-                                    {"tg_chat_id": tg_chat_id, "tg_token": tg_token})
+                                    {"sd_tg_chat_id": sd_tg_chat_id, "sd_tg_token": sd_tg_token})
                                 st.success("✅ Google Sheets에 저장 완료!")
                             except Exception as e:
                                 st.error(f"❌ 저장 실패: {e}")
                     else:
-                        save_config({"tg_chat_id": tg_chat_id, "tg_token": tg_token}, sensitive=True)
+                        save_config({"sd_tg_chat_id": sd_tg_chat_id, "sd_tg_token": sd_tg_token}, sensitive=True)
                         st.success(f"✅ 저장 완료! `{_CONFIG}`")
 
         st.write("")
