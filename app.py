@@ -1100,6 +1100,13 @@ def run_backtest_stdev(
     n      = len(closes)
     sigmas = _s_all[_sim_offset:_sim_offset + n]
 
+    # prev_close 배열: 시뮬 첫날은 버퍼의 직전 종가 사용
+    # closes[i-1] 방식은 i=0에서 closes[-1](마지막 원소)을 잘못 참조하는 버그 있음
+    if _sim_offset > 0:
+        _prev_c = _c_all[_sim_offset - 1 : _sim_offset - 1 + n]
+    else:
+        _prev_c = np.concatenate([[np.nan], closes[:-1]])
+
     # 시뮬레이션 상태
     cash          = float(initial_capital)
     holdings      = 0
@@ -1126,7 +1133,7 @@ def run_backtest_stdev(
             cum_realiz_hist.append(cum_realized)
             continue
 
-        prev_close = closes[i-1]
+        prev_close = _prev_c[i]   # _prev_c 배열로 첫날 prev_close 버그 수정
         buy_loc    = prev_close * (1.0 + sigma * k_buy)
         sell_loc   = prev_close * (1.0 + sigma * k_sell)
 
