@@ -1074,25 +1074,31 @@ def run_backtest_stdev(
     티어=1마다 총투자금 갱신 (RENEWAL 사이클 전 누적실현 기준)
     """
     df = price_df.copy()
-    df = df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)]
-    if df.empty or len(df) < sigma_period + 2:
+    # σ 워밍업: price_df 전체(start_date 이전 버퍼 포함)로 σ 사전 계산
+    # 포트폴리오 시뮬은 start_date 이후만 수행
+    _df_sigma = df.loc[:pd.to_datetime(end_date)].copy()
+    df        = _df_sigma.loc[pd.to_datetime(start_date):].copy()
+    if df.empty or len(_df_sigma) < sigma_period + 2:
         return None
 
+    # σ 사전 계산 (버퍼 포함 전체 구간 → 시작일부터 σ 유효)
+    _c_all = _df_sigma["Close"].values.astype(float)
+    _n_all = len(_c_all)
+    _r_all = np.full(_n_all, np.nan)
+    for i in range(1, _n_all):
+        if _c_all[i-1] > 0:
+            _r_all[i] = (_c_all[i] - _c_all[i-1]) / _c_all[i-1]
+    _s_all = np.full(_n_all, np.nan)
+    for i in range(sigma_period, _n_all):
+        w = _r_all[i-sigma_period:i]
+        if not np.any(np.isnan(w)):
+            _s_all[i] = np.std(w, ddof=0)
+
+    # 시뮬레이션 구간에 해당하는 σ 추출
+    _sim_offset = _df_sigma.index.searchsorted(df.index[0])
     closes = df["Close"].values.astype(float)
-    n = len(closes)
-
-    # 일간 수익률
-    rets = np.full(n, np.nan)
-    for i in range(1, n):
-        if closes[i-1] > 0:
-            rets[i] = (closes[i] - closes[i-1]) / closes[i-1]
-
-    # σ: 당일 제외, 직전 sigma_period일 stdevp
-    sigmas = np.full(n, np.nan)
-    for i in range(sigma_period, n):
-        window = rets[i-sigma_period:i]
-        if not np.any(np.isnan(window)):
-            sigmas[i] = np.std(window, ddof=0)
+    n      = len(closes)
+    sigmas = _s_all[_sim_offset:_sim_offset + n]
 
     # 시뮬레이션 상태
     cash          = float(initial_capital)
