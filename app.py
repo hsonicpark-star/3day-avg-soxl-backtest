@@ -6717,17 +6717,22 @@ if not _is_stdev:
                                             _tg_cfg.get("os_start", "2024-01-01"), "%Y-%m-%d").date()
                                     except:
                                         _tg_start_d = datetime(2024, 1, 1).date()
-                                    msg = _build_order_text(
-                                        _tg_tk,
-                                        float(_tg_cfg.get("a_buy")      or -0.005),
-                                        float(_tg_cfg.get("a_sell")     or  0.009),
-                                        float(_tg_cfg.get("sell_ratio") or  100.0),
-                                        int  (_tg_cfg.get("divisions")  or  5),
-                                        n_days=int(_tg_cfg.get("n_days") or 2),
-                                        _os_start=_tg_start_d,
-                                        _os_capital=float(_tg_cfg.get("os_capital") or initial_capital),
-                                    )
-                                    result = _send_telegram(tg_token, tg_chat_id, msg)
+                                    try:
+                                        msg = _build_order_text(
+                                            _tg_tk,
+                                            float(_tg_cfg.get("a_buy")      or -0.005),
+                                            float(_tg_cfg.get("a_sell")     or  0.009),
+                                            float(_tg_cfg.get("sell_ratio") or  100.0),
+                                            int  (_tg_cfg.get("divisions")  or  5),
+                                            n_days=int(_tg_cfg.get("n_days") or 2),
+                                            _os_start=_tg_start_d,
+                                            _os_capital=float(_tg_cfg.get("os_capital") or initial_capital),
+                                        )
+                                        result = _send_telegram(tg_token, tg_chat_id, msg)
+                                    except Exception as _tg_err:
+                                        _tg_all_ok = False
+                                        st.error(f"❌ {_tg_tk} 오류: {_tg_err}")
+                                        continue
                                 if result.get("ok"):
                                     st.success(f"✅ {_tg_tk} 발송 성공!")
                                 else:
