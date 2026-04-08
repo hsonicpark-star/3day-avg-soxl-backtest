@@ -6724,7 +6724,7 @@ if not _is_stdev:
                                             float(_tg_cfg.get("a_sell")     or  0.009),
                                             float(_tg_cfg.get("sell_ratio") or  100.0),
                                             int  (_tg_cfg.get("divisions")  or  5),
-                                            n_days=int(_tg_cfg.get("n_days") or 2),
+                                            _n_days=int(_tg_cfg.get("n_days") or 2),
                                             _os_start=_tg_start_d,
                                             _os_capital=float(_tg_cfg.get("os_capital") or initial_capital),
                                         )
