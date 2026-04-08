@@ -6719,13 +6719,13 @@ if not _is_stdev:
                                         _tg_start_d = datetime(2024, 1, 1).date()
                                     msg = _build_order_text(
                                         _tg_tk,
-                                        float(_tg_cfg.get("a_buy",      -0.005)),
-                                        float(_tg_cfg.get("a_sell",      0.009)),
-                                        float(_tg_cfg.get("sell_ratio",  100.0)),
-                                        int  (_tg_cfg.get("divisions",   5)),
-                                        n_days=int(_tg_cfg.get("n_days", 2)),
+                                        float(_tg_cfg.get("a_buy")      or -0.005),
+                                        float(_tg_cfg.get("a_sell")     or  0.009),
+                                        float(_tg_cfg.get("sell_ratio") or  100.0),
+                                        int  (_tg_cfg.get("divisions")  or  5),
+                                        n_days=int(_tg_cfg.get("n_days") or 2),
                                         _os_start=_tg_start_d,
-                                        _os_capital=float(_tg_cfg.get("os_capital",  initial_capital)),
+                                        _os_capital=float(_tg_cfg.get("os_capital") or initial_capital),
                                     )
                                     result = _send_telegram(tg_token, tg_chat_id, msg)
                                 if result.get("ok"):
