@@ -2236,10 +2236,10 @@ def _render_sigma_account_tab(tk: str, cfg: dict, key_sfx: str):
         with st.container(border=True):
             st.markdown(
                 f"<b>📊 오늘의 Sigma LOC 주문</b> · {_od['ticker']} · 기준일: {_od['as_of']}<br>"
-                f"전일 종가: <b>${_od['prev_close']:.4f}</b> &nbsp;|&nbsp; "
+                f"전일 종가: <b>&#36;{_od['prev_close']:.4f}</b> &nbsp;|&nbsp; "
                 f"μ: {_od['mu_pct']:.4f}% &nbsp;|&nbsp; "
                 f"σ: {_od['sigma_pct']:.4f}% &nbsp;|&nbsp; "
-                f"1yr 고점: ${_od['rolling_max']:.4f}",
+                f"1yr 고점: &#36;{_od['rolling_max']:.4f}",
                 unsafe_allow_html=True,
             )
             _qty1 = math.floor(_am / _od["buy_loc_1"]) if _od["buy_loc_1"] > 0 else 0
