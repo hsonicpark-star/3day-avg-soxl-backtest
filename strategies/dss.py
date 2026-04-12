@@ -1748,224 +1748,235 @@ def render_db_tab(params=None):
             end_date=str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d"))),
         )
 
-        st.session_state['dss_db_result'] = result
-        st.session_state['dss_db_mode_series'] = mode_series_df
-        st.session_state['dss_db_weekly_rsi'] = weekly_rsi_df
+        if result is None or result.empty:
+            st.warning("결과가 없습니다. 날짜 범위를 확인하세요.")
+        else:
+            st.session_state['dss_db_result'] = result
+            st.session_state['dss_db_mode_series'] = mode_series_df
+            st.session_state['dss_db_weekly_rsi'] = weekly_rsi_df
 
-    if 'dss_db_result' in st.session_state:
-        result = st.session_state['dss_db_result']
-        mode_series_df = st.session_state['dss_db_mode_series']
-        weekly_rsi_df = st.session_state['dss_db_weekly_rsi']
+    if 'dss_db_result' not in st.session_state:
+        st.info("🔘 위 버튼을 눌러 DB를 생성하세요.")
+        return
 
-        # ── 최신 데이터 요약 (맨 위) ──
-        latest = result.iloc[-1]
-        latest_date = latest['날짜']
-        latest_mode = latest['모드']
+    result = st.session_state['dss_db_result']
+    if result is None or result.empty:
+        st.warning("저장된 결과가 비어 있습니다. 다시 실행하세요.")
+        return
 
-        # 최신 주차 RSI
+    result = st.session_state['dss_db_result']
+    mode_series_df = st.session_state['dss_db_mode_series']
+    weekly_rsi_df = st.session_state['dss_db_weekly_rsi']
+
+    # ── 최신 데이터 요약 (맨 위) ──
+    latest = result.iloc[-1]
+    latest_date = latest['날짜']
+    latest_mode = latest['모드']
+
+    # 최신 주차 RSI
+    weekly_in_range = mode_series_df[
+        mode_series_df['week_end'] <= latest_date + pd.Timedelta(days=6)
+    ]
+    latest_week = weekly_in_range.iloc[-1] if len(weekly_in_range) > 0 else None
+    latest_rsi = latest_week['rsi'] if latest_week is not None else 0
+    latest_week_end = latest_week['week_end'] if latest_week is not None else latest_date
+    latest_week_start = latest_week_end - pd.Timedelta(days=4)
+    week_num = len(weekly_in_range)
+
+    mode_icon = "🔴" if latest_mode == "AG" else "🔵"
+    st.markdown(
+        f"#### 최신 현황 — {latest_date.strftime('%Y-%m-%d')} | "
+        f"{mode_icon} **{latest_mode}** | "
+        f"RSI {latest_rsi:.2f} (W{week_num})"
+    )
+    lc1, lc2, lc3, lc4, lc5 = st.columns(5)
+    lc1.metric("종가", f"${latest['종가']:.2f}")
+    lc2.metric("보유포지션", f"{int(latest['보유포지션수'])}/{int(latest['분할수'])}")
+    lc3.metric("총자산", f"${latest['총자산']:,.0f}")
+    lc4.metric("투자금", f"${latest['투자금']:,.0f}")
+    lc5.metric("예수금", f"${latest['예수금']:,.0f}")
+
+    lc6, lc7, lc8 = st.columns(3)
+    lc6.metric("누적실현", f"${latest['누적실현']:,.0f}")
+    lc7.metric("누적매도", f"{int(latest['누적매도'])}회")
+    lc8.metric("1회시드", f"${latest['1회시드']:,.0f}")
+
+    # ── 섹션 1: 일별 종가 + 매매 기록 (좌측) ──
+    st.markdown("---")
+    db_col1, db_col2 = st.columns([3, 2])
+
+    _start_date_str = str(p.get("bt_start_date", "2010-01-01"))
+    _end_date_str = str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d")))
+
+    with db_col1:
+        st.markdown("#### 일별 SOXL 기록")
+
+        # 일별 로그: 날짜, 종가, 모드, 매수/매도, 포지션 등
+        daily_log = result[['날짜', '종가', '모드', '매수주문가', '매수체결', '수량',
+                            '매도목표가', '보유포지션수', '분할수', '1회시드',
+                            '투자금', '예수금', '평가금', '총자산',
+                            '당일실현', '누적실현', '누적매도']].copy()
+        daily_log['날짜'] = daily_log['날짜'].dt.strftime('%y.%m.%d')
+
+        # 숫자 포맷
+        for col in ['종가', '매수주문가', '매수체결', '매도목표가', '1회시드']:
+            daily_log[col] = daily_log[col].apply(
+                lambda x: f"${x:.2f}" if pd.notna(x) else "")
+        for col in ['투자금', '예수금', '평가금', '총자산', '당일실현', '누적실현']:
+            daily_log[col] = daily_log[col].apply(lambda x: f"${x:,.0f}" if x != 0 else "")
+        daily_log['수량'] = daily_log['수량'].apply(lambda x: str(x) if x > 0 else "")
+        daily_log['누적매도'] = daily_log['누적매도'].astype(int)
+
+        st.dataframe(daily_log, use_container_width=True, height=600)
+        st.caption(f"총 {len(daily_log)}거래일 기록")
+
+    with db_col2:
+        st.markdown("#### 주별 RSI / 모드")
+
+        # 주별 데이터: 주차, 모드, 시작~종료, RSI
         weekly_in_range = mode_series_df[
-            mode_series_df['week_end'] <= latest_date + pd.Timedelta(days=6)
-        ]
-        latest_week = weekly_in_range.iloc[-1] if len(weekly_in_range) > 0 else None
-        latest_rsi = latest_week['rsi'] if latest_week is not None else 0
-        latest_week_end = latest_week['week_end'] if latest_week is not None else latest_date
-        latest_week_start = latest_week_end - pd.Timedelta(days=4)
-        week_num = len(weekly_in_range)
+            (mode_series_df['week_end'] >= pd.Timestamp(_start_date_str) - pd.Timedelta(days=7)) &
+            (mode_series_df['week_end'] <= pd.Timestamp(_end_date_str) + pd.Timedelta(days=7))
+        ].copy()
 
-        mode_icon = "🔴" if latest_mode == "AG" else "🔵"
-        st.markdown(
-            f"#### 최신 현황 — {latest_date.strftime('%Y-%m-%d')} | "
-            f"{mode_icon} **{latest_mode}** | "
-            f"RSI {latest_rsi:.2f} (W{week_num})"
-        )
-        lc1, lc2, lc3, lc4, lc5 = st.columns(5)
-        lc1.metric("종가", f"${latest['종가']:.2f}")
-        lc2.metric("보유포지션", f"{int(latest['보유포지션수'])}/{int(latest['분할수'])}")
-        lc3.metric("총자산", f"${latest['총자산']:,.0f}")
-        lc4.metric("투자금", f"${latest['투자금']:,.0f}")
-        lc5.metric("예수금", f"${latest['예수금']:,.0f}")
+        weekly_display = pd.DataFrame()
+        weekly_display['주차'] = range(1, len(weekly_in_range) + 1)
+        weekly_display['모드'] = weekly_in_range['mode'].values
+        weekly_display['시작'] = (weekly_in_range['week_end'].values
+                                 - pd.Timedelta(days=4)).astype('datetime64[ns]')
+        weekly_display['종료'] = weekly_in_range['week_end'].values
+        weekly_display['시작'] = pd.to_datetime(weekly_display['시작']).dt.strftime('%y.%m.%d')
+        weekly_display['종료'] = pd.to_datetime(weekly_display['종료']).dt.strftime('%y.%m.%d')
+        weekly_display['RSI'] = weekly_in_range['rsi'].values.round(2)
 
-        lc6, lc7, lc8 = st.columns(3)
-        lc6.metric("누적실현", f"${latest['누적실현']:,.0f}")
-        lc7.metric("누적매도", f"{int(latest['누적매도'])}회")
-        lc8.metric("1회시드", f"${latest['1회시드']:,.0f}")
+        # 모드별 색상을 위한 스타일
+        def color_mode(val):
+            if val == "AG":
+                return 'background-color: #ffe0e0'
+            elif val == "SF":
+                return 'background-color: #e0e0ff'
+            return ''
 
-        # ── 섹션 1: 일별 종가 + 매매 기록 (좌측) ──
-        st.markdown("---")
-        db_col1, db_col2 = st.columns([3, 2])
+        styled = weekly_display.style.map(color_mode, subset=['모드'])
+        st.dataframe(styled, use_container_width=True, height=600)
 
-        _start_date_str = str(p.get("bt_start_date", "2010-01-01"))
-        _end_date_str = str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d")))
+    # ── 섹션 2: 모드 가이드 차트 (RSI + 기준선) ──
+    st.markdown("---")
+    st.markdown("#### 모드 가이드 차트")
 
-        with db_col1:
-            st.markdown("#### 일별 SOXL 기록")
+    # 투자 기간 내 주별 RSI 차트
+    fig_rsi = go.Figure()
 
-            # 일별 로그: 날짜, 종가, 모드, 매수/매도, 포지션 등
-            daily_log = result[['날짜', '종가', '모드', '매수주문가', '매수체결', '수량',
-                                '매도목표가', '보유포지션수', '분할수', '1회시드',
-                                '투자금', '예수금', '평가금', '총자산',
-                                '당일실현', '누적실현', '누적매도']].copy()
-            daily_log['날짜'] = daily_log['날짜'].dt.strftime('%y.%m.%d')
-
-            # 숫자 포맷
-            for col in ['종가', '매수주문가', '매수체결', '매도목표가', '1회시드']:
-                daily_log[col] = daily_log[col].apply(
-                    lambda x: f"${x:.2f}" if pd.notna(x) else "")
-            for col in ['투자금', '예수금', '평가금', '총자산', '당일실현', '누적실현']:
-                daily_log[col] = daily_log[col].apply(lambda x: f"${x:,.0f}" if x != 0 else "")
-            daily_log['수량'] = daily_log['수량'].apply(lambda x: str(x) if x > 0 else "")
-            daily_log['누적매도'] = daily_log['누적매도'].astype(int)
-
-            st.dataframe(daily_log, use_container_width=True, height=600)
-            st.caption(f"총 {len(daily_log)}거래일 기록")
-
-        with db_col2:
-            st.markdown("#### 주별 RSI / 모드")
-
-            # 주별 데이터: 주차, 모드, 시작~종료, RSI
-            weekly_in_range = mode_series_df[
-                (mode_series_df['week_end'] >= pd.Timestamp(_start_date_str) - pd.Timedelta(days=7)) &
-                (mode_series_df['week_end'] <= pd.Timestamp(_end_date_str) + pd.Timedelta(days=7))
-            ].copy()
-
-            weekly_display = pd.DataFrame()
-            weekly_display['주차'] = range(1, len(weekly_in_range) + 1)
-            weekly_display['모드'] = weekly_in_range['mode'].values
-            weekly_display['시작'] = (weekly_in_range['week_end'].values
-                                     - pd.Timedelta(days=4)).astype('datetime64[ns]')
-            weekly_display['종료'] = weekly_in_range['week_end'].values
-            weekly_display['시작'] = pd.to_datetime(weekly_display['시작']).dt.strftime('%y.%m.%d')
-            weekly_display['종료'] = pd.to_datetime(weekly_display['종료']).dt.strftime('%y.%m.%d')
-            weekly_display['RSI'] = weekly_in_range['rsi'].values.round(2)
-
-            # 모드별 색상을 위한 스타일
-            def color_mode(val):
-                if val == "AG":
-                    return 'background-color: #ffe0e0'
-                elif val == "SF":
-                    return 'background-color: #e0e0ff'
-                return ''
-
-            styled = weekly_display.style.map(color_mode, subset=['모드'])
-            st.dataframe(styled, use_container_width=True, height=600)
-
-        # ── 섹션 2: 모드 가이드 차트 (RSI + 기준선) ──
-        st.markdown("---")
-        st.markdown("#### 모드 가이드 차트")
-
-        # 투자 기간 내 주별 RSI 차트
-        fig_rsi = go.Figure()
-
-        # RSI 라인 (모드별 색상)
-        for _, row in weekly_in_range.iterrows():
-            color = 'red' if row['mode'] == 'AG' else 'blue'
-            fig_rsi.add_trace(go.Scatter(
-                x=[row['week_end']], y=[row['rsi']],
-                mode='markers',
-                marker=dict(color=color, size=6),
-                showlegend=False,
-            ))
-
-        # RSI 전체 라인
+    # RSI 라인 (모드별 색상)
+    for _, row in weekly_in_range.iterrows():
+        color = 'red' if row['mode'] == 'AG' else 'blue'
         fig_rsi.add_trace(go.Scatter(
-            x=weekly_in_range['week_end'],
-            y=weekly_in_range['rsi'],
-            mode='lines',
-            line=dict(color='gray', width=1),
-            name='RSI',
+            x=[row['week_end']], y=[row['rsi']],
+            mode='markers',
+            marker=dict(color=color, size=6),
+            showlegend=False,
         ))
 
-        # 기준선들 (35, 40, 50, 60, 65)
-        thresholds = [
-            (35, 'green', 'dash', 'RSI 35'),
-            (40, 'orange', 'dot', 'RSI 40'),
-            (50, 'black', 'solid', 'RSI 50'),
-            (60, 'orange', 'dot', 'RSI 60'),
-            (65, 'red', 'dash', 'RSI 65'),
-        ]
-        for level, color, dash, name in thresholds:
-            fig_rsi.add_hline(y=level, line=dict(color=color, dash=dash, width=1),
-                              annotation_text=name, annotation_position="bottom right")
+    # RSI 전체 라인
+    fig_rsi.add_trace(go.Scatter(
+        x=weekly_in_range['week_end'],
+        y=weekly_in_range['rsi'],
+        mode='lines',
+        line=dict(color='gray', width=1),
+        name='RSI',
+    ))
 
-        # AG/SF 배경색 (모드 전환 구간)
-        prev_mode = None
-        span_start = None
-        for _, row in weekly_in_range.iterrows():
-            if row['mode'] != prev_mode:
-                if prev_mode is not None and span_start is not None:
-                    fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
-                    fig_rsi.add_vrect(x0=span_start, x1=row['week_end'],
-                                      fillcolor=fill_color, line_width=0, layer='below')
-                span_start = row['week_end']
-                prev_mode = row['mode']
-        # 마지막 구간
-        if prev_mode and span_start is not None:
-            fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
-            fig_rsi.add_vrect(x0=span_start, x1=weekly_in_range['week_end'].iloc[-1],
-                              fillcolor=fill_color, line_width=0, layer='below')
+    # 기준선들 (35, 40, 50, 60, 65)
+    thresholds = [
+        (35, 'green', 'dash', 'RSI 35'),
+        (40, 'orange', 'dot', 'RSI 40'),
+        (50, 'black', 'solid', 'RSI 50'),
+        (60, 'orange', 'dot', 'RSI 60'),
+        (65, 'red', 'dash', 'RSI 65'),
+    ]
+    for level, color, dash, name in thresholds:
+        fig_rsi.add_hline(y=level, line=dict(color=color, dash=dash, width=1),
+                          annotation_text=name, annotation_position="bottom right")
 
-        fig_rsi.update_layout(
-            height=350,
-            yaxis_title="QQQ Weekly RSI",
-            xaxis_title="",
-            margin=dict(t=30, b=30),
-            legend=dict(orientation='h', y=1.05),
+    # AG/SF 배경색 (모드 전환 구간)
+    prev_mode = None
+    span_start = None
+    for _, row in weekly_in_range.iterrows():
+        if row['mode'] != prev_mode:
+            if prev_mode is not None and span_start is not None:
+                fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
+                fig_rsi.add_vrect(x0=span_start, x1=row['week_end'],
+                                  fillcolor=fill_color, line_width=0, layer='below')
+            span_start = row['week_end']
+            prev_mode = row['mode']
+    # 마지막 구간
+    if prev_mode and span_start is not None:
+        fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
+        fig_rsi.add_vrect(x0=span_start, x1=weekly_in_range['week_end'].iloc[-1],
+                          fillcolor=fill_color, line_width=0, layer='below')
+
+    fig_rsi.update_layout(
+        height=350,
+        yaxis_title="QQQ Weekly RSI",
+        xaxis_title="",
+        margin=dict(t=30, b=30),
+        legend=dict(orientation='h', y=1.05),
+    )
+    st.plotly_chart(fig_rsi, use_container_width=True)
+
+    # ── 섹션 3: Historical RSI (2010~) ──
+    st.markdown("---")
+    with st.expander("Historical RSI (전체 기간)", expanded=False):
+        hist_rsi = weekly_rsi_df.copy()
+        hist_rsi = hist_rsi.merge(
+            mode_series_df[['week_end', 'mode']],
+            on='week_end', how='left'
         )
-        st.plotly_chart(fig_rsi, use_container_width=True)
+        hist_display = pd.DataFrame()
+        hist_display['주차'] = range(1, len(hist_rsi) + 1)
+        hist_display['시작'] = (hist_rsi['week_end'].values
+                                - pd.Timedelta(days=4)).astype('datetime64[ns]')
+        hist_display['종료'] = hist_rsi['week_end'].values
+        hist_display['시작'] = pd.to_datetime(hist_display['시작']).dt.strftime('%y.%m.%d')
+        hist_display['종료'] = pd.to_datetime(hist_display['종료']).dt.strftime('%y.%m.%d')
+        hist_display['RSI'] = hist_rsi['rsi'].values.round(2)
+        hist_display['모드'] = hist_rsi['mode'].values
 
-        # ── 섹션 3: Historical RSI (2010~) ──
-        st.markdown("---")
-        with st.expander("Historical RSI (전체 기간)", expanded=False):
-            hist_rsi = weekly_rsi_df.copy()
-            hist_rsi = hist_rsi.merge(
-                mode_series_df[['week_end', 'mode']],
-                on='week_end', how='left'
-            )
-            hist_display = pd.DataFrame()
-            hist_display['주차'] = range(1, len(hist_rsi) + 1)
-            hist_display['시작'] = (hist_rsi['week_end'].values
-                                    - pd.Timedelta(days=4)).astype('datetime64[ns]')
-            hist_display['종료'] = hist_rsi['week_end'].values
-            hist_display['시작'] = pd.to_datetime(hist_display['시작']).dt.strftime('%y.%m.%d')
-            hist_display['종료'] = pd.to_datetime(hist_display['종료']).dt.strftime('%y.%m.%d')
-            hist_display['RSI'] = hist_rsi['rsi'].values.round(2)
-            hist_display['모드'] = hist_rsi['mode'].values
+        st.dataframe(hist_display, use_container_width=True, height=500)
+        st.caption(f"총 {len(hist_display)}주 기록 (2010~)")
 
-            st.dataframe(hist_display, use_container_width=True, height=500)
-            st.caption(f"총 {len(hist_display)}주 기록 (2010~)")
+        # Historical RSI 차트
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Scatter(
+            x=hist_rsi['week_end'], y=hist_rsi['rsi'],
+            mode='lines', line=dict(color='gray', width=1), name='RSI',
+        ))
+        for level, color, dash, name in thresholds:
+            fig_hist.add_hline(y=level, line=dict(color=color, dash=dash, width=1))
+        fig_hist.update_layout(height=300, margin=dict(t=20, b=20),
+                               yaxis_title="QQQ Weekly RSI")
+        st.plotly_chart(fig_hist, use_container_width=True)
 
-            # Historical RSI 차트
-            fig_hist = go.Figure()
-            fig_hist.add_trace(go.Scatter(
-                x=hist_rsi['week_end'], y=hist_rsi['rsi'],
-                mode='lines', line=dict(color='gray', width=1), name='RSI',
-            ))
-            for level, color, dash, name in thresholds:
-                fig_hist.add_hline(y=level, line=dict(color=color, dash=dash, width=1))
-            fig_hist.update_layout(height=300, margin=dict(t=20, b=20),
-                                   yaxis_title="QQQ Weekly RSI")
-            st.plotly_chart(fig_hist, use_container_width=True)
-
-        # ── 섹션 4: 매도 내역 누적 기록 ──
-        with st.expander("매도 내역 누적 기록"):
-            all_sells = []
-            for _, row in result.iterrows():
-                if row['매도내역']:
-                    for s in row['매도내역']:
-                        all_sells.append(s)
-            if all_sells:
-                sells_df = pd.DataFrame(all_sells)
-                sells_df['buy_date'] = sells_df['buy_date'].dt.strftime('%y.%m.%d')
-                sells_df['sell_date'] = sells_df['sell_date'].dt.strftime('%y.%m.%d')
-                sells_df['stop_date'] = sells_df['stop_date'].dt.strftime('%y.%m.%d')
-                sells_df.columns = ['매수일', '매수가', '수량', '매도일', '매도가',
-                                    '매도목표', '손절일', '손익', '모드']
-                sells_df['손익'] = sells_df['손익'].round(2)
-                sells_df.insert(0, '회차', range(1, len(sells_df) + 1))
-                st.dataframe(sells_df, use_container_width=True, height=400)
-                st.caption(f"총 {len(sells_df)}회 매도 완료")
-            else:
-                st.info("매도 기록이 없습니다.")
+    # ── 섹션 4: 매도 내역 누적 기록 ──
+    with st.expander("매도 내역 누적 기록"):
+        all_sells = []
+        for _, row in result.iterrows():
+            if row['매도내역']:
+                for s in row['매도내역']:
+                    all_sells.append(s)
+        if all_sells:
+            sells_df = pd.DataFrame(all_sells)
+            sells_df['buy_date'] = sells_df['buy_date'].dt.strftime('%y.%m.%d')
+            sells_df['sell_date'] = sells_df['sell_date'].dt.strftime('%y.%m.%d')
+            sells_df['stop_date'] = sells_df['stop_date'].dt.strftime('%y.%m.%d')
+            sells_df.columns = ['매수일', '매수가', '수량', '매도일', '매도가',
+                                '매도목표', '손절일', '손익', '모드']
+            sells_df['손익'] = sells_df['손익'].round(2)
+            sells_df.insert(0, '회차', range(1, len(sells_df) + 1))
+            st.dataframe(sells_df, use_container_width=True, height=400)
+            st.caption(f"총 {len(sells_df)}회 매도 완료")
+        else:
+            st.info("매도 기록이 없습니다.")
 
 
 # ══════════════════════════════════════════════
