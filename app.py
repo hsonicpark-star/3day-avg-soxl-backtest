@@ -7,21 +7,31 @@ app.py — 전략 백테스터 라우터 (thin entry point)
 
 import streamlit as st
 from datetime import datetime
+import sys
 
 # ── 페이지 설정 (반드시 첫 Streamlit 호출) ───────────────────
 st.set_page_config(page_title="📊 전략 백테스터", layout="wide")
 
+# ── 디버그: 앱 시작 확인 ─────────────────────────────────────
+print(f"[DEBUG] app.py started, Python {sys.version}", flush=True)
+
 # ── 공통 모듈 import ─────────────────────────────────────────
 from common.config import _IS_CLOUD, _CONFIG, load_config, get_ticker_settings
+print("[DEBUG] common.config loaded", flush=True)
 from common.auth import render_login_gate, _cookie_mgr
+print("[DEBUG] common.auth loaded", flush=True)
 
 # ── 클라우드: 로그인 게이트 ──────────────────────────────────
 if _IS_CLOUD:
+    print("[DEBUG] rendering login gate...", flush=True)
     render_login_gate()
+    print("[DEBUG] login gate done", flush=True)
 
 # ── 전략 모듈 import ─────────────────────────────────────────
 try:
+    print("[DEBUG] importing strategies...", flush=True)
     from strategies import avg_close, stdev, sigma
+    print("[DEBUG] strategies loaded OK", flush=True)
 except Exception as _import_err:
     st.error(f"⚠️ 전략 모듈 로드 실패: {_import_err}")
     import traceback
