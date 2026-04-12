@@ -25,11 +25,17 @@ import json
 import itertools
 import random
 import os
+import sys
 import requests
 import io as _io
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
+
+# dss_engine.py는 app.py와 같은 루트에 위치 — sys.path 보장
+_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _root_dir not in sys.path:
+    sys.path.insert(0, _root_dir)
 
 from dss_engine import (
     load_price_data, get_weekly_closes, calc_weekly_rsi,
