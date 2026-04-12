@@ -3109,7 +3109,10 @@ def render_settings_tab():
     st.subheader("⚙️ 개인 설정")
 
     _cfg_s = _load_dss_config()
-    st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_DSS_CONFIG_PATH}` 에 저장됩니다.")
+    if _IS_CLOUD:
+        st.info("☁️ **Streamlit Cloud 실행 중** — 설정이 세션 내에서만 유지됩니다.")
+    else:
+        st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_DSS_CONFIG_PATH}` 에 저장됩니다.")
 
     # ── 텔레그램 알림 설정 ─────────────────────────────────
     with st.container(border=True):
