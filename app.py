@@ -28,15 +28,13 @@ except Exception as _import_err:
     st.code(traceback.format_exc())
     st.stop()
 
-# DSS는 별도 try/except — 실패해도 기존 전략에 영향 없음
+# DSS는 Python 3.14 호환성 해결 후 활성화 예정
 _dss_available = False
-try:
-    from strategies import dss
-    _dss_available = True
-except Exception as _dss_err:
-    import traceback as _tb
-    _dss_error_msg = str(_dss_err)
-    _dss_error_tb = _tb.format_exc()
+# try:
+#     from strategies import dss
+#     _dss_available = True
+# except Exception as _dss_err:
+#     pass
 
 # ── 전략 목록 ────────────────────────────────────────────────
 _STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매"]
