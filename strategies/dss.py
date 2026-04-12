@@ -85,9 +85,79 @@ def _send_telegram(token: str, chat_id: str, text: str) -> dict:
         return {"ok": False, "description": str(e)}
 
 
-# ──────────────────────────────────────────────
-# 히스토리 (B방식)
-# ──────────────────────────────────────────────
+def _build_dss_order_text(os_result: dict) -> str:
+    """주문표 결과 dict를 텔레그램 메시지로 포맷팅."""
+    _o = os_result
+    mode_icon = "🟢" if _o["last_mode"] == "AG" else "🔵"
+    mode_label = "공세" if _o["last_mode"] == "AG" else "안전"
+    next_td = next_trading_date()
+    lines = [
+        f"<b>📋 DSS 동파법 — SOXL 주문표</b>",
+        f"📅 {next_td.strftime('%Y-%m-%d')}  {mode_icon} {mode_label}모드",
+        f"",
+        f"전일종가: <b>${_o['prev_close']:,.2f}</b>",
+        f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
+        f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
+        f"",
+    ]
+    for i, pos in enumerate(_o['open_positions']):
+        if pos['sell_target'] is not None:
+            pnl_pct = (pos['sell_target'] / pos['buy_price'] - 1) * 100
+            lines.append(
+                f"📈 매도 티어{i+1}: LOC ${pos['sell_target']:,.2f} "
+                f"× {pos['qty']}주 ({pnl_pct:+.1f}%)"
+            )
+    if _o['n_pos'] < _o['cur_divisions']:
+        lines.append(
+            f"📉 매수 티어{_o['n_pos']+1}: LOC ${_o['next_buy_order']:,.2f} "
+            f"× {_o['buy_qty_est']}주 (시드 ${_o['seed_per_trade']:,.0f})"
+        )
+    else:
+        lines.append(f"⚠️ 전 슬롯 사용 중 — 매수 없음")
+    if _o.get('latest_rsi'):
+        lines.append(f"")
+        lines.append(f"QQQ RSI: {_o['latest_rsi']:.1f} ({_o.get('latest_rsi_date', '')})")
+    return "\n".join(lines)
+
+
+# ── 구글시트 연동 ──
+
+def _get_gspread_client():
+    """gspread 클라이언트 반환 (service_account.json 기반)."""
+    import gspread
+    sa_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "service_account.json")
+    if os.path.exists(sa_path):
+        return gspread.service_account(filename=sa_path)
+    raise FileNotFoundError(
+        "service_account.json 파일이 없습니다. "
+        "02.종가평균매매 폴더에서 복사하거나 GCP 서비스 계정 키를 생성하세요."
+    )
+
+
+def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict) -> int:
+    """주문표 결과를 구글시트에 기록."""
+    gc = _get_gspread_client()
+    sh = gc.open_by_url(gs_url)
+    try:
+        ws = sh.worksheet(gs_sheet)
+    except Exception:
+        ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
+    ws.batch_clear(["L4:O13"])
+    _o = os_result
+    rows = []
+    for pos in _o['open_positions']:
+        if pos['sell_target'] is not None:
+            rows.append(["매도", f"${pos['sell_target']:,.2f}", f"{pos['qty']}주",
+                         f"목표 {(pos['sell_target']/pos['buy_price']-1)*100:+.1f}%"])
+    if _o['n_pos'] < _o['cur_divisions']:
+        rows.append(["매수", f"${_o['next_buy_order']:,.2f}", f"{_o['buy_qty_est']}주",
+                     f"시드 ${_o['seed_per_trade']:,.0f}"])
+    if rows:
+        ws.update(range_name="L4", values=rows)
+    return len(rows)
+
+
+# ── 일별 매매 히스토리 (B방식: 과거 불변, 새 날짜만 누적) ──
 
 def _get_history_path() -> str:
     return os.path.join(_DSS_CONFIG_DIR, "history_SOXL.csv")
@@ -323,60 +393,255 @@ def render_backtest_tab(params):
 
         if bt is not None and not bt.empty:
             st.session_state["dss_bt_result"] = bt
+            st.session_state["dss_bt_params"] = dss_p
         else:
             st.warning("결과가 없습니다. 날짜 범위를 확인하세요.")
 
-    bt = st.session_state.get("dss_bt_result")
-    if bt is None or (isinstance(bt, pd.DataFrame) and bt.empty):
+    if "dss_bt_result" not in st.session_state:
         st.info("👆 '백테스트 실행' 버튼을 클릭하세요.")
         return
 
+    result = st.session_state["dss_bt_result"]
+    dss_p = st.session_state["dss_bt_params"]
+
     # ── 핵심 지표 ──
-    _assets = bt['총자산'].values.astype(float)
-    _final = float(_assets[-1])
-    _days = len(bt)
-    _years = _days / 252
+    total_days = len(result)
+    final_total = float(result.iloc[-1]['총자산'])
+    cum_realized = float(result.iloc[-1]['누적실현'])
+    total_sells = int(result.iloc[-1]['누적매도'])
     _init = float(p["initial_capital"])
-    _total_ret = (_final / _init - 1)
-    _cagr = (_final / _init) ** (1 / _years) - 1 if _years > 0 else 0
-    _peak = np.maximum.accumulate(_assets)
-    _dd = (_assets - _peak) / _peak
-    _mdd = float(_dd.min())
-    _calmar = abs(_cagr / _mdd) if _mdd != 0 else 0
-    _daily_rets = np.diff(_assets) / _assets[:-1]
-    _sharpe = (np.mean(_daily_rets) / np.std(_daily_rets) * np.sqrt(252)) if np.std(_daily_rets) > 0 else 0
-    _neg = _daily_rets[_daily_rets < 0]
-    _sortino = (np.mean(_daily_rets) / np.std(_neg) * np.sqrt(252)) if len(_neg) > 0 and np.std(_neg) > 0 else 0
+    total_return = (final_total / _init - 1) * 100
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("총 수익률", f"{_total_ret*100:+,.1f}%")
-    m2.metric("CAGR", f"{_cagr*100:.2f}%")
-    m3.metric("MDD", f"{_mdd*100:.2f}%")
-    m4.metric("Calmar", f"{_calmar:.3f}")
-    m5.metric("Sharpe", f"{_sharpe:.3f}")
-    m6.metric("최종자산", f"${_final:,.0f}")
+    # CAGR
+    years = total_days / 252
+    cagr = ((final_total / _init) ** (1 / years) - 1) * 100 if years > 0 else 0
 
-    # ── 자산 추이 + 낙폭 차트 ──
-    _dates = pd.to_datetime(bt['날짜'])
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-    fig.add_trace(go.Scatter(x=_dates, y=_assets, mode='lines', name='총자산',
-                             line=dict(color='#1565C0', width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=_dates, y=_dd * 100, mode='lines', name='낙폭(%)',
-                             fill='tozeroy', fillcolor='rgba(198,40,40,0.15)',
-                             line=dict(color='#C62828', width=1)), row=2, col=1)
-    fig.update_layout(height=500, showlegend=True, legend=dict(orientation='h', y=1.02))
-    fig.update_yaxes(title_text="총자산 ($)", row=1, col=1)
-    fig.update_yaxes(title_text="낙폭 (%)", row=2, col=1)
+    # MDD
+    peak = result['총자산'].cummax()
+    dd = (result['총자산'] - peak) / peak
+    mdd = dd.min() * 100
+
+    # 승률
+    all_sells = []
+    for _, row in result.iterrows():
+        if row['매도내역']:
+            all_sells.extend(row['매도내역'])
+
+    if all_sells:
+        wins = sum(1 for s in all_sells if s['pnl'] > 0)
+        win_rate = wins / len(all_sells) * 100
+        avg_pnl = sum(s['pnl'] for s in all_sells) / len(all_sells)
+    else:
+        win_rate = 0
+        avg_pnl = 0
+
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("총자산", f"${final_total:,.0f}")
+    col2.metric("총수익률", f"{total_return:.1f}%")
+    col3.metric("CAGR", f"{cagr:.1f}%")
+    col4.metric("MDD", f"{mdd:.1f}%")
+    col5.metric("승률", f"{win_rate:.1f}%")
+    col6.metric("매도횟수", f"{int(total_sells)}회")
+
+    col7, col8, col9, col10 = st.columns(4)
+    col7.metric("누적실현손익", f"${cum_realized:,.0f}")
+    col8.metric("평균손익/건", f"${avg_pnl:.1f}")
+    col9.metric("거래일수", f"{total_days}일")
+    col10.metric("투자기간", f"{years:.1f}년")
+
+    # ── 자산 추이 차트 (3행) ──
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.5, 0.25, 0.25],
+        subplot_titles=("총자산 추이", "SOXL 종가", "일별 실현손익"),
+    )
+
+    fig.add_trace(
+        go.Scatter(x=result['날짜'], y=result['총자산'],
+                   name='총자산', fill='tozeroy',
+                   fillcolor='rgba(0,100,200,0.1)',
+                   line=dict(color='royalblue', width=1.5)),
+        row=1, col=1
+    )
+
+    # 모드별 색상
+    ag_mask = result['모드'] == 'AG'
+    sf_mask = result['모드'] == 'SF'
+
+    fig.add_trace(
+        go.Scatter(x=result.loc[ag_mask, '날짜'], y=result.loc[ag_mask, '종가'],
+                   mode='markers', name='종가 (AG)',
+                   marker=dict(color='red', size=3)),
+        row=2, col=1
+    )
+    fig.add_trace(
+        go.Scatter(x=result.loc[sf_mask, '날짜'], y=result.loc[sf_mask, '종가'],
+                   mode='markers', name='종가 (SF)',
+                   marker=dict(color='blue', size=3)),
+        row=2, col=1
+    )
+
+    # 일별 실현손익
+    daily_pnl = result[result['당일실현'] != 0]
+    colors = ['green' if x > 0 else 'red' for x in daily_pnl['당일실현']]
+    fig.add_trace(
+        go.Bar(x=daily_pnl['날짜'], y=daily_pnl['당일실현'],
+               name='일별 실현', marker_color=colors),
+        row=3, col=1
+    )
+
+    fig.update_layout(height=800, showlegend=True, legend=dict(orientation='h', y=1.02))
+    fig.update_xaxes(rangeslider_visible=False)
     st.plotly_chart(fig, use_container_width=True)
 
     # ── 매매 기록 테이블 ──
-    with st.expander("📋 일별 매매 기록", expanded=False):
-        _show_cols = ['날짜', '종가', '모드', '매수주문가', '매수체결', '수량',
-                      '매도목표가', '보유포지션수', '예수금', '총자산', '당일실현', '누적실현']
-        _bt_show = bt[_show_cols].copy()
-        _bt_show['날짜'] = _bt_show['날짜'].astype(str).str[:10]
-        st.dataframe(_bt_show, hide_index=True, use_container_width=True,
-                     height=min(38 + 35 * len(_bt_show), 600))
+    with st.expander("매매 기록 상세"):
+        display_cols = ['날짜', '종가', '모드', '매수주문가', '매수체결', '수량',
+                       '매도목표가', '보유포지션수', '1회시드', '투자금',
+                       '예수금', '총자산', '당일실현', '누적실현', '갱신', '누적매도']
+        df_display = result[display_cols].copy()
+        df_display['날짜'] = df_display['날짜'].dt.strftime('%Y-%m-%d')
+        st.dataframe(df_display, use_container_width=True, height=500)
+
+    # ── 매도 내역 ──
+    if all_sells:
+        with st.expander(f"매도 내역 ({len(all_sells)}건)"):
+            sells_df = pd.DataFrame(all_sells)
+            sells_df['buy_date'] = sells_df['buy_date'].dt.strftime('%Y-%m-%d')
+            sells_df['sell_date'] = sells_df['sell_date'].dt.strftime('%Y-%m-%d')
+            sells_df['stop_date'] = sells_df['stop_date'].dt.strftime('%Y-%m-%d')
+            sells_df.columns = ['매수일', '매수가', '수량', '매도일', '매도가',
+                                '매도목표', '손절일', '손익', '모드']
+            sells_df['손익'] = sells_df['손익'].round(2)
+            st.dataframe(sells_df, use_container_width=True, height=400)
+
+
+# ══════════════════════════════════════════════
+# 최적화 — 유틸 함수
+# ══════════════════════════════════════════════
+
+_NUM_WORKERS = max(1, (os.cpu_count() or 1) - 1)
+
+
+def _run_opt_bt(sd, sh, sb, ss, ad, ah, ab, as_, pcr_val, lcr_val,
+                soxl, mode_series, s_date, e_date, cap, fee_r, renew_p):
+    """최적화용 백테스트 1회 실행 → dict or None."""
+    params = DSSParams(
+        sf_divisions=sd, sf_max_hold=sh,
+        sf_buy_pct=sb / 100, sf_sell_pct=ss / 100,
+        ag_divisions=ad, ag_max_hold=ah,
+        ag_buy_pct=ab / 100, ag_sell_pct=as_ / 100,
+        initial_capital=cap,
+        fee_rate=fee_r / 100,
+        renewal_period=renew_p,
+        pcr=pcr_val / 100, lcr=lcr_val / 100,
+    )
+    r = run_backtest_fast(params, soxl, mode_series, s_date, e_date)
+    if r is None:
+        return None
+
+    final = r['final_asset']
+    days = r['total_days']
+    mdd_val = r['mdd'] * 100
+    ret = (final / cap - 1) * 100
+    yrs = days / 252
+    cagr_val = ((final / cap) ** (1 / yrs) - 1) * 100 if yrs > 0 else 0
+    calmar = abs(cagr_val / mdd_val) if mdd_val != 0 else 0
+
+    return {
+        'SF분할': sd, 'SF보유': sh, 'SF매수%': sb, 'SF매도%': ss,
+        'AG분할': ad, 'AG보유': ah, 'AG매수%': ab, 'AG매도%': as_,
+        'PCR%': pcr_val, 'LCR%': lcr_val,
+        '최종자산($)': round(final, 2),
+        '수익률(%)': round(ret, 2),
+        'CAGR(%)': round(cagr_val, 2),
+        'MDD(%)': round(mdd_val, 2),
+        'Sharpe': 0,
+        'Calmar': round(calmar, 3),
+    }
+
+
+def _run_parallel_opt(combos, soxl, mode_series, s_date, e_date, cap, progress_bar):
+    """멀티프로세싱으로 백테스트 병렬 실행."""
+    import pickle, tempfile
+
+    tmp_path = os.path.join(tempfile.gettempdir(), f'dss_opt_{os.getpid()}.pkl')
+    with open(tmp_path, 'wb') as f:
+        pickle.dump((soxl, mode_series), f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    total = len(combos)
+    rows = []
+
+    from opt_worker_dss import init_worker, run_single_bt
+
+    try:
+        chunksize = max(1, total // _NUM_WORKERS)
+
+        with mp.Pool(
+            processes=_NUM_WORKERS,
+            initializer=init_worker,
+            initargs=(tmp_path,),
+        ) as pool:
+            count = 0
+            for r in pool.imap_unordered(run_single_bt, combos, chunksize=chunksize):
+                if r is not None:
+                    rows.append(r)
+                count += 1
+                if count % max(1, total // 50) == 0:
+                    progress_bar.progress(
+                        min(count / total, 1.0),
+                        text=f"실행 중... {count:,} / {total:,}  ({_NUM_WORKERS}코어 병렬)"
+                    )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    progress_bar.progress(1.0, text="완료!")
+    return rows
+
+
+def _show_opt_results(res_df, sort_col, key_sfx):
+    """최적화 결과 공통 표시 (Top 20, 산점도, CSV)."""
+    st.subheader(f"상위 20개 결과 ({sort_col} 기준)")
+    st.dataframe(res_df.head(20).style.format({
+        'SF매수%': '{:.1f}', 'SF매도%': '{:.1f}',
+        'AG매수%': '{:.1f}', 'AG매도%': '{:.1f}',
+        'CAGR(%)': '{:.2f}%', 'MDD(%)': '{:.2f}%',
+        'Calmar': '{:.3f}', 'Sharpe': '{:.3f}',
+        '수익률(%)': '{:.2f}%', '최종자산($)': '${:,.0f}',
+    }), use_container_width=True)
+
+    best = res_df.iloc[0]
+    st.success(
+        f"**최적 파라미터:** "
+        f"안전(분할={int(best['SF분할'])}, 보유={int(best['SF보유'])}, "
+        f"매수={best['SF매수%']:.1f}%, 매도={best['SF매도%']:.1f}%) | "
+        f"공세(분할={int(best['AG분할'])}, 보유={int(best['AG보유'])}, "
+        f"매수={best['AG매수%']:.1f}%, 매도={best['AG매도%']:.1f}%) | "
+        f"PCR={int(best['PCR%'])}%, LCR={int(best['LCR%'])}% → "
+        f"**CAGR={best['CAGR(%)']:.1f}% | MDD={best['MDD(%)']:.1f}% | "
+        f"Calmar={best['Calmar']:.3f} | Sharpe={best['Sharpe']:.3f}**"
+    )
+
+    st.subheader("리스크-수익 분포 (CAGR vs MDD)")
+    fig_sc = px.scatter(
+        res_df, x="MDD(%)", y="CAGR(%)", color=sort_col,
+        hover_data=['SF분할', 'SF보유', 'SF매수%', 'SF매도%',
+                    'AG분할', 'AG보유', 'AG매수%', 'AG매도%',
+                    'PCR%', 'LCR%', 'Calmar'],
+        color_continuous_scale="RdYlGn",
+    )
+    fig_sc.update_layout(height=450)
+    st.plotly_chart(fig_sc, use_container_width=True)
+
+    opt_csv = res_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("CSV 다운로드", data=opt_csv,
+                       file_name=f"opt_dss_{key_sfx}.csv", mime="text/csv",
+                       key=f"dss_dl_opt_{key_sfx}")
 
 
 # ══════════════════════════════════════════════
@@ -384,195 +649,735 @@ def render_backtest_tab(params):
 # ══════════════════════════════════════════════
 
 def render_optimization_tab(params):
-    """파라미터 최적화 탭."""
+    """파라미터 최적화 탭 — 4가지 방식."""
     p = params
     st.subheader("🔍 파라미터 최적화")
 
-    opt_mode = st.radio("최적화 방식", ["그리드 서치", "랜덤 서치"], horizontal=True, key="dss_opt_mode")
+    opt_method = st.radio(
+        "최적화 방식",
+        ["📊 그리드 탐색", "🎲 랜덤 탐색", "📈 워크포워드", "🧠 베이지안"],
+        horizontal=True, key="dss_opt_method",
+    )
+    _method_desc = {
+        "📊 그리드 탐색": "모든 파라미터 조합을 완전 탐색합니다. 조합이 적을 때 가장 정확합니다.",
+        "🎲 랜덤 탐색": "무작위로 N개 조합을 샘플링합니다. 탐색 공간이 클 때 빠르게 좋은 파라미터를 찾습니다.",
+        "📈 워크포워드": "전체 기간을 IS(최적화)·OOS(검증) 윈도우로 분할해 과적합을 방지합니다.",
+        "🧠 베이지안": "Optuna TPE 알고리즘으로 스마트하게 탐색합니다. 적은 시도로 최적값에 빠르게 수렴합니다.",
+    }
+    st.caption(_method_desc[opt_method])
 
-    with st.form("dss_opt_form"):
-        st.markdown("**탐색 범위 설정**")
+    # ── 공통 파라미터 범위 설정 ──
+    with st.expander("파라미터 범위 설정", expanded=True):
         oc1, oc2 = st.columns(2)
+
         with oc1:
-            st.markdown("🔵 **안전모드 (SF)**")
-            sf_buy_range = st.slider("SF 매수%", 0.5, 10.0, (2.0, 5.0), 0.5, key="dss_opt_sfb")
-            sf_sell_range = st.slider("SF 매도%", 0.1, 5.0, (0.1, 1.0), 0.1, key="dss_opt_sfs")
+            st.markdown("**안전모드 (SF)**")
+            sf_dv_range = st.slider("분할수", 1, 20, (5, 9), key="dss_o_sf_dv")
+            sf_dv_step  = st.number_input("분할수 간격", min_value=1, max_value=10, value=1, key="dss_o_sf_dv_stp")
+            sf_hd_range = st.slider("최대보유기간", 5, 60, (20, 40), key="dss_o_sf_hd")
+            sf_hd_step  = st.number_input("보유기간 간격", min_value=1, max_value=20, value=5, key="dss_o_sf_hd_stp")
+            sf_by_range = st.slider("매수조건 (%)", 0.5, 15.0, (2.0, 5.0), step=0.1, key="dss_o_sf_by")
+            sf_by_step  = st.number_input("매수조건 간격", value=0.5, min_value=0.1, step=0.1, format="%.1f", key="dss_o_sf_by_stp")
+            sf_sl_range = st.slider("매도조건 (%)", 0.1, 10.0, (0.1, 1.0), step=0.1, key="dss_o_sf_sl")
+            sf_sl_step  = st.number_input("매도조건 간격", value=0.2, min_value=0.1, step=0.1, format="%.1f", key="dss_o_sf_sl_stp")
+
         with oc2:
-            st.markdown("🟢 **공세모드 (AG)**")
-            ag_buy_range = st.slider("AG 매수%", 1.0, 15.0, (3.0, 8.0), 0.5, key="dss_opt_agb")
-            ag_sell_range = st.slider("AG 매도%", 0.5, 10.0, (1.5, 5.0), 0.5, key="dss_opt_ags")
+            st.markdown("**공세모드 (AG)**")
+            ag_dv_range = st.slider("분할수", 1, 20, (5, 9), key="dss_o_ag_dv")
+            ag_dv_step  = st.number_input("분할수 간격", min_value=1, max_value=10, value=1, key="dss_o_ag_dv_stp")
+            ag_hd_range = st.slider("최대보유기간", 1, 30, (5, 10), key="dss_o_ag_hd")
+            ag_hd_step  = st.number_input("보유기간 간격", min_value=1, max_value=10, value=1, key="dss_o_ag_hd_stp")
+            ag_by_range = st.slider("매수조건 (%)", 0.5, 15.0, (3.0, 7.0), step=0.1, key="dss_o_ag_by")
+            ag_by_step  = st.number_input("매수조건 간격", value=0.5, min_value=0.1, step=0.1, format="%.1f", key="dss_o_ag_by_stp")
+            ag_sl_range = st.slider("매도조건 (%)", 0.1, 10.0, (1.5, 4.0), step=0.1, key="dss_o_ag_sl")
+            ag_sl_step  = st.number_input("매도조건 간격", value=0.5, min_value=0.1, step=0.1, format="%.1f", key="dss_o_ag_sl_stp")
 
-        step = st.number_input("탐색 스텝", 0.5, 5.0, 1.0, 0.5, key="dss_opt_step")
-        n_random = st.number_input("랜덤 서치 횟수", 50, 5000, 500, 50, key="dss_opt_n") if opt_mode == "랜덤 서치" else 0
-        sort_col = st.selectbox("정렬 기준", ["Calmar", "CAGR(%)", "수익률(%)", "MDD(%)"], key="dss_opt_sort")
-        submitted = st.form_submit_button("▶ 최적화 실행", type="primary")
+        st.markdown("**공통**")
+        cc1, cc2 = st.columns(2)
+        with cc1:
+            pcr_range = st.slider("이익복리율 (PCR %)", 0, 100, (60, 90), step=5, key="dss_o_pcr")
+            pcr_step  = st.number_input("PCR 간격", min_value=5, max_value=50, value=10, step=5, key="dss_o_pcr_stp")
+        with cc2:
+            lcr_range = st.slider("손실복리율 (LCR %)", 0, 100, (20, 50), step=5, key="dss_o_lcr")
+            lcr_step  = st.number_input("LCR 간격", min_value=5, max_value=50, value=10, step=5, key="dss_o_lcr_stp")
 
-    if submitted:
-        soxl = get_soxl_data()
-        qqq = get_qqq_data()
-        ms = get_mode_series(len(qqq))
+        metric_key = st.selectbox("최적화 기준 지표", [
+            "Calmar Ratio (CAGR / MDD)",
+            "CAGR (%)",
+            "총수익률 (%)",
+            "MDD 최소화 (작을수록 좋음)",
+            "Sharpe Ratio",
+        ], key="dss_opt_metric")
 
-        sf_buys = np.arange(sf_buy_range[0], sf_buy_range[1] + step, step)
-        sf_sells = np.arange(sf_sell_range[0], sf_sell_range[1] + step, step)
-        ag_buys = np.arange(ag_buy_range[0], ag_buy_range[1] + step, step)
-        ag_sells = np.arange(ag_sell_range[0], ag_sell_range[1] + step, step)
+    # 파라미터 리스트 생성
+    sf_dv_min, sf_dv_max = sf_dv_range
+    sf_hd_min, sf_hd_max = sf_hd_range
+    sf_by_min, sf_by_max = sf_by_range
+    sf_sl_min, sf_sl_max = sf_sl_range
+    ag_dv_min, ag_dv_max = ag_dv_range
+    ag_hd_min, ag_hd_max = ag_hd_range
+    ag_by_min, ag_by_max = ag_by_range
+    ag_sl_min, ag_sl_max = ag_sl_range
+    pcr_min, pcr_max = pcr_range
+    lcr_min, lcr_max = lcr_range
 
-        if opt_mode == "그리드 서치":
-            combos = list(itertools.product(sf_buys, sf_sells, ag_buys, ag_sells))
+    _sf_dvs = list(range(sf_dv_min, sf_dv_max + 1, sf_dv_step))
+    _sf_hds = list(range(sf_hd_min, sf_hd_max + 1, sf_hd_step))
+    _sf_bys = np.round(np.arange(sf_by_min, sf_by_max + sf_by_step * 0.5, sf_by_step), 4).tolist()
+    _sf_sls = np.round(np.arange(sf_sl_min, sf_sl_max + sf_sl_step * 0.5, sf_sl_step), 4).tolist()
+    _ag_dvs = list(range(ag_dv_min, ag_dv_max + 1, ag_dv_step))
+    _ag_hds = list(range(ag_hd_min, ag_hd_max + 1, ag_hd_step))
+    _ag_bys = np.round(np.arange(ag_by_min, ag_by_max + ag_by_step * 0.5, ag_by_step), 4).tolist()
+    _ag_sls = np.round(np.arange(ag_sl_min, ag_sl_max + ag_sl_step * 0.5, ag_sl_step), 4).tolist()
+    _pcrs = list(range(pcr_min, pcr_max + 1, pcr_step))
+    _lcrs = list(range(lcr_min, lcr_max + 1, lcr_step))
+    for _lst in [_sf_dvs, _sf_hds, _sf_bys, _sf_sls, _ag_dvs, _ag_hds, _ag_bys, _ag_sls, _pcrs, _lcrs]:
+        if not _lst:
+            _lst.append(_lst[0] if _lst else 1)
+
+    n_total = (len(_sf_dvs) * len(_sf_hds) * len(_sf_bys) * len(_sf_sls) *
+               len(_ag_dvs) * len(_ag_hds) * len(_ag_bys) * len(_ag_sls) *
+               len(_pcrs) * len(_lcrs))
+
+    _fee_r = p["fee_rate"]
+    _renew_p = p["renewal_period"]
+    _start_date = str(p["start_date"])
+    _end_date = str(p["end_date"])
+    _cap = float(p["initial_capital"])
+
+    if "Calmar" in metric_key:   _sort_col, _sort_asc = "Calmar",    False
+    elif "CAGR" in metric_key:   _sort_col, _sort_asc = "CAGR(%)",   False
+    elif "총수익률" in metric_key: _sort_col, _sort_asc = "수익률(%)", False
+    elif "Sharpe" in metric_key: _sort_col, _sort_asc = "Sharpe",    False
+    else:                         _sort_col, _sort_asc = "MDD(%)",    False
+
+    # ── ① 그리드 탐색 ──
+    if opt_method == "📊 그리드 탐색":
+        info_msg = (f"예상 조합 수: **{n_total:,}개** "
+                    f"(SF {len(_sf_dvs)}×{len(_sf_hds)}×{len(_sf_bys)}×{len(_sf_sls)} "
+                    f"× AG {len(_ag_dvs)}×{len(_ag_hds)}×{len(_ag_bys)}×{len(_ag_sls)} "
+                    f"× PCR {len(_pcrs)} × LCR {len(_lcrs)})")
+        if n_total > 50000:
+            st.error(info_msg + "  \n조합이 50,000개를 초과합니다.")
+        elif n_total > 10000:
+            st.warning(info_msg + "  \n조합이 많아 상당한 시간이 걸릴 수 있습니다.")
+        elif n_total > 3000:
+            st.warning(info_msg + "  \n조합이 많아 다소 시간이 걸릴 수 있습니다.")
         else:
-            all_combos = list(itertools.product(sf_buys, sf_sells, ag_buys, ag_sells))
-            combos = random.sample(all_combos, min(int(n_random), len(all_combos)))
+            st.info(info_msg)
 
-        st.info(f"총 {len(combos)}개 조합 실행 중...")
-        prog = st.progress(0)
-        results = []
-        for i, (sb, ss, ab, as_) in enumerate(combos):
-            dss_p = DSSParams(
-                sf_divisions=p["sf_div"], sf_max_hold=p["sf_hold"],
-                sf_buy_pct=sb / 100, sf_sell_pct=ss / 100,
-                ag_divisions=p["ag_div"], ag_max_hold=p["ag_hold"],
-                ag_buy_pct=ab / 100, ag_sell_pct=as_ / 100,
-                initial_capital=float(p["initial_capital"]),
-                fee_rate=p["fee_rate"] / 100,
-                renewal_period=p["renewal_period"],
-                pcr=p["pcr"] / 100, lcr=p["lcr"] / 100,
-            )
-            r = run_backtest_fast(dss_p, soxl, ms, str(p["start_date"]), str(p["end_date"]))
-            if r:
-                final = r['final_asset']
-                days = r['total_days']
-                yrs = days / 252
-                ret = (final / float(p["initial_capital"]) - 1) * 100
-                cagr = ((final / float(p["initial_capital"])) ** (1 / yrs) - 1) * 100 if yrs > 0 else 0
-                mdd = r['mdd'] * 100
-                calmar = abs(cagr / mdd) if mdd != 0 else 0
-                results.append({
-                    'SF매수%': round(sb, 2), 'SF매도%': round(ss, 2),
-                    'AG매수%': round(ab, 2), 'AG매도%': round(as_, 2),
-                    '수익률(%)': round(ret, 2), 'CAGR(%)': round(cagr, 2),
-                    'MDD(%)': round(mdd, 2), 'Calmar': round(calmar, 3),
-                    '최종자산($)': round(final, 0),
-                })
-            prog.progress((i + 1) / len(combos))
-        prog.empty()
+        if st.button("▶ 그리드 탐색 실행", type="primary", key="dss_run_grid",
+                     disabled=(n_total == 0)):
+            soxl = get_soxl_data()
+            mode_series = get_mode_series(len(get_qqq_data()))
 
-        if results:
-            df_opt = pd.DataFrame(results)
-            ascending = True if sort_col == "MDD(%)" else False
-            df_opt = df_opt.sort_values(sort_col, ascending=ascending).reset_index(drop=True)
-            st.session_state["dss_opt_result"] = df_opt
+            st.caption(f"💻 {_NUM_WORKERS}코어 병렬 처리")
+            progress = st.progress(0.0, text="그리드 탐색 실행 중...")
 
-    df_opt = st.session_state.get("dss_opt_result")
-    if df_opt is not None and not df_opt.empty:
-        st.subheader(f"상위 20개 결과")
-        st.dataframe(df_opt.head(20), hide_index=True, use_container_width=True)
+            combos = [
+                (sd, sh, sb, ss, ad, ah, ab, as_, pcr_v, lcr_v,
+                 _start_date, _end_date, _cap,
+                 _fee_r, _renew_p)
+                for sd, sh, sb, ss, ad, ah, ab, as_, pcr_v, lcr_v
+                in itertools.product(
+                    _sf_dvs, _sf_hds, _sf_bys, _sf_sls,
+                    _ag_dvs, _ag_hds, _ag_bys, _ag_sls,
+                    _pcrs, _lcrs)
+            ]
 
-        # 리스크-수익 분포
-        st.subheader("리스크-수익 분포 (CAGR vs MDD)")
-        fig_scatter = px.scatter(
-            df_opt, x="MDD(%)", y="CAGR(%)", color="Calmar",
-            color_continuous_scale="RdYlGn", hover_data=["SF매수%", "SF매도%", "AG매수%", "AG매도%"],
-            title="CAGR vs MDD")
-        fig_scatter.update_layout(height=450)
-        st.plotly_chart(fig_scatter, use_container_width=True)
+            rows = _run_parallel_opt(combos, soxl, mode_series,
+                                      _start_date, _end_date, _cap, progress)
+            if not rows:
+                st.error("유효한 결과가 없습니다.")
+            else:
+                res_df = pd.DataFrame(rows).sort_values(_sort_col, ascending=_sort_asc).reset_index(drop=True)
+                _show_opt_results(res_df, _sort_col, "grid")
+
+    # ── ② 랜덤 탐색 ──
+    elif opt_method == "🎲 랜덤 탐색":
+        n_samples = st.number_input("샘플 수", min_value=50, max_value=5000,
+                                    value=500, step=50, key="dss_n_samples")
+        st.info(f"랜덤으로 **{n_samples:,}개** 조합을 샘플링합니다. "
+                f"(그리드 전체 {n_total:,}개 중 무작위 선택)")
+
+        if st.button("▶ 랜덤 탐색 실행", type="primary", key="dss_run_random"):
+            soxl = get_soxl_data()
+            mode_series = get_mode_series(len(get_qqq_data()))
+
+            random.seed(42)
+            combos = [
+                (random.choice(_sf_dvs), random.choice(_sf_hds),
+                 round(random.uniform(sf_by_min, sf_by_max), 2),
+                 round(random.uniform(sf_sl_min, sf_sl_max), 2),
+                 random.choice(_ag_dvs), random.choice(_ag_hds),
+                 round(random.uniform(ag_by_min, ag_by_max), 2),
+                 round(random.uniform(ag_sl_min, ag_sl_max), 2),
+                 random.choice(_pcrs), random.choice(_lcrs),
+                 _start_date, _end_date, _cap,
+                 _fee_r, _renew_p)
+                for _ in range(int(n_samples))
+            ]
+
+            st.caption(f"💻 {_NUM_WORKERS}코어 병렬 처리")
+            progress = st.progress(0.0, text="랜덤 탐색 실행 중...")
+            rows = _run_parallel_opt(combos, soxl, mode_series,
+                                      _start_date, _end_date, _cap, progress)
+            if not rows:
+                st.error("유효한 결과가 없습니다.")
+            else:
+                res_df = pd.DataFrame(rows).sort_values(_sort_col, ascending=_sort_asc).reset_index(drop=True)
+                _show_opt_results(res_df, _sort_col, "random")
+
+    # ── ③ 워크포워드 ──
+    elif opt_method == "📈 워크포워드":
+        wf1, wf2 = st.columns(2)
+        is_years  = wf1.number_input("IS(최적화) 기간 (년)", min_value=1, max_value=10, value=3, key="dss_wf_is")
+        oos_years = wf2.number_input("OOS(검증) 기간 (년)",  min_value=1, max_value=5,  value=1, key="dss_wf_oos")
+        st.info(
+            f"IS **{is_years}년** 최적화 → OOS **{oos_years}년** 검증을 슬라이딩 반복합니다.\n\n"
+            f"그리드 조합 **{n_total:,}개** × 윈도우 수 만큼 백테스트가 실행됩니다."
+        )
+
+        if n_total > 3000:
+            st.warning(f"조합이 {n_total:,}개로 많습니다. 범위를 줄이면 더 빠릅니다.")
+
+        if st.button("▶ 워크포워드 실행", type="primary", key="dss_run_wfo"):
+            soxl = get_soxl_data()
+            mode_series = get_mode_series(len(get_qqq_data()))
+
+            total_start = pd.Timestamp(_start_date).date()
+            total_end   = pd.Timestamp(_end_date).date()
+
+            windows = []
+            cur = total_start
+            while True:
+                is_s  = cur
+                is_e  = is_s  + timedelta(days=int(is_years  * 365.25))
+                oos_s = is_e
+                oos_e = oos_s + timedelta(days=int(oos_years * 365.25))
+                if oos_e > total_end:
+                    break
+                windows.append((is_s, is_e, oos_s, oos_e))
+                cur = oos_s
+
+            if not windows:
+                st.error("데이터 기간이 너무 짧아 윈도우를 생성할 수 없습니다.")
+            else:
+                st.info(f"총 **{len(windows)}개** 윈도우 생성됨 | 💻 {_NUM_WORKERS}코어 병렬 처리")
+                progress = st.progress(0.0, text="워크포워드 실행 중...")
+                wfo_rows = []
+                cur_capital = _cap
+
+                for wi, (is_s, is_e, oos_s, oos_e) in enumerate(windows):
+                    progress.progress(
+                        wi / len(windows),
+                        text=f"윈도우 {wi+1}/{len(windows)} IS 최적화 중... ({_NUM_WORKERS}코어)"
+                    )
+
+                    # IS 구간 병렬 그리드 탐색
+                    is_combos = [
+                        (sd, sh, sb, ss, ad, ah, ab, as_, pcr_v, lcr_v,
+                         str(is_s), str(is_e), _cap,
+                         _fee_r, _renew_p)
+                        for sd, sh, sb, ss, ad, ah, ab, as_, pcr_v, lcr_v
+                        in itertools.product(
+                            _sf_dvs, _sf_hds, _sf_bys, _sf_sls,
+                            _ag_dvs, _ag_hds, _ag_bys, _ag_sls,
+                            _pcrs, _lcrs)
+                    ]
+
+                    import pickle, tempfile
+                    from opt_worker_dss import init_worker, run_single_bt
+
+                    tmp_wf = tempfile.NamedTemporaryFile(delete=False, suffix='.pkl')
+                    with open(tmp_wf.name, 'wb') as f:
+                        pickle.dump((soxl, mode_series), f, protocol=pickle.HIGHEST_PROTOCOL)
+
+                    best_score, best_combo = -999.0, None
+                    with ProcessPoolExecutor(
+                        max_workers=_NUM_WORKERS,
+                        initializer=init_worker,
+                        initargs=(tmp_wf.name,),
+                    ) as executor:
+                        for r in executor.map(run_single_bt, is_combos, chunksize=max(1, len(is_combos) // (_NUM_WORKERS * 4))):
+                            if r is not None:
+                                if "Calmar" in metric_key:   score = r["Calmar"]
+                                elif "CAGR" in metric_key:   score = r["CAGR(%)"]
+                                elif "총수익률" in metric_key: score = r["수익률(%)"]
+                                elif "Sharpe" in metric_key: score = r["Sharpe"]
+                                else:                         score = -abs(r["MDD(%)"])
+                                if score > best_score:
+                                    best_score = score
+                                    best_combo = (r['SF분할'], r['SF보유'], r['SF매수%'], r['SF매도%'],
+                                                  r['AG분할'], r['AG보유'], r['AG매수%'], r['AG매도%'],
+                                                  r['PCR%'], r['LCR%'])
+
+                    os.unlink(tmp_wf.name)
+
+                    if best_combo is None:
+                        continue
+
+                    # OOS 구간은 단일 실행
+                    oos_r = _run_opt_bt(*best_combo, soxl, mode_series,
+                                        str(oos_s), str(oos_e), cur_capital,
+                                        _fee_r, _renew_p)
+                    if oos_r is None:
+                        continue
+
+                    sd, sh, sb, ss, ad, ah, ab, as_, pcr_v, lcr_v = best_combo
+                    wfo_rows.append({
+                        '윈도우': wi + 1,
+                        'IS 기간': f"{is_s} ~ {is_e}",
+                        'OOS 기간': f"{oos_s} ~ {oos_e}",
+                        'SF(분할/보유/매수/매도)': f"{sd}/{sh}/{sb}/{ss}",
+                        'AG(분할/보유/매수/매도)': f"{ad}/{ah}/{ab}/{as_}",
+                        f'IS {_sort_col}': round(best_score, 3),
+                        'OOS CAGR(%)': oos_r['CAGR(%)'],
+                        'OOS MDD(%)': oos_r['MDD(%)'],
+                        'OOS Calmar': oos_r['Calmar'],
+                        '시작($)': round(cur_capital, 2),
+                        '종료($)': oos_r['최종자산($)'],
+                    })
+                    cur_capital = oos_r['최종자산($)']
+
+                progress.progress(1.0, text="완료!")
+                if not wfo_rows:
+                    st.error("유효한 OOS 결과가 없습니다.")
+                else:
+                    wfo_df = pd.DataFrame(wfo_rows)
+                    total_ret = (cur_capital - _cap) / _cap
+
+                    st.subheader("워크포워드 종합 성과")
+                    wc1, wc2, wc3, wc4 = st.columns(4)
+                    wc1.metric("시작 자본", f"${_cap:,.0f}")
+                    wc2.metric("최종 자본 (OOS)", f"${cur_capital:,.0f}")
+                    wc3.metric("OOS 총 수익률", f"{total_ret*100:+.2f}%")
+                    wc4.metric("윈도우 수", f"{len(wfo_rows)}개")
+
+                    st.subheader("윈도우별 결과")
+                    st.dataframe(wfo_df.style.format({
+                        'OOS CAGR(%)': '{:.2f}%', 'OOS MDD(%)': '{:.2f}%',
+                        'OOS Calmar': '{:.3f}',
+                        '시작($)': '${:,.2f}', '종료($)': '${:,.2f}',
+                    }), use_container_width=True)
+
+                    fig_wfo = px.bar(wfo_df, x="윈도우", y="OOS CAGR(%)",
+                                     color="OOS CAGR(%)", color_continuous_scale="RdYlGn",
+                                     text_auto=".1f", title="윈도우별 OOS CAGR (%)")
+                    fig_wfo.add_hline(y=0, line_dash="dash", line_color="gray")
+                    fig_wfo.update_layout(height=400)
+                    st.plotly_chart(fig_wfo, use_container_width=True)
+
+                    fig_cap = px.line(wfo_df, x="윈도우", y="종료($)",
+                                      title="OOS 자본 변화", markers=True)
+                    fig_cap.update_layout(height=380)
+                    st.plotly_chart(fig_cap, use_container_width=True)
+
+                    wfo_csv = wfo_df.to_csv(index=False).encode("utf-8-sig")
+                    st.download_button("CSV 다운로드", data=wfo_csv,
+                                       file_name="wfo_dss.csv", mime="text/csv", key="dss_dl_wfo")
+
+    # ── ④ 베이지안 (Optuna) ──
+    elif opt_method == "🧠 베이지안":
+        try:
+            import optuna as _optuna
+            _optuna_ok = True
+        except ImportError:
+            _optuna_ok = False
+
+        if not _optuna_ok:
+            st.error("`optuna` 패키지가 설치되지 않았습니다. `pip install optuna` 실행 후 재시작하세요.")
+        else:
+            bc1, _ = st.columns(2)
+            n_trials = bc1.number_input("탐색 횟수 (trials)", min_value=50,
+                                        max_value=2000, value=300, step=50, key="dss_n_trials")
+            st.info(f"Optuna TPE 알고리즘으로 **{n_trials}회** 스마트 탐색합니다.\n\n"
+                    f"그리드 탐색({n_total:,}개) 대비 적은 시도로 최적값에 근접합니다.")
+
+            if st.button("▶ 베이지안 최적화 실행", type="primary", key="dss_run_bayes"):
+                soxl = get_soxl_data()
+                mode_series = get_mode_series(len(get_qqq_data()))
+
+                _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+                progress = st.progress(0.0, text="베이지안 탐색 실행 중...")
+                trial_rows = []
+                _tc = [0]
+
+                def _objective(trial):
+                    sd = trial.suggest_int("SF분할", sf_dv_min, sf_dv_max)
+                    sh = trial.suggest_int("SF보유", sf_hd_min, sf_hd_max)
+                    sb = trial.suggest_float("SF매수%", sf_by_min, sf_by_max)
+                    ss = trial.suggest_float("SF매도%", sf_sl_min, sf_sl_max)
+                    ad = trial.suggest_int("AG분할", ag_dv_min, ag_dv_max)
+                    ah = trial.suggest_int("AG보유", ag_hd_min, ag_hd_max)
+                    ab = trial.suggest_float("AG매수%", ag_by_min, ag_by_max)
+                    as_ = trial.suggest_float("AG매도%", ag_sl_min, ag_sl_max)
+                    pcr_v = trial.suggest_int("PCR%", pcr_min, pcr_max, step=pcr_step) if pcr_min != pcr_max else pcr_min
+                    lcr_v = trial.suggest_int("LCR%", lcr_min, lcr_max, step=lcr_step) if lcr_min != lcr_max else lcr_min
+
+                    r = _run_opt_bt(sd, sh, round(sb, 2), round(ss, 2),
+                                    ad, ah, round(ab, 2), round(as_, 2), pcr_v, lcr_v,
+                                    soxl, mode_series, _start_date, _end_date,
+                                    _cap, _fee_r, _renew_p)
+                    if r is None:
+                        return -999.0
+
+                    trial_rows.append(r)
+                    _tc[0] += 1
+                    if _tc[0] % max(1, int(n_trials) // 50) == 0:
+                        progress.progress(min(_tc[0] / int(n_trials), 1.0),
+                                          text=f"베이지안 탐색 중... {_tc[0]:,} / {int(n_trials):,}")
+
+                    if "Calmar" in metric_key:   return r["Calmar"]
+                    elif "CAGR" in metric_key:   return r["CAGR(%)"]
+                    elif "총수익률" in metric_key: return r["수익률(%)"]
+                    elif "Sharpe" in metric_key: return r["Sharpe"]
+                    else:                         return -abs(r["MDD(%)"])
+
+                study = _optuna.create_study(
+                    direction="maximize",
+                    sampler=_optuna.samplers.TPESampler(seed=42)
+                )
+                study.optimize(_objective, n_trials=int(n_trials))
+                progress.progress(1.0, text="완료!")
+
+                if not trial_rows:
+                    st.error("유효한 결과가 없습니다.")
+                else:
+                    res_df = pd.DataFrame(trial_rows).sort_values(
+                        _sort_col, ascending=_sort_asc
+                    ).reset_index(drop=True)
+
+                    best = study.best_params
+                    st.success(
+                        f"**최적 파라미터:** "
+                        f"SF(분할={best.get('SF분할')}, 보유={best.get('SF보유')}, "
+                        f"매수={best.get('SF매수%', 0):.1f}%, 매도={best.get('SF매도%', 0):.1f}%) | "
+                        f"AG(분할={best.get('AG분할')}, 보유={best.get('AG보유')}, "
+                        f"매수={best.get('AG매수%', 0):.1f}%, 매도={best.get('AG매도%', 0):.1f}%) | "
+                        f"PCR={best.get('PCR%', pcr_min)}%, LCR={best.get('LCR%', lcr_min)}%"
+                    )
+                    _show_opt_results(res_df, _sort_col, "bayes")
+
+                    st.subheader("탐색 수렴 과정")
+                    _vals = [t.value for t in study.trials if t.value is not None and t.value > -900]
+                    _best_cur = [max(_vals[:i+1]) for i in range(len(_vals))]
+                    fig_conv = px.line(y=_best_cur,
+                                       labels={"y": f"Best {_sort_col}", "index": "Trial"},
+                                       title="베이지안 최적화 수렴 곡선")
+                    fig_conv.update_layout(height=380)
+                    st.plotly_chart(fig_conv, use_container_width=True)
 
 
 # ══════════════════════════════════════════════
-# 탭 3: 주문표
+# 탭 3: 주문표 & 계좌관리
 # ══════════════════════════════════════════════
 
 def render_ordersheet_tab(params):
     """주문표 & 계좌관리 탭."""
     p = params
-    st.subheader("📋 DSS 동파법 주문표")
+    _today_str_title = datetime.today().strftime("%Y-%m-%d")
+    st.subheader(f"📋 오늘의 주문표  ({_today_str_title})")
     st.caption("포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
 
+    # ── 설정 로드 ──
     _cfg = _load_dss_config()
-    _saved = _cfg.get("params", {})
 
-    # 파라미터 소스 선택
-    _use_saved = False
-    if _saved:
-        _use_saved = st.checkbox("저장된 파라미터 사용", value=True, key="dss_use_saved")
-        if _use_saved:
-            st.caption(f"SF: 분할{_saved.get('sf_div',7)} 보유{_saved.get('sf_hold',30)} "
-                       f"매수{_saved.get('sf_buy',3.0)}% 매도{_saved.get('sf_sell',0.2)}% | "
-                       f"AG: 분할{_saved.get('ag_div',7)} 보유{_saved.get('ag_hold',7)} "
-                       f"매수{_saved.get('ag_buy',5.0)}% 매도{_saved.get('ag_sell',2.5)}%")
+    # ── 적용 파라미터 표시 ──
+    _sp = _cfg.get("params", {})
+    _cur_sf_div  = _sp.get("sf_div",  p["sf_div"])
+    _cur_sf_hold = _sp.get("sf_hold", p["sf_hold"])
+    _cur_sf_buy  = _sp.get("sf_buy",  p["sf_buy"])
+    _cur_sf_sell = _sp.get("sf_sell", p["sf_sell"])
+    _cur_ag_div  = _sp.get("ag_div",  p["ag_div"])
+    _cur_ag_hold = _sp.get("ag_hold", p["ag_hold"])
+    _cur_ag_buy  = _sp.get("ag_buy",  p["ag_buy"])
+    _cur_ag_sell = _sp.get("ag_sell", p["ag_sell"])
+    _cur_pcr     = _sp.get("pcr",     p["pcr"])
+    _cur_lcr     = _sp.get("lcr",     p["lcr"])
+    _cur_renew   = _sp.get("renewal_period", p["renewal_period"])
+    _cur_fee     = _sp.get("fee_rate", p["fee_rate"])
 
-    # 시작일/자본금
-    os_col1, os_col2 = st.columns(2)
-    os_start = os_col1.date_input("시작일", value=datetime.strptime(
-        _cfg.get("os_start", "2024-01-01"), "%Y-%m-%d").date(), key="dss_os_start")
-    os_capital = os_col2.number_input("투자 자본금", value=float(_cfg.get("os_capital", 10000)),
-                                      min_value=1000.0, step=1000.0, key="dss_os_cap")
+    # ── 파라미터 테이블 (HTML) ──
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <table style="width:100%; border-collapse:collapse; font-size:14px;">
+            <tr style="border-bottom:1px solid #eee;">
+                <th style="text-align:left; padding:6px 10px; color:#888; font-weight:500; width:12%;">모드</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">분할수</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">보유기간</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">매수조건</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">매도조건</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">PCR</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">LCR</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">갱신주기</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">수수료</th>
+            </tr>
+            <tr style="border-bottom:1px solid #f0f0f0;">
+                <td style="padding:8px 10px; font-weight:600; color:#1976D2;">🔵 안전(SF)</td>
+                <td style="text-align:center; padding:8px;">{_cur_sf_div}</td>
+                <td style="text-align:center; padding:8px;">{_cur_sf_hold}일</td>
+                <td style="text-align:center; padding:8px;">{_cur_sf_buy}%</td>
+                <td style="text-align:center; padding:8px;">{_cur_sf_sell}%</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_pcr}%</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_lcr}%</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_renew}회</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_fee}%</td>
+            </tr>
+            <tr>
+                <td style="padding:8px 10px; font-weight:600; color:#2E7D32;">🟢 공세(AG)</td>
+                <td style="text-align:center; padding:8px;">{_cur_ag_div}</td>
+                <td style="text-align:center; padding:8px;">{_cur_ag_hold}일</td>
+                <td style="text-align:center; padding:8px;">{_cur_ag_buy}%</td>
+                <td style="text-align:center; padding:8px;">{_cur_ag_sell}%</td>
+            </tr>
+            </table>
+            """,
+            unsafe_allow_html=True,
+        )
 
+        # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
+        with st.expander("✏️ 파라미터 수정"):
+            _DSS_PRESETS = [
+                {"label": "🚀 공격형", "sf_div": 7, "sf_hold": 30, "sf_buy": 3.0, "sf_sell": 0.2,
+                 "ag_div": 7, "ag_hold": 7, "ag_buy": 5.0, "ag_sell": 2.5,
+                 "pcr": 80, "lcr": 30, "renewal_period": 10, "fee_rate": 0.04,
+                 "help": "순정 파라미터\n알고리C님 기본 설정"},
+                {"label": "⚖️ 균형형", "sf_div": 7, "sf_hold": 35, "sf_buy": 3.5, "sf_sell": 1.8,
+                 "ag_div": 8, "ag_hold": 7, "ag_buy": 3.6, "ag_sell": 6.0,
+                 "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.044,
+                 "help": "균형 파라미터\n매수 조건 강화, 매도 여유"},
+                {"label": "🛡️ 안정형 ⭐", "sf_div": 7, "sf_hold": 35, "sf_buy": 3.5, "sf_sell": 1.8,
+                 "ag_div": 8, "ag_hold": 7, "ag_buy": 3.6, "ag_sell": 6.0,
+                 "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.044,
+                 "help": "안정 파라미터\n(최적화 후 업데이트 예정)"},
+            ]
+            st.caption("💡 추천 프리셋")
+            _pc1, _pc2, _pc3 = st.columns(3)
+            for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _DSS_PRESETS)):
+                if _pcol.button(_pr["label"], key=f"dss_os_preset_{_pi}",
+                                help=_pr["help"], use_container_width=True):
+                    for _k in ["sf_div","sf_hold","sf_buy","sf_sell",
+                               "ag_div","ag_hold","ag_buy","ag_sell",
+                               "pcr","lcr","renewal_period","fee_rate"]:
+                        st.session_state[f"dss_os_edit_{_k}"] = _pr[_k]
+                    st.rerun()
+            st.divider()
+
+            _edit_defaults = {
+                "sf_div": _cur_sf_div, "sf_hold": _cur_sf_hold,
+                "sf_buy": float(_cur_sf_buy), "sf_sell": float(_cur_sf_sell),
+                "ag_div": _cur_ag_div, "ag_hold": _cur_ag_hold,
+                "ag_buy": float(_cur_ag_buy), "ag_sell": float(_cur_ag_sell),
+                "pcr": _cur_pcr, "lcr": _cur_lcr,
+                "renewal_period": _cur_renew, "fee_rate": float(_cur_fee),
+            }
+            for _k, _v in _edit_defaults.items():
+                _skey = f"dss_os_edit_{_k}"
+                if _skey not in st.session_state:
+                    st.session_state[_skey] = _v
+
+            st.markdown("**안전모드 (SF)**")
+            _es1, _es2, _es3, _es4 = st.columns(4)
+            _es1.number_input("SF 분할수",      min_value=1, max_value=50, step=1, key="dss_os_edit_sf_div")
+            _es2.number_input("SF 최대보유기간", min_value=1, max_value=100, step=1, key="dss_os_edit_sf_hold")
+            _es3.number_input("SF 매수조건(%)", min_value=0.0, max_value=30.0, step=0.1, format="%.1f", key="dss_os_edit_sf_buy")
+            _es4.number_input("SF 매도조건(%)", min_value=0.0, max_value=30.0, step=0.1, format="%.1f", key="dss_os_edit_sf_sell")
+
+            st.markdown("**공세모드 (AG)**")
+            _ea1, _ea2, _ea3, _ea4 = st.columns(4)
+            _ea1.number_input("AG 분할수",      min_value=1, max_value=50, step=1, key="dss_os_edit_ag_div")
+            _ea2.number_input("AG 최대보유기간", min_value=1, max_value=100, step=1, key="dss_os_edit_ag_hold")
+            _ea3.number_input("AG 매수조건(%)", min_value=0.0, max_value=30.0, step=0.1, format="%.1f", key="dss_os_edit_ag_buy")
+            _ea4.number_input("AG 매도조건(%)", min_value=0.0, max_value=30.0, step=0.1, format="%.1f", key="dss_os_edit_ag_sell")
+
+            st.markdown("**공통**")
+            _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+            _ec1.number_input("이익복리율 PCR(%)", min_value=0, max_value=100, step=1, key="dss_os_edit_pcr")
+            _ec2.number_input("손실복리율 LCR(%)", min_value=0, max_value=100, step=1, key="dss_os_edit_lcr")
+            _ec3.number_input("투자금갱신주기",     min_value=1, max_value=100, step=1, key="dss_os_edit_renewal_period")
+            _ec4.number_input("수수료(%)",         min_value=0.0, max_value=1.0, step=0.001, format="%.3f", key="dss_os_edit_fee_rate")
+
+            if st.button("💾 파라미터 저장", type="primary", key="dss_os_save_params",
+                         use_container_width=True):
+                _new_params = {}
+                for _k in _edit_defaults:
+                    _new_params[_k] = st.session_state[f"dss_os_edit_{_k}"]
+                _cfg["params"] = _new_params
+                _save_dss_config(_cfg)
+                for _k in _edit_defaults:
+                    st.session_state.pop(f"dss_os_edit_{_k}", None)
+                st.session_state.pop("dss_os_result", None)
+                st.success("✅ 파라미터가 저장되었습니다!")
+                st.rerun()
+
+    # ── 시작일 / 시작 자본 ──
+    _os_default_start = _cfg.get("os_start", "2024-01-01")
+    _os_default_capital = _cfg.get("os_capital", 10000.0)
+    try:
+        _os_start_val = datetime.strptime(str(_os_default_start), "%Y-%m-%d").date()
+    except Exception:
+        _os_start_val = datetime(2024, 1, 1).date()
+    try:
+        _os_capital_val = float(_os_default_capital)
+    except Exception:
+        _os_capital_val = 10000.0
+
+    _oc1, _oc2 = st.columns(2)
+    os_start = _oc1.date_input("시작일", value=_os_start_val,
+                                min_value=datetime(2010, 1, 1).date(),
+                                max_value=datetime.today().date(),
+                                key="dss_os_start_input")
+    os_capital = _oc2.number_input("시작 자본 ($)", value=_os_capital_val,
+                                    step=1000.0, key="dss_os_capital_input")
+
+    # ── 자본 조정 (증액/감액) ──
+    with st.expander("💰 자본 조정 (증액 / 감액)"):
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요.")
+        _adj_history = _cfg.get("capital_adj_history", [])
+        if not isinstance(_adj_history, list):
+            _adj_history = []
+
+        _adj_c1, _adj_c2 = st.columns([2, 1])
+        _adj_amount = _adj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
+                                            help="증액: 양수 · 감액: 음수",
+                                            key="dss_os_adj_amount")
+        _adj_c1.caption(
+            f"적용 후 자본금: **${_os_capital_val + _adj_amount:,.0f}** "
+            f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
+            f"${abs(_adj_amount):,.0f})"
+        )
+        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
+                                        key="dss_os_adj_memo")
+        if _adj_c2.button("💰 적용", use_container_width=True,
+                          key="dss_os_apply_adj", disabled=(_adj_amount == 0)):
+            _new_capital = _os_capital_val + _adj_amount
+            if _new_capital <= 0:
+                st.error("자본금은 0보다 커야 합니다.")
+            else:
+                _adj_history.append({
+                    "날짜": datetime.today().strftime("%Y-%m-%d"),
+                    "조정금액": float(_adj_amount),
+                    "누적자본금": float(_new_capital),
+                    "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
+                })
+                _cfg["os_capital"] = _new_capital
+                _cfg["capital_adj_history"] = _adj_history
+                _save_dss_config(_cfg)
+                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다.")
+                st.rerun()
+
+        if _adj_history:
+            st.markdown("---")
+            st.markdown("**📋 자본 조정 이력**")
+            _df_adj = pd.DataFrame(_adj_history)
+            _df_adj_show = _df_adj.copy()
+            _df_adj_show["조정금액"] = _df_adj["조정금액"].apply(
+                lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}")
+            _df_adj_show["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(_df_adj_show[["날짜", "조정금액", "누적자본금", "메모"]],
+                         use_container_width=True, hide_index=True)
+        else:
+            st.info("아직 자본 조정 이력이 없습니다.")
+
+        # 전체 초기화
+        st.markdown("---")
+        st.markdown("**🔄 전체 초기화**")
+        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다.")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        _reset_start = _rc1.date_input("새 시작일", value=datetime.today().date(),
+                                        key="dss_os_reset_start")
+        _reset_capital = _rc2.number_input("새 시작 자본 ($)", value=_os_capital_val,
+                                            step=1000.0, key="dss_os_reset_capital")
+        if _rc3.button("🔄 초기화", use_container_width=True,
+                       key="dss_os_do_reset", type="secondary"):
+            st.session_state["dss_os_reset_confirmed"] = True
+        if st.session_state.get("dss_os_reset_confirmed", False):
+            st.warning(f"⚠️ **정말 초기화하시겠습니까?**  \n"
+                       f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
+            _conf1, _conf2 = st.columns(2)
+            if _conf1.button("✅ 확인 (초기화)", type="primary", key="dss_os_confirm_reset"):
+                _cfg["os_start"] = str(_reset_start)
+                _cfg["os_capital"] = float(_reset_capital)
+                _cfg["capital_adj_history"] = []
+                _save_dss_config(_cfg)
+                st.session_state["dss_os_reset_confirmed"] = False
+                st.session_state.pop("dss_os_result", None)
+                st.success("✅ 초기화 완료!")
+                st.rerun()
+            if _conf2.button("❌ 취소", key="dss_os_cancel_reset"):
+                st.session_state["dss_os_reset_confirmed"] = False
+                st.rerun()
+
+    # ── 주문표 로드 버튼 ──
     _os_btn_label = "🔄 새로고침" if st.session_state.get("dss_os_result") else "📋 주문표 로드"
-    if st.button(_os_btn_label, type="primary", key="dss_run_os"):
+    if st.button(_os_btn_label, type="primary", key="dss_run_ordersheet"):
         _cfg["os_start"] = str(os_start)
         _cfg["os_capital"] = float(os_capital)
         _save_dss_config(_cfg)
 
         soxl = get_soxl_data()
         qqq = get_qqq_data()
-        ms = get_mode_series(len(qqq))
-
-        if _use_saved and _saved:
-            _cur = _saved
-        else:
-            _cur = p
-
-        dss_p = DSSParams(
-            sf_divisions=int(_cur.get("sf_div", p["sf_div"])),
-            sf_max_hold=int(_cur.get("sf_hold", p["sf_hold"])),
-            sf_buy_pct=float(_cur.get("sf_buy", p["sf_buy"])) / 100,
-            sf_sell_pct=float(_cur.get("sf_sell", p["sf_sell"])) / 100,
-            ag_divisions=int(_cur.get("ag_div", p["ag_div"])),
-            ag_max_hold=int(_cur.get("ag_hold", p["ag_hold"])),
-            ag_buy_pct=float(_cur.get("ag_buy", p["ag_buy"])) / 100,
-            ag_sell_pct=float(_cur.get("ag_sell", p["ag_sell"])) / 100,
+        mode_series = get_mode_series(len(qqq))
+        os_params = DSSParams(
+            sf_divisions=_cur_sf_div, sf_max_hold=_cur_sf_hold,
+            sf_buy_pct=_cur_sf_buy / 100, sf_sell_pct=_cur_sf_sell / 100,
+            ag_divisions=_cur_ag_div, ag_max_hold=_cur_ag_hold,
+            ag_buy_pct=_cur_ag_buy / 100, ag_sell_pct=_cur_ag_sell / 100,
             initial_capital=float(os_capital),
-            fee_rate=float(_cur.get("fee_rate", p["fee_rate"])) / 100,
-            renewal_period=int(_cur.get("renewal_period", p["renewal_period"])),
-            pcr=float(_cur.get("pcr", p["pcr"])) / 100,
-            lcr=float(_cur.get("lcr", p["lcr"])) / 100,
+            fee_rate=_cur_fee / 100,
+            renewal_period=_cur_renew,
+            pcr=_cur_pcr / 100, lcr=_cur_lcr / 100,
         )
 
         today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
         with st.spinner("포트폴리오 시뮬레이션 중..."):
-            bt_df = run_backtest(dss_p, soxl, ms, str(os_start), today_str)
+            bt_df = run_backtest(
+                os_params, soxl, mode_series,
+                str(os_start), today_str,
+            )
 
         if bt_df is None or bt_df.empty:
-            st.warning("시뮬레이션 결과가 없습니다.")
+            st.warning("시뮬레이션 결과가 없습니다. 시작일을 확인하세요.")
         else:
             _save_dss_history(bt_df)
+
             last = bt_df.iloc[-1]
             prev_close = float(last['종가'])
             last_date = pd.Timestamp(last['날짜'])
             last_mode = last['모드']
+
             n_pos = int(last['보유포지션수'])
+            total_asset = float(last['총자산'])
+            cash = float(last['예수금'])
+            capital = float(last['투자금'])
+            holding_value = float(last['평가금'])
+            eval_pnl = float(last['평가손익'])
+            cum_realized = float(last['누적실현'])
+            sell_count = int(last['누적매도'])
 
             if last_mode == "AG":
-                cur_div = dss_p.ag_divisions
-                cur_buy = dss_p.ag_buy_pct
-                cur_sell = dss_p.ag_sell_pct
-                cur_hold = dss_p.ag_max_hold
+                cur_divisions = os_params.ag_divisions
+                cur_buy_pct = os_params.ag_buy_pct
+                cur_sell_pct = os_params.ag_sell_pct
+                cur_max_hold = os_params.ag_max_hold
             else:
-                cur_div = dss_p.sf_divisions
-                cur_buy = dss_p.sf_buy_pct
-                cur_sell = dss_p.sf_sell_pct
-                cur_hold = dss_p.sf_max_hold
+                cur_divisions = os_params.sf_divisions
+                cur_buy_pct = os_params.sf_buy_pct
+                cur_sell_pct = os_params.sf_sell_pct
+                cur_max_hold = os_params.sf_max_hold
 
             open_positions = []
-            _all_sold = set()
+            _all_sold_dates = set()
             for _, row in bt_df.iterrows():
                 if row['매도내역'] is not None:
                     for sr in row['매도내역']:
-                        _all_sold.add((pd.Timestamp(sr['buy_date']), sr['buy_price'], sr['qty']))
+                        _all_sold_dates.add((pd.Timestamp(sr['buy_date']), sr['buy_price'], sr['qty']))
             for _, row in bt_df.iterrows():
                 if row['매수체결'] is not None and row['수량'] > 0:
-                    bk = (pd.Timestamp(row['날짜']), float(row['매수체결']), int(row['수량']))
-                    if bk not in _all_sold:
+                    buy_key = (pd.Timestamp(row['날짜']), float(row['매수체결']), int(row['수량']))
+                    if buy_key not in _all_sold_dates:
                         open_positions.append({
                             'buy_date': pd.Timestamp(row['날짜']),
                             'buy_price': float(row['매수체결']),
@@ -582,70 +1387,125 @@ def render_ordersheet_tab(params):
                             'mode': row['모드'],
                         })
 
-            capital = float(last['투자금'])
-            next_buy = math.floor(prev_close * (1 + cur_buy) * 100) / 100
-            seed = capital / cur_div
-            buy_qty_est = int(seed / next_buy) if next_buy > 0 else 0
+            next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
+            seed_per_trade = capital / cur_divisions
+            buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
 
             weekly_rsi_df = build_weekly_rsi_series(qqq)
-            latest_rsi = float(weekly_rsi_df.iloc[-1]['rsi']) if len(weekly_rsi_df) > 0 else None
-            prev_rsi = float(weekly_rsi_df.iloc[-2]['rsi']) if len(weekly_rsi_df) > 1 else None
+            latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
+            prev_rsi_row = weekly_rsi_df.iloc[-2] if len(weekly_rsi_df) > 1 else None
 
             st.session_state["dss_os_result"] = {
-                "bt_df": bt_df, "prev_close": prev_close, "last_date": last_date,
-                "last_mode": last_mode, "n_pos": n_pos,
-                "total_asset": float(last['총자산']), "cash": float(last['예수금']),
-                "capital": capital, "holding_value": float(last['평가금']),
-                "eval_pnl": float(last['평가손익']), "cum_realized": float(last['누적실현']),
-                "sell_count": int(last['누적매도']), "open_positions": open_positions,
-                "next_buy_order": next_buy, "seed_per_trade": seed,
-                "buy_qty_est": buy_qty_est, "cur_divisions": cur_div,
-                "cur_buy_pct": cur_buy, "cur_sell_pct": cur_sell, "cur_max_hold": cur_hold,
-                "latest_rsi": latest_rsi, "prev_rsi": prev_rsi,
-                "latest_rsi_date": str(weekly_rsi_df.iloc[-1]['week_end'].date()) if len(weekly_rsi_df) > 0 else None,
+                "bt_df": bt_df,
+                "prev_close": prev_close,
+                "last_date": last_date,
+                "last_mode": last_mode,
+                "n_pos": n_pos,
+                "total_asset": total_asset,
+                "cash": cash,
+                "capital": capital,
+                "holding_value": holding_value,
+                "eval_pnl": eval_pnl,
+                "cum_realized": cum_realized,
+                "sell_count": sell_count,
+                "open_positions": open_positions,
+                "next_buy_order": next_buy_order,
+                "seed_per_trade": seed_per_trade,
+                "buy_qty_est": buy_qty_est,
+                "cur_divisions": cur_divisions,
+                "cur_buy_pct": cur_buy_pct,
+                "cur_sell_pct": cur_sell_pct,
+                "cur_max_hold": cur_max_hold,
+                "latest_rsi": float(latest_rsi_row['rsi']) if latest_rsi_row is not None else None,
+                "prev_rsi": float(prev_rsi_row['rsi']) if prev_rsi_row is not None else None,
+                "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
                 "os_capital": float(os_capital),
             }
 
+    # ── 결과 렌더링 ──
     _os = st.session_state.get("dss_os_result")
     if _os is not None:
-        # ── 모드 & 포트폴리오 현황 (HTML 카드) ──
         _mode_icon = "🟢" if _os["last_mode"] == "AG" else "🔵"
         _mode_label = "공세모드 (AG)" if _os["last_mode"] == "AG" else "안전모드 (SF)"
         _mode_bg = "#E8F5E9" if _os["last_mode"] == "AG" else "#E3F2FD"
         _mode_fg = "#2E7D32" if _os["last_mode"] == "AG" else "#1565C0"
 
+        st.markdown(f"<div style='font-size:0.82em;color:#888;margin-bottom:4px'>"
+                    f"데이터 기준: <b>{_os['last_date'].strftime('%Y-%m-%d')}</b></div>",
+                    unsafe_allow_html=True)
+
+        # ── 모드 & 현황 카드 ──
+        _rsi_val = f"{_os['latest_rsi']:.2f}" if _os['latest_rsi'] else "-"
+        _rsi_prev = f"{_os['prev_rsi']:.2f}" if _os['prev_rsi'] else "-"
+        _rsi_delta_color = "#2E7D32" if _os['latest_rsi'] and _os['prev_rsi'] and _os['latest_rsi'] > _os['prev_rsi'] else "#C62828"
         st.markdown(f"""
-        <div style="display:flex;gap:10px;margin:12px 0">
-          <div style="flex:1.2;background:{_mode_bg};border-radius:10px;padding:14px;text-align:center">
-            <div style="font-size:1.3em;font-weight:700;color:{_mode_fg}">{_mode_icon} {_mode_label}</div>
-            <div style="font-size:0.7em;color:#888;margin-top:4px">
-            데이터 기준: <b>{_os['last_date'].strftime('%Y-%m-%d')}</b></div>
+        <div style="display:flex;gap:10px;margin-bottom:12px">
+          <div style="flex:1.2;background:{_mode_bg};border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">현재 모드</div>
+            <div style="font-size:1.15em;font-weight:700;color:{_mode_fg}">{_mode_icon} {_mode_label}</div>
           </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-            <div style="font-size:0.72em;color:#888">보유시드</div>
-            <div style="font-size:1.15em;font-weight:700">{_os['n_pos']} / {_os['cur_divisions']}</div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">QQQ 주간 RSI</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_rsi_val}</div>
+            <div style="font-size:0.68em;color:{_rsi_delta_color}">전주 {_rsi_prev}</div>
           </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-            <div style="font-size:0.72em;color:#888">총자산</div>
-            <div style="font-size:1.1em;font-weight:700">${_os['total_asset']:,.0f}</div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">분할수 / 보유</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_os['n_pos']} / {_os['cur_divisions']}</div>
           </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-            <div style="font-size:0.72em;color:#888">현금</div>
-            <div style="font-size:1.1em;font-weight:700">${_os['cash']:,.0f}</div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">매수 / 매도 조건</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">+{_os['cur_buy_pct']*100:.1f}% / +{_os['cur_sell_pct']*100:.1f}%</div>
           </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # ── LOC 주문 ──
+        # ── 포트폴리오 요약 카드 ──
+        _os_init_cap = _os.get("os_capital", float(p["initial_capital"]))
+        _ret_pct = (_os['total_asset'] / _os_init_cap - 1) * 100
+        _ret_color = "#2E7D32" if _ret_pct >= 0 else "#C62828"
+        _eval_color = "#2E7D32" if _os['eval_pnl'] >= 0 else "#C62828"
+        _real_color = "#2E7D32" if _os['cum_realized'] >= 0 else "#C62828"
+        st.markdown(f"""
+        <div style="display:flex;gap:10px;margin-bottom:8px">
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
+            <div style="font-size:1.1em;font-weight:700;color:#333">${_os_init_cap:,.0f}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
+            <div style="font-size:1.1em;font-weight:700;color:#333">${_os['total_asset']:,.0f}</div>
+            <div style="font-size:0.68em;color:{_ret_color};font-weight:600">{_ret_pct:+.1f}%</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">평가손익</div>
+            <div style="font-size:1.1em;font-weight:700;color:{_eval_color}">${_os['eval_pnl']:+,.0f}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">누적실현손익</div>
+            <div style="font-size:1.1em;font-weight:700;color:{_real_color}">${_os['cum_realized']:+,.0f}</div>
+            <div style="font-size:0.68em;color:#888">매도 {_os['sell_count']}회</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">예수금</div>
+            <div style="font-size:1.1em;font-weight:700;color:#333">${_os['cash']:,.0f}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── 오늘의 LOC 주문 ──
         st.divider()
         _next_td = next_trading_date()
-        st.subheader(f"📑 오늘의 LOC 주문  ({_next_td.strftime('%Y-%m-%d')})")
+        _next_td_str = _next_td.strftime('%Y-%m-%d')
+        st.subheader(f"📑 오늘의 LOC 주문  ({_next_td_str})")
         st.markdown(
             f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
             f"전일종가 = <b>${_os['prev_close']:,.2f}</b>&ensp;·&ensp;"
-            f"매수주문가 = <b>${_os['next_buy_order']:,.2f}</b>&ensp;·&ensp;"
+            f"매수주문가 = 전일종가 × (1 + {_os['cur_buy_pct']*100:.1f}%) = "
+            f"<b>${_os['next_buy_order']:,.2f}</b>&ensp;·&ensp;"
             f"1회시드 = <b>${_os['seed_per_trade']:,.0f}</b></div>",
-            unsafe_allow_html=True)
+            unsafe_allow_html=True,
+        )
 
         today_orders = []
         for i, pos in enumerate(_os['open_positions']):
@@ -654,54 +1514,226 @@ def render_ordersheet_tab(params):
                     "구분": "매도", "시드": f"티어{i+1}",
                     "LOC 기준가": f"${pos['sell_target']:,.2f}",
                     "수량": f"{pos['qty']:,}주",
+                    "예상금액": f"${pos['qty'] * pos['sell_target']:,.2f}",
+                    "전일종가대비": f"{(pos['sell_target']/_os['prev_close']-1)*100:+.2f}%",
+                    "비고": (f"매수가 ${pos['buy_price']:.2f} → "
+                             f"목표 ${pos['sell_target']:.2f} "
+                             f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
                 })
-        if _os['n_pos'] < _os['cur_divisions']:
+
+        _can_buy = _os['n_pos'] < _os['cur_divisions']
+        if _can_buy:
             today_orders.append({
                 "구분": "매수", "시드": f"티어{_os['n_pos']+1}",
                 "LOC 기준가": f"${_os['next_buy_order']:,.2f}",
                 "수량": f"{_os['buy_qty_est']:,}주",
+                "예상금액": f"${_os['buy_qty_est'] * _os['next_buy_order']:,.2f}",
+                "전일종가대비": f"{(_os['next_buy_order']/_os['prev_close']-1)*100:+.2f}%",
+                "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
+                         f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
             })
         else:
-            st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개) 사용 중 — 매수 없음")
+            st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중이므로 매수 주문 없음")
 
         if today_orders:
-            st.dataframe(pd.DataFrame(today_orders), use_container_width=True, hide_index=True)
+            def _style_order_row(row):
+                s = [""] * len(row)
+                if "구분" in row.index:
+                    idx = list(row.index).index("구분")
+                    if row["구분"] == "매도":
+                        s[idx] = "color: #1565C0; font-weight: bold"
+                    elif row["구분"] == "매수":
+                        s[idx] = "color: #C62828; font-weight: bold"
+                return s
+            st.dataframe(
+                pd.DataFrame(today_orders).style.apply(_style_order_row, axis=1),
+                use_container_width=True, hide_index=True,
+                height=38 + 35 * len(today_orders),
+            )
 
-        # ── 보유 현황 ──
+        # ── 현재 보유 현황 ──
+        st.divider()
+        st.subheader("📦 현재 보유 시드")
+
         if _os['open_positions']:
-            st.divider()
-            st.subheader("📦 현재 보유 시드")
             pos_rows = []
+            _trading_days_all = get_soxl_data().index
             for i, pos in enumerate(_os['open_positions']):
+                buy_d = pos['buy_date']
+                buy_d_str = buy_d.strftime('%Y-%m-%d') if hasattr(buy_d, 'strftime') else str(buy_d)
+                stop_d = pos['stop_date']
+                stop_d_str = stop_d.strftime('%Y-%m-%d') if stop_d is not None and hasattr(stop_d, 'strftime') else str(stop_d) if stop_d else "-"
+                _held_days = len(_trading_days_all[
+                    (_trading_days_all >= buy_d) & (_trading_days_all <= _os['last_date'])])
+                _remain_days = len(_trading_days_all[
+                    (_trading_days_all > _os['last_date']) & (_trading_days_all <= stop_d)
+                ]) if stop_d is not None else None
                 pnl_pct = (_os['prev_close'] / pos['buy_price'] - 1) * 100 if pos['buy_price'] > 0 else 0
+                pnl_amt = (pos['qty'] * _os['prev_close']) - (pos['qty'] * pos['buy_price'])
                 pos_rows.append({
                     "시드": f"티어{i+1}", "모드": pos['mode'],
-                    "매수가": f"${pos['buy_price']:.2f}", "수량": f"{pos['qty']:,}주",
-                    "매도목표": f"${pos['sell_target']:.2f}" if pos['sell_target'] else "-",
-                    "평가손익": f"{pnl_pct:+.1f}%",
+                    "매수일": buy_d_str, "매수가": f"${pos['buy_price']:.2f}",
+                    "수량": f"{pos['qty']:,}주", "매수금액": f"${pos['buy_price']*pos['qty']:,.2f}",
+                    "매도목표가": f"${pos['sell_target']:.2f}" if pos['sell_target'] else "-",
+                    "손절예정일": stop_d_str,
+                    "보유일": f"{_held_days}일",
+                    "잔여일": f"{_remain_days}일" if _remain_days is not None else "-",
+                    "평가손익": f"${pnl_amt:+,.0f} ({pnl_pct:+.1f}%)",
                 })
-            st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
 
-        # ── 히스토리 ──
+            def _style_pnl_pos(val):
+                if isinstance(val, str):
+                    if val.startswith("$+") or val.startswith("$0"):
+                        return "color: #1565C0; font-weight: bold"
+                    elif val.startswith("$-"):
+                        return "color: #C62828; font-weight: bold"
+                return ""
+            df_pos = pd.DataFrame(pos_rows)
+            st.dataframe(df_pos.style.map(_style_pnl_pos, subset=["평가손익"]),
+                         use_container_width=True, hide_index=True,
+                         height=38 + 35 * len(df_pos))
+
+            _total_holding_qty = sum(pos['qty'] for pos in _os['open_positions'])
+            _avg_buy_price = sum(pos['buy_price'] * pos['qty'] for pos in _os['open_positions']) / _total_holding_qty if _total_holding_qty > 0 else 0
+            hc1, hc2, hc3, hc4 = st.columns(4)
+            hc1.metric("총 보유주수", f"{_total_holding_qty:,}주")
+            hc2.metric("평균매수가", f"${_avg_buy_price:.2f}")
+            hc3.metric("현재가 (종가)", f"${_os['prev_close']:,.2f}")
+            hc4.metric("평가금액", f"${_os['holding_value']:,.0f}",
+                       delta=f"{(_os['prev_close']/_avg_buy_price-1)*100:+.2f}%" if _avg_buy_price > 0 else "")
+        else:
+            st.info("현재 보유 시드 없음 (전량 현금)")
+            st.metric("보유현금", f"${_os['cash']:,.0f}")
+
+        # ── 최근 매도 기록 ──
         st.divider()
-        with st.expander("📊 일별 매매 히스토리", expanded=False):
-            _hist = _load_dss_history()
-            if not _hist.empty:
-                st.dataframe(_hist.tail(100), hide_index=True, use_container_width=True,
-                             height=min(38 + 35 * 30, 500))
+        with st.expander("📊 최근 매도 기록 (최근 20건)"):
+            _bt_df = _os['bt_df']
+            _sell_records = []
+            for _, row in _bt_df.iterrows():
+                if row['매도내역'] is not None:
+                    for sr in row['매도내역']:
+                        _sell_records.append({
+                            "매수일": pd.Timestamp(sr['buy_date']).strftime('%Y-%m-%d'),
+                            "매도일": pd.Timestamp(sr['sell_date']).strftime('%Y-%m-%d'),
+                            "모드": sr['mode'],
+                            "매수가": f"${sr['buy_price']:.2f}",
+                            "매도가": f"${sr['sell_price']:.2f}",
+                            "수량": f"{sr['qty']:,}주",
+                            "매도목표": f"${sr['sell_target']:.2f}",
+                            "손절일": pd.Timestamp(sr['stop_date']).strftime('%Y-%m-%d'),
+                            "손익": f"${sr['pnl']:+,.2f}",
+                            "결과": "✅ 익절" if sr['pnl'] >= 0 else "❌ 손절",
+                        })
+            if _sell_records:
+                _df_sells = pd.DataFrame(_sell_records)
+                _df_sells_show = _df_sells.tail(20).iloc[::-1].reset_index(drop=True)
+
+                def _style_sell_result(val):
+                    if "익절" in str(val): return "color: #1565C0; font-weight: bold"
+                    if "손절" in str(val): return "color: #C62828; font-weight: bold"
+                    return ""
+                st.dataframe(
+                    _df_sells_show.style.map(_style_sell_result, subset=["결과"]),
+                    use_container_width=True, hide_index=True,
+                    height=min(38 + 35 * len(_df_sells_show), 600))
+
+                _total_sells = len(_sell_records)
+                _win_sells = sum(1 for s in _sell_records if "익절" in s["결과"])
+                _loss_sells = _total_sells - _win_sells
+                sc1, sc2, sc3 = st.columns(3)
+                sc1.metric("총 매도", f"{_total_sells}회")
+                sc2.metric("익절", f"{_win_sells}회 ({_win_sells/_total_sells*100:.0f}%)" if _total_sells else "0회")
+                sc3.metric("손절", f"{_loss_sells}회 ({_loss_sells/_total_sells*100:.0f}%)" if _total_sells else "0회")
             else:
-                st.info("아직 히스토리가 없습니다.")
+                st.info("매도 기록이 없습니다.")
+
+        # ── 일별 매매 상세표 ──
+        st.divider()
+        st.subheader("📋 일별 매매 상세표")
+
+        _df_daily = _load_dss_history()
+        if not _df_daily.empty:
+            _buy_count = _df_daily["매매"].astype(str).str.startswith("BUY").sum()
+            _sell_count = _df_daily["매매"].astype(str).str.startswith("SELL").sum()
+            _total_trades = _buy_count + _sell_count
+            _first_date = _df_daily["날짜"].iloc[0] if len(_df_daily) > 0 else "-"
+            _last_date_h = _df_daily["날짜"].iloc[-1] if len(_df_daily) > 0 else "-"
+            st.markdown(
+                f"기록 {_first_date} ~ {_last_date_h} | "
+                f"총 **{_total_trades}건** (매수 {_buy_count}회 · 매도 {_sell_count}회)"
+            )
+            st.info("📌 이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다.")
+
+            _df_show = _df_daily.iloc[::-1].reset_index(drop=True)
+
+            def _style_daily_row(row):
+                action = str(row.get("매매", ""))
+                if action.startswith("BUY"):
+                    return ["background-color: #FFF0F0"] * len(row)
+                if action.startswith("SELL"):
+                    return ["background-color: #F0FFF4"] * len(row)
+                return [""] * len(row)
+
+            def _style_action(val):
+                s = str(val)
+                if s.startswith("BUY"):
+                    return "color: #C62828; font-weight: bold"
+                if s.startswith("SELL"):
+                    return "color: #1565C0; font-weight: bold"
+                return "color: #999"
+
+            def _style_pnl(val):
+                s = str(val)
+                if s.startswith("+"):
+                    return "color: #1565C0; font-weight: bold"
+                if s.startswith("-") and s != "-":
+                    return "color: #C62828; font-weight: bold"
+                return "color: #999"
+
+            st.dataframe(
+                _df_show.style
+                    .apply(_style_daily_row, axis=1)
+                    .map(_style_action, subset=["매매"])
+                    .map(_style_pnl, subset=["실현손익($)", "실현손익률(%)"]),
+                hide_index=True, use_container_width=True,
+                height=min(38 + 35 * len(_df_show), 600),
+            )
+
+            # 다운로드 버튼
+            _dl1, _dl2, _ = st.columns([1, 1, 3])
+            _today_dl = pd.Timestamp.today().strftime("%Y%m%d")
+
+            _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            _dl1.download_button(
+                "📥 CSV 다운로드", data=_csv_data,
+                file_name=f"DSS_SOXL_history_{_today_dl}.csv",
+                mime="text/csv", key="dss_dl_csv_hist", use_container_width=True,
+            )
+
+            _buf = _io.BytesIO()
+            with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+                _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
+            _dl2.download_button(
+                "📥 엑셀 다운로드", data=_buf.getvalue(),
+                file_name=f"DSS_SOXL_history_{_today_dl}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dss_dl_xlsx_hist", use_container_width=True,
+            )
+        else:
+            st.info("아직 저장된 매매 기록이 없습니다. '주문표 로드' 버튼을 클릭하면 기록이 시작됩니다.")
 
 
 # ══════════════════════════════════════════════
-# 탭 5: DB 조회
+# 탭 5: DB — xlsx DB 시트 재현 (하루씩 누적 기록)
 # ══════════════════════════════════════════════
 
 def render_db_tab(params=None):
-    """DB 조회 탭 — 일별/주별 누적 기록 표시."""
+    """DB 탭 — 일별/주별 누적 기록."""
     p = params or {}
+
     st.markdown("### DB — 일별/주별 누적 기록")
-    st.caption("백테스트 결과를 원본 DB 시트 형식으로 표시합니다.")
+    st.caption("백테스트 결과를 원본 DB 시트 형식으로 표시합니다. 하루하루 한 줄씩 늘어나는 기록입니다.")
 
     if st.button("DB 생성", type="primary", key="dss_run_db"):
         soxl = get_soxl_data()
@@ -709,452 +1741,1695 @@ def render_db_tab(params=None):
         mode_series_df = get_mode_series(len(qqq))
         weekly_rsi_df = build_weekly_rsi_series(qqq)
 
-        bt_params = _make_params(p)
-        s_date = str(p.get("bt_start_date", "2010-01-01"))
-        e_date = str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d")))
-        result = run_backtest(bt_params, soxl, mode_series_df,
-                              start_date=s_date, end_date=e_date)
+        dss_p = _make_params(p)
+        result = run_backtest(
+            dss_p, soxl, mode_series_df,
+            start_date=str(p.get("bt_start_date", "2010-01-01")),
+            end_date=str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d"))),
+        )
 
         st.session_state['dss_db_result'] = result
         st.session_state['dss_db_mode_series'] = mode_series_df
         st.session_state['dss_db_weekly_rsi'] = weekly_rsi_df
 
-    if 'dss_db_result' not in st.session_state:
-        st.info("🔘 위 버튼을 눌러 DB를 생성하세요.")
-        return
+    if 'dss_db_result' in st.session_state:
+        result = st.session_state['dss_db_result']
+        mode_series_df = st.session_state['dss_db_mode_series']
+        weekly_rsi_df = st.session_state['dss_db_weekly_rsi']
 
-    result = st.session_state['dss_db_result']
-    mode_series_df = st.session_state['dss_db_mode_series']
-    weekly_rsi_df = st.session_state['dss_db_weekly_rsi']
+        # ── 최신 데이터 요약 (맨 위) ──
+        latest = result.iloc[-1]
+        latest_date = latest['날짜']
+        latest_mode = latest['모드']
 
-    # ── 최신 데이터 요약 ──
-    latest = result.iloc[-1]
-    latest_date = latest['날짜']
-    latest_mode = latest['모드']
+        # 최신 주차 RSI
+        weekly_in_range = mode_series_df[
+            mode_series_df['week_end'] <= latest_date + pd.Timedelta(days=6)
+        ]
+        latest_week = weekly_in_range.iloc[-1] if len(weekly_in_range) > 0 else None
+        latest_rsi = latest_week['rsi'] if latest_week is not None else 0
+        latest_week_end = latest_week['week_end'] if latest_week is not None else latest_date
+        latest_week_start = latest_week_end - pd.Timedelta(days=4)
+        week_num = len(weekly_in_range)
 
-    weekly_in_range = mode_series_df[
-        mode_series_df['week_end'] <= latest_date + pd.Timedelta(days=6)
-    ]
-    latest_week = weekly_in_range.iloc[-1] if len(weekly_in_range) > 0 else None
-    latest_rsi = latest_week['rsi'] if latest_week is not None else 0
-    week_num = len(weekly_in_range)
+        mode_icon = "🔴" if latest_mode == "AG" else "🔵"
+        st.markdown(
+            f"#### 최신 현황 — {latest_date.strftime('%Y-%m-%d')} | "
+            f"{mode_icon} **{latest_mode}** | "
+            f"RSI {latest_rsi:.2f} (W{week_num})"
+        )
+        lc1, lc2, lc3, lc4, lc5 = st.columns(5)
+        lc1.metric("종가", f"${latest['종가']:.2f}")
+        lc2.metric("보유포지션", f"{int(latest['보유포지션수'])}/{int(latest['분할수'])}")
+        lc3.metric("총자산", f"${latest['총자산']:,.0f}")
+        lc4.metric("투자금", f"${latest['투자금']:,.0f}")
+        lc5.metric("예수금", f"${latest['예수금']:,.0f}")
 
-    mode_icon = "🔴" if latest_mode == "AG" else "🔵"
-    st.markdown(
-        f"#### 최신 현황 — {latest_date.strftime('%Y-%m-%d')} | "
-        f"{mode_icon} **{latest_mode}** | RSI {latest_rsi:.2f} (W{week_num})"
-    )
-    lc1, lc2, lc3, lc4, lc5 = st.columns(5)
-    lc1.metric("종가", f"${latest['종가']:.2f}")
-    lc2.metric("보유포지션", f"{int(latest['보유포지션수'])}/{int(latest['분할수'])}")
-    lc3.metric("총자산", f"${latest['총자산']:,.0f}")
-    lc4.metric("투자금", f"${latest['투자금']:,.0f}")
-    lc5.metric("예수금", f"${latest['예수금']:,.0f}")
+        lc6, lc7, lc8 = st.columns(3)
+        lc6.metric("누적실현", f"${latest['누적실현']:,.0f}")
+        lc7.metric("누적매도", f"{int(latest['누적매도'])}회")
+        lc8.metric("1회시드", f"${latest['1회시드']:,.0f}")
 
-    lc6, lc7, lc8 = st.columns(3)
-    lc6.metric("누적실현", f"${latest['누적실현']:,.0f}")
-    lc7.metric("누적매도", f"{int(latest['누적매도'])}회")
-    lc8.metric("1회시드", f"${latest['1회시드']:,.0f}")
+        # ── 섹션 1: 일별 종가 + 매매 기록 (좌측) ──
+        st.markdown("---")
+        db_col1, db_col2 = st.columns([3, 2])
 
-    # ── 일별 + 주별 기록 ──
-    st.markdown("---")
-    db_col1, db_col2 = st.columns([3, 2])
+        _start_date_str = str(p.get("bt_start_date", "2010-01-01"))
+        _end_date_str = str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d")))
 
-    with db_col1:
-        st.markdown("#### 일별 SOXL 기록")
-        daily_log = result[['날짜', '종가', '모드', '매수주문가', '매수체결', '수량',
-                            '매도목표가', '보유포지션수', '분할수', '1회시드',
-                            '투자금', '예수금', '평가금', '총자산',
-                            '당일실현', '누적실현', '누적매도']].copy()
-        daily_log['날짜'] = daily_log['날짜'].dt.strftime('%y.%m.%d')
-        for col in ['종가', '매수주문가', '매수체결', '매도목표가', '1회시드']:
-            daily_log[col] = daily_log[col].apply(
-                lambda x: f"${x:.2f}" if pd.notna(x) else "")
-        for col in ['투자금', '예수금', '평가금', '총자산', '당일실현', '누적실현']:
-            daily_log[col] = daily_log[col].apply(lambda x: f"${x:,.0f}" if x != 0 else "")
-        daily_log['수량'] = daily_log['수량'].apply(lambda x: str(x) if x > 0 else "")
-        daily_log['누적매도'] = daily_log['누적매도'].astype(int)
-        st.dataframe(daily_log, use_container_width=True, height=600)
-        st.caption(f"총 {len(daily_log)}거래일 기록")
+        with db_col1:
+            st.markdown("#### 일별 SOXL 기록")
 
-    with db_col2:
-        st.markdown("#### 주별 RSI / 모드")
-        s_date = str(p.get("bt_start_date", "2010-01-01"))
-        e_date = str(p.get("bt_end_date", datetime.today().strftime("%Y-%m-%d")))
-        weekly_in_range2 = mode_series_df[
-            (mode_series_df['week_end'] >= pd.Timestamp(s_date) - pd.Timedelta(days=7)) &
-            (mode_series_df['week_end'] <= pd.Timestamp(e_date) + pd.Timedelta(days=7))
-        ].copy()
+            # 일별 로그: 날짜, 종가, 모드, 매수/매도, 포지션 등
+            daily_log = result[['날짜', '종가', '모드', '매수주문가', '매수체결', '수량',
+                                '매도목표가', '보유포지션수', '분할수', '1회시드',
+                                '투자금', '예수금', '평가금', '총자산',
+                                '당일실현', '누적실현', '누적매도']].copy()
+            daily_log['날짜'] = daily_log['날짜'].dt.strftime('%y.%m.%d')
 
-        weekly_display = pd.DataFrame()
-        weekly_display['주차'] = range(1, len(weekly_in_range2) + 1)
-        weekly_display['모드'] = weekly_in_range2['mode'].values
-        weekly_display['시작'] = (weekly_in_range2['week_end'].values
-                                 - pd.Timedelta(days=4)).astype('datetime64[ns]')
-        weekly_display['종료'] = weekly_in_range2['week_end'].values
-        weekly_display['시작'] = pd.to_datetime(weekly_display['시작']).dt.strftime('%y.%m.%d')
-        weekly_display['종료'] = pd.to_datetime(weekly_display['종료']).dt.strftime('%y.%m.%d')
-        weekly_display['RSI'] = weekly_in_range2['rsi'].values.round(2)
+            # 숫자 포맷
+            for col in ['종가', '매수주문가', '매수체결', '매도목표가', '1회시드']:
+                daily_log[col] = daily_log[col].apply(
+                    lambda x: f"${x:.2f}" if pd.notna(x) else "")
+            for col in ['투자금', '예수금', '평가금', '총자산', '당일실현', '누적실현']:
+                daily_log[col] = daily_log[col].apply(lambda x: f"${x:,.0f}" if x != 0 else "")
+            daily_log['수량'] = daily_log['수량'].apply(lambda x: str(x) if x > 0 else "")
+            daily_log['누적매도'] = daily_log['누적매도'].astype(int)
 
-        def _color_mode(val):
-            if val == "AG":
-                return 'background-color: #ffe0e0'
-            elif val == "SF":
-                return 'background-color: #e0e0ff'
-            return ''
+            st.dataframe(daily_log, use_container_width=True, height=600)
+            st.caption(f"총 {len(daily_log)}거래일 기록")
 
-        styled = weekly_display.style.map(_color_mode, subset=['모드'])
-        st.dataframe(styled, use_container_width=True, height=600)
+        with db_col2:
+            st.markdown("#### 주별 RSI / 모드")
 
-    # ── 모드 가이드 차트 ──
-    st.markdown("---")
-    st.markdown("#### 모드 가이드 차트")
+            # 주별 데이터: 주차, 모드, 시작~종료, RSI
+            weekly_in_range = mode_series_df[
+                (mode_series_df['week_end'] >= pd.Timestamp(_start_date_str) - pd.Timedelta(days=7)) &
+                (mode_series_df['week_end'] <= pd.Timestamp(_end_date_str) + pd.Timedelta(days=7))
+            ].copy()
 
-    fig_rsi = go.Figure()
-    for _, row in weekly_in_range2.iterrows():
-        color = 'red' if row['mode'] == 'AG' else 'blue'
+            weekly_display = pd.DataFrame()
+            weekly_display['주차'] = range(1, len(weekly_in_range) + 1)
+            weekly_display['모드'] = weekly_in_range['mode'].values
+            weekly_display['시작'] = (weekly_in_range['week_end'].values
+                                     - pd.Timedelta(days=4)).astype('datetime64[ns]')
+            weekly_display['종료'] = weekly_in_range['week_end'].values
+            weekly_display['시작'] = pd.to_datetime(weekly_display['시작']).dt.strftime('%y.%m.%d')
+            weekly_display['종료'] = pd.to_datetime(weekly_display['종료']).dt.strftime('%y.%m.%d')
+            weekly_display['RSI'] = weekly_in_range['rsi'].values.round(2)
+
+            # 모드별 색상을 위한 스타일
+            def color_mode(val):
+                if val == "AG":
+                    return 'background-color: #ffe0e0'
+                elif val == "SF":
+                    return 'background-color: #e0e0ff'
+                return ''
+
+            styled = weekly_display.style.map(color_mode, subset=['모드'])
+            st.dataframe(styled, use_container_width=True, height=600)
+
+        # ── 섹션 2: 모드 가이드 차트 (RSI + 기준선) ──
+        st.markdown("---")
+        st.markdown("#### 모드 가이드 차트")
+
+        # 투자 기간 내 주별 RSI 차트
+        fig_rsi = go.Figure()
+
+        # RSI 라인 (모드별 색상)
+        for _, row in weekly_in_range.iterrows():
+            color = 'red' if row['mode'] == 'AG' else 'blue'
+            fig_rsi.add_trace(go.Scatter(
+                x=[row['week_end']], y=[row['rsi']],
+                mode='markers',
+                marker=dict(color=color, size=6),
+                showlegend=False,
+            ))
+
+        # RSI 전체 라인
         fig_rsi.add_trace(go.Scatter(
-            x=[row['week_end']], y=[row['rsi']],
-            mode='markers', marker=dict(color=color, size=6),
-            showlegend=False,
+            x=weekly_in_range['week_end'],
+            y=weekly_in_range['rsi'],
+            mode='lines',
+            line=dict(color='gray', width=1),
+            name='RSI',
         ))
-    fig_rsi.add_trace(go.Scatter(
-        x=weekly_in_range2['week_end'], y=weekly_in_range2['rsi'],
-        mode='lines', line=dict(color='gray', width=1), name='RSI',
-    ))
-    thresholds = [
-        (35, 'green', 'dash', 'RSI 35'), (40, 'orange', 'dot', 'RSI 40'),
-        (50, 'black', 'solid', 'RSI 50'), (60, 'orange', 'dot', 'RSI 60'),
-        (65, 'red', 'dash', 'RSI 65'),
-    ]
-    for level, color, dash, name in thresholds:
-        fig_rsi.add_hline(y=level, line=dict(color=color, dash=dash, width=1),
-                          annotation_text=name, annotation_position="bottom right")
 
-    prev_mode = None
-    span_start = None
-    for _, row in weekly_in_range2.iterrows():
-        if row['mode'] != prev_mode:
-            if prev_mode is not None and span_start is not None:
-                fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
-                fig_rsi.add_vrect(x0=span_start, x1=row['week_end'],
-                                  fillcolor=fill_color, line_width=0, layer='below')
-            span_start = row['week_end']
-            prev_mode = row['mode']
-    if prev_mode and span_start is not None:
-        fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
-        fig_rsi.add_vrect(x0=span_start, x1=weekly_in_range2['week_end'].iloc[-1],
-                          fillcolor=fill_color, line_width=0, layer='below')
-    fig_rsi.update_layout(height=350, yaxis_title="QQQ Weekly RSI", xaxis_title="",
-                          margin=dict(t=30, b=30), legend=dict(orientation='h', y=1.05))
-    st.plotly_chart(fig_rsi, use_container_width=True)
-
-    # ── Historical RSI ──
-    st.markdown("---")
-    with st.expander("Historical RSI (전체 기간)", expanded=False):
-        hist_rsi = weekly_rsi_df.copy()
-        hist_rsi = hist_rsi.merge(mode_series_df[['week_end', 'mode']], on='week_end', how='left')
-        hist_display = pd.DataFrame()
-        hist_display['주차'] = range(1, len(hist_rsi) + 1)
-        hist_display['시작'] = (hist_rsi['week_end'].values - pd.Timedelta(days=4)).astype('datetime64[ns]')
-        hist_display['종료'] = hist_rsi['week_end'].values
-        hist_display['시작'] = pd.to_datetime(hist_display['시작']).dt.strftime('%y.%m.%d')
-        hist_display['종료'] = pd.to_datetime(hist_display['종료']).dt.strftime('%y.%m.%d')
-        hist_display['RSI'] = hist_rsi['rsi'].values.round(2)
-        hist_display['모드'] = hist_rsi['mode'].values
-        st.dataframe(hist_display, use_container_width=True, height=500)
-        st.caption(f"총 {len(hist_display)}주 기록 (2010~)")
-
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Scatter(
-            x=hist_rsi['week_end'], y=hist_rsi['rsi'],
-            mode='lines', line=dict(color='gray', width=1), name='RSI',
-        ))
+        # 기준선들 (35, 40, 50, 60, 65)
+        thresholds = [
+            (35, 'green', 'dash', 'RSI 35'),
+            (40, 'orange', 'dot', 'RSI 40'),
+            (50, 'black', 'solid', 'RSI 50'),
+            (60, 'orange', 'dot', 'RSI 60'),
+            (65, 'red', 'dash', 'RSI 65'),
+        ]
         for level, color, dash, name in thresholds:
-            fig_hist.add_hline(y=level, line=dict(color=color, dash=dash, width=1))
-        fig_hist.update_layout(height=300, margin=dict(t=20, b=20), yaxis_title="QQQ Weekly RSI")
-        st.plotly_chart(fig_hist, use_container_width=True)
+            fig_rsi.add_hline(y=level, line=dict(color=color, dash=dash, width=1),
+                              annotation_text=name, annotation_position="bottom right")
 
-    # ── 매도 내역 누적 기록 ──
-    with st.expander("매도 내역 누적 기록"):
-        all_sells = []
-        for _, row in result.iterrows():
-            if row['매도내역']:
-                for s in row['매도내역']:
-                    all_sells.append(s)
-        if all_sells:
-            sells_df = pd.DataFrame(all_sells)
-            sells_df['buy_date'] = sells_df['buy_date'].dt.strftime('%y.%m.%d')
-            sells_df['sell_date'] = sells_df['sell_date'].dt.strftime('%y.%m.%d')
-            sells_df['stop_date'] = sells_df['stop_date'].dt.strftime('%y.%m.%d')
-            sells_df.columns = ['매수일', '매수가', '수량', '매도일', '매도가',
-                                '매도목표', '손절일', '손익', '모드']
-            sells_df['손익'] = sells_df['손익'].round(2)
-            sells_df.insert(0, '회차', range(1, len(sells_df) + 1))
-            st.dataframe(sells_df, use_container_width=True, height=400)
-            st.caption(f"총 {len(sells_df)}회 매도 완료")
-        else:
-            st.info("매도 기록이 없습니다.")
+        # AG/SF 배경색 (모드 전환 구간)
+        prev_mode = None
+        span_start = None
+        for _, row in weekly_in_range.iterrows():
+            if row['mode'] != prev_mode:
+                if prev_mode is not None and span_start is not None:
+                    fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
+                    fig_rsi.add_vrect(x0=span_start, x1=row['week_end'],
+                                      fillcolor=fill_color, line_width=0, layer='below')
+                span_start = row['week_end']
+                prev_mode = row['mode']
+        # 마지막 구간
+        if prev_mode and span_start is not None:
+            fill_color = 'rgba(255,200,200,0.2)' if prev_mode == 'AG' else 'rgba(200,200,255,0.2)'
+            fig_rsi.add_vrect(x0=span_start, x1=weekly_in_range['week_end'].iloc[-1],
+                              fillcolor=fill_color, line_width=0, layer='below')
+
+        fig_rsi.update_layout(
+            height=350,
+            yaxis_title="QQQ Weekly RSI",
+            xaxis_title="",
+            margin=dict(t=30, b=30),
+            legend=dict(orientation='h', y=1.05),
+        )
+        st.plotly_chart(fig_rsi, use_container_width=True)
+
+        # ── 섹션 3: Historical RSI (2010~) ──
+        st.markdown("---")
+        with st.expander("Historical RSI (전체 기간)", expanded=False):
+            hist_rsi = weekly_rsi_df.copy()
+            hist_rsi = hist_rsi.merge(
+                mode_series_df[['week_end', 'mode']],
+                on='week_end', how='left'
+            )
+            hist_display = pd.DataFrame()
+            hist_display['주차'] = range(1, len(hist_rsi) + 1)
+            hist_display['시작'] = (hist_rsi['week_end'].values
+                                    - pd.Timedelta(days=4)).astype('datetime64[ns]')
+            hist_display['종료'] = hist_rsi['week_end'].values
+            hist_display['시작'] = pd.to_datetime(hist_display['시작']).dt.strftime('%y.%m.%d')
+            hist_display['종료'] = pd.to_datetime(hist_display['종료']).dt.strftime('%y.%m.%d')
+            hist_display['RSI'] = hist_rsi['rsi'].values.round(2)
+            hist_display['모드'] = hist_rsi['mode'].values
+
+            st.dataframe(hist_display, use_container_width=True, height=500)
+            st.caption(f"총 {len(hist_display)}주 기록 (2010~)")
+
+            # Historical RSI 차트
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Scatter(
+                x=hist_rsi['week_end'], y=hist_rsi['rsi'],
+                mode='lines', line=dict(color='gray', width=1), name='RSI',
+            ))
+            for level, color, dash, name in thresholds:
+                fig_hist.add_hline(y=level, line=dict(color=color, dash=dash, width=1))
+            fig_hist.update_layout(height=300, margin=dict(t=20, b=20),
+                                   yaxis_title="QQQ Weekly RSI")
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+        # ── 섹션 4: 매도 내역 누적 기록 ──
+        with st.expander("매도 내역 누적 기록"):
+            all_sells = []
+            for _, row in result.iterrows():
+                if row['매도내역']:
+                    for s in row['매도내역']:
+                        all_sells.append(s)
+            if all_sells:
+                sells_df = pd.DataFrame(all_sells)
+                sells_df['buy_date'] = sells_df['buy_date'].dt.strftime('%y.%m.%d')
+                sells_df['sell_date'] = sells_df['sell_date'].dt.strftime('%y.%m.%d')
+                sells_df['stop_date'] = sells_df['stop_date'].dt.strftime('%y.%m.%d')
+                sells_df.columns = ['매수일', '매수가', '수량', '매도일', '매도가',
+                                    '매도목표', '손절일', '손익', '모드']
+                sells_df['손익'] = sells_df['손익'].round(2)
+                sells_df.insert(0, '회차', range(1, len(sells_df) + 1))
+                st.dataframe(sells_df, use_container_width=True, height=400)
+                st.caption(f"총 {len(sells_df)}회 매도 완료")
+            else:
+                st.info("매도 기록이 없습니다.")
 
 
 # ══════════════════════════════════════════════
-# 탭 4: 소개 & 성과
+# 탭 6: 전략 소개 & 성과 분석
 # ══════════════════════════════════════════════
 
-def render_intro_tab(params=None):
+def render_intro_tab(params):
     """전략 소개 & 성과 분석 탭."""
-    p = params or {}
+    p = params
 
-    # ── 전략 설명 ──
+    # ──────────────────────────────────────────
+    # 1. 전략 소개
+    # ──────────────────────────────────────────
     st.subheader("📖 DSS 동파법 (동적파도타기법) 이란?")
-    st.markdown("""
-DSS 동파법은 **SOXL(3배 레버리지 반도체 ETF)**을 대상으로,
-**QQQ 주간 RSI**를 기반으로 시장 상황을 판단하여
-**안전모드(SF)**와 **공세모드(AG)**를 자동 전환하며 매매하는 전략입니다.
 
+    left, right = st.columns([3, 2])
+
+    with left:
+        st.markdown("""
+#### 전략 개요
+**DSS 동파법(동적파도타기법)**은 **알고리C**님이 개발한 SOXL(3x 반도체 레버리지 ETF) 전용 매매 전략입니다.
+
+QQQ 주간 RSI를 기반으로 **안전모드(SF)**와 **공세모드(AG)**를 전환하며,
+시장 국면에 따라 매수/매도 조건과 보유기간을 동적으로 조절합니다.
+
+투자금을 N등분(시드 분할)하여 매일 1시드씩 매수를 시도하고,
+각 시드별로 독립적인 매도 목표가와 손절일을 관리합니다.
+
+---
+
+#### 핵심 특징
+- **듀얼 모드 시스템**: 시장 상황에 따른 안전/공세 모드 자동 전환
 - **LOC 주문**: 장 마감 직전 종가 기준 조건부 주문
 - **시드 분할 관리**: 각 시드별 독립적 매수-매도-손절 사이클
 - **자동 복리**: 매도 N회마다 실현손익을 투자금에 반영
-    """)
-
-    st.subheader("📋 매매 규칙")
-    col_sf, col_ag = st.columns(2)
-    with col_sf:
-        st.markdown("""
-**🔵 안전모드 (SF)**
-- 매수조건: 전일종가 × (1 + 매수%) 이하
-- 매도조건: 매수가 × (1 + 매도%)
-- 손절: 보유기간 초과 시 강제 매도
-        """)
-    with col_ag:
-        st.markdown("""
-**🟢 공세모드 (AG)**
-- 매수조건: 전일종가 × (1 + 매수%) 이하
-- 매도조건: 매수가 × (1 + 매도%)
-- 손절: 보유기간 초과 시 강제 매도
         """)
 
-    # ── 성과 분석 실행 ──
+    with right:
+        st.info("""
+**매수주문가 공식**
+```
+매수주문가 = ROUNDDOWN(
+  전일종가 × (1 + 매수조건%), 2)
+```
+당일 종가 ≤ 매수주문가 → **종가로 체결**
+
+---
+
+**매도목표가 공식**
+```
+매도목표가 = ROUND(
+  매수체결가 × (1 + 매도조건%), 2)
+```
+종가 ≥ 매도목표가 → **종가로 체결**
+        """)
+
+        st.info("""
+**LOC 주문이란?**
+
+장 마감 직전 일정 가격 이하/이상이면
+종가로 체결되는 조건부 시장가 주문입니다.
+
+미국 기준 오후 3:55 이전에 주문합니다.
+        """)
+
     st.divider()
-    st.subheader("📊 전략 성과 분석")
 
-    if st.button("▶ 성과 분석 실행", type="primary", key="dss_intro_perf"):
-        with st.spinner("데이터 로드 및 분석 중..."):
-            soxl = get_soxl_data()
-            qqq = get_qqq_data()
-            ms = get_mode_series(len(qqq))
-            dss_p = _make_params(p)
-            bt = run_backtest(dss_p, soxl, ms, str(p["start_date"]), str(p["end_date"]))
-        if bt is not None and not bt.empty:
-            st.session_state["dss_intro_bt"] = bt
+    # ──────────────────────────────────────────
+    # 2. 매매 규칙 상세
+    # ──────────────────────────────────────────
+    st.subheader("📋 매매 규칙 상세")
 
-    bt = st.session_state.get("dss_intro_bt")
-    if bt is None or (isinstance(bt, pd.DataFrame) and bt.empty):
-        st.info("👆 '성과 분석 실행' 버튼을 클릭하면 성과 분석 결과를 확인할 수 있습니다.")
-        return
+    r1, r2 = st.columns(2)
+    with r1:
+        st.markdown("""
+##### 매수 룰
+1. **매수주문가** = `ROUNDDOWN(전일종가 × (1 + 매수조건%), 2)`
+2. 당일 종가 ≤ 매수주문가이면 → **당일 종가로 체결**
+3. 수량 = `INT(1회시드 / 매수주문가)`
+4. 빈 시드 슬롯이 있을 때만 매수 (최대 분할수만큼)
+5. **하루에 1시드만** 매수 시도
 
-    _init = float(p.get("initial_capital", 10000))
-    _assets = bt['총자산'].values.astype(float)
-    _final = float(_assets[-1])
-    _days = len(bt)
-    _years = _days / 252
-    _total_ret = (_final / _init - 1)
-    _cagr = (_final / _init) ** (1 / _years) - 1 if _years > 0 else 0
-    _peak = np.maximum.accumulate(_assets)
-    _dd = (_assets - _peak) / _peak
-    _mdd = float(_dd.min())
-    _calmar = abs(_cagr / _mdd) if _mdd != 0 else 0
-    _daily_rets = np.diff(_assets) / _assets[:-1]
-    _sharpe = (np.mean(_daily_rets) / np.std(_daily_rets) * np.sqrt(252)) if np.std(_daily_rets) > 0 else 0
-    _neg = _daily_rets[_daily_rets < 0]
-    _sortino = (np.mean(_daily_rets) / np.std(_neg) * np.sqrt(252)) if len(_neg) > 0 and np.std(_neg) > 0 else 0
+##### 매도 룰
+1. **매도목표가** = `ROUND(매수체결가 × (1 + 매도조건%), 2)`
+2. 종가 ≥ 매도목표가 → **종가로 익절 매도**
+3. 최대보유기간 초과 시 → **종가로 강제 손절**
+4. 같은 날 여러 시드 동시 매도 가능
+        """)
+    with r2:
+        st.markdown("##### 순정 파라미터")
+        st.dataframe(pd.DataFrame({
+            "파라미터": ["분할수", "매수조건(%)", "매도조건(%)", "최대보유기간(거래일)"],
+            "안전모드 (SF)": [7, "+3.0%", "+0.2%", 30],
+            "공세모드 (AG)": [7, "+5.0%", "+2.5%", 7],
+        }), hide_index=True, use_container_width=True)
 
-    # 핵심 지표 카드
-    st.markdown(f"""
-    <div style="display:flex;gap:10px;margin:12px 0">
-      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:0.72em;color:#888">CAGR</div>
-        <div style="font-size:1.15em;font-weight:700">{_cagr*100:.2f}%</div>
+        st.markdown("##### 공통 파라미터")
+        st.dataframe(pd.DataFrame({
+            "파라미터": ["이익복리율 (PCR)", "손실복리율 (LCR)", "투자금갱신주기", "수수료"],
+            "기본값": ["80%", "30%", "매도 10회마다", "0.04%"],
+        }), hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ──────────────────────────────────────────
+    # 3. 모드 전환 규칙 + RSI 시각화
+    # ──────────────────────────────────────────
+    st.subheader("🔄 모드 전환 규칙")
+
+    m1, m2 = st.columns([3, 2])
+    with m1:
+        st.markdown("""
+QQQ 주간 RSI의 **2주 전(RR)**과 **1주 전(R)** 값으로 현재 주 모드를 결정합니다.
+        """)
+        st.dataframe(pd.DataFrame({
+            "조건": [
+                "RR ≤ 35  &  RR < R",
+                "40 ≤ RR < 50  &  RR > R",
+                "RR ≤ 50  &  R > 50",
+                "RR ≥ 50  &  R < 50",
+                "50 ≤ RR < 60  &  RR < R",
+                "RR > 65  &  RR > R",
+                "그 외",
+            ],
+            "모드": ["🟢 AG", "🔵 SF", "🟢 AG", "🔵 SF", "🟢 AG", "🔵 SF", "유지"],
+            "해석": [
+                "RSI 35 이하에서 반등 시작 → 공세 전환",
+                "RSI 40~50에서 하락 → 안전 전환",
+                "RSI 50 상향돌파 → 공세 전환",
+                "RSI 50 하향돌파 → 안전 전환",
+                "RSI 50~60에서 상승 추세 → 공세 전환",
+                "RSI 65 이상 과열 후 하락 → 안전 전환",
+                "명확한 신호 없음 → 직전 모드 유지",
+            ],
+        }), hide_index=True, use_container_width=True, height=300)
+
+    with m2:
+        st.markdown("""
+##### 주간 RSI 계산 (KB증권 단순평균 방식)
+```
+14주분 주봉 종가 변화량:
+
+Change[i] = Close[i] - Close[i-1]
+
+AvgUp = sum(max(Change, 0)) / 14
+AvgDn = sum(max(-Change, 0)) / 14
+RS    = AvgUp / AvgDn
+RSI   = RS / (1 + RS) × 100
+```
+
+> 일반적인 Wilder의 지수이동평균 RSI와 달리
+> **KB증권 방식**은 단순평균(SMA)을 사용합니다.
+        """)
+
+    st.divider()
+
+    # ──────────────────────────────────────────
+    # 4. 투자금 갱신 (복리 시스템)
+    # ──────────────────────────────────────────
+    st.subheader("💰 투자금 갱신 (복리 시스템)")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("""
+매도가 **N회** (기본 10회) 완료될 때마다 투자금이 자동 갱신됩니다.
+
+**계산 방식:**
+1. 직전 N회 매도의 실현손익을 합산
+2. **이익일 때**: 투자금 += 합산이익 × 이익복리율 (PCR)
+3. **손실일 때**: 투자금 += 합산손실 × 손실복리율 (LCR)
+
+> 이익은 높은 비율(80%)로 재투자하고,
+> 손실은 낮은 비율(30%)만 반영하여 **방어적 복리** 효과를 구현합니다.
+        """)
+    with c2:
+        st.markdown("##### 복리 예시 (투자금 $100,000 기준)")
+        st.dataframe(pd.DataFrame({
+            "상황": ["10회 매도 합산 +$5,000", "10회 매도 합산 -$3,000"],
+            "복리율": ["80% (PCR)", "30% (LCR)"],
+            "갱신 금액": ["+$4,000", "-$900"],
+            "갱신 후 투자금": ["$104,000", "$99,100"],
+        }), hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ──────────────────────────────────────────
+    # 5. 모드별 전략 성격 비교
+    # ──────────────────────────────────────────
+    st.subheader("⚖️ 안전모드 vs 공세모드 비교")
+
+    st.markdown("""
+    <div style="display:flex;gap:16px;margin-bottom:16px">
+      <div style="flex:1;background:#E3F2FD;border-radius:12px;padding:20px;border-left:4px solid #1565C0">
+        <h4 style="color:#1565C0;margin:0 0 10px">🔵 안전모드 (SF)</h4>
+        <ul style="font-size:0.9em;line-height:1.8;margin:0;padding-left:18px">
+          <li><b>매수조건 +3%</b> — 소폭 하락만으로도 매수 진입</li>
+          <li><b>매도조건 +0.2%</b> — 아주 작은 이익에도 매도 (빠른 회전)</li>
+          <li><b>보유기간 30일</b> — 충분한 회복 시간 부여</li>
+          <li>하락장에서 <b>손실 최소화</b>에 초점</li>
+          <li>잦은 매매로 소폭 이익 누적</li>
+        </ul>
       </div>
-      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:0.72em;color:#888">총 수익률</div>
-        <div style="font-size:1.15em;font-weight:700;color:{'#2E7D32' if _total_ret>=0 else '#C62828'}">{_total_ret*100:+,.1f}%</div>
-      </div>
-      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:0.72em;color:#888">MDD</div>
-        <div style="font-size:1.15em;font-weight:700;color:#C62828">{_mdd*100:.2f}%</div>
-      </div>
-      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:0.72em;color:#888">Calmar</div>
-        <div style="font-size:1.15em;font-weight:700">{_calmar:.3f}</div>
-      </div>
-      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:0.72em;color:#888">Sharpe</div>
-        <div style="font-size:1.15em;font-weight:700">{_sharpe:.3f}</div>
-      </div>
-      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
-        <div style="font-size:0.72em;color:#888">Sortino</div>
-        <div style="font-size:1.15em;font-weight:700">{_sortino:.3f}</div>
+      <div style="flex:1;background:#E8F5E9;border-radius:12px;padding:20px;border-left:4px solid #2E7D32">
+        <h4 style="color:#2E7D32;margin:0 0 10px">🟢 공세모드 (AG)</h4>
+        <ul style="font-size:0.9em;line-height:1.8;margin:0;padding-left:18px">
+          <li><b>매수조건 +5%</b> — 큰 폭 하락 시에만 매수</li>
+          <li><b>매도조건 +2.5%</b> — 충분한 이익 확보 후 매도</li>
+          <li><b>보유기간 7일</b> — 빠른 손절로 리스크 관리</li>
+          <li>상승장에서 <b>수익 극대화</b>에 초점</li>
+          <li>높은 단건 수익률, 적은 매매 횟수</li>
+        </ul>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    _dates = pd.to_datetime(bt['날짜'])
-
-    # ── 연도별 성과 ──
     st.divider()
-    st.subheader("📅 연도별 성과")
-    _bt_y = bt.copy()
-    _bt_y['날짜'] = pd.to_datetime(_bt_y['날짜'])
-    _bt_y['연도'] = _bt_y['날짜'].dt.year
-    yr_rows = []
-    for year, grp in _bt_y.groupby('연도'):
-        sv = float(grp.iloc[0]['총자산']); ev = float(grp.iloc[-1]['총자산'])
-        yr_ret = (ev / sv - 1) * 100
-        pk = grp['총자산'].cummax(); dd = (grp['총자산'] - pk) / pk
-        yr_rows.append({"연도": int(year), "연간수익률(%)": yr_ret, "MDD(%)": float(dd.min()) * 100})
-    df_yr = pd.DataFrame(yr_rows)
-    def _clr(val):
-        if isinstance(val, (int, float)):
-            if val > 0: return "color:#2E7D32;font-weight:bold"
-            if val < 0: return "color:#C62828;font-weight:bold"
-        return ""
-    st.dataframe(df_yr.style.map(_clr, subset=["연간수익률(%)"]).format(
-        {"연간수익률(%)": "{:+.2f}%", "MDD(%)": "{:.2f}%"}),
-        hide_index=True, use_container_width=True)
 
-    # ── 월별 히트맵 ──
-    st.divider()
-    st.subheader("🗓️ 월별 수익률 히트맵")
-    _bt_m = bt.copy()
-    _bt_m['날짜'] = pd.to_datetime(_bt_m['날짜'])
-    _bt_m['연도'] = _bt_m['날짜'].dt.year; _bt_m['월'] = _bt_m['날짜'].dt.month
-    mon_rows = []
-    for (y, m), grp in _bt_m.groupby(['연도', '월']):
-        sv = float(grp.iloc[0]['총자산']); ev = float(grp.iloc[-1]['총자산'])
-        mon_rows.append({"연도": int(y), "월": int(m), "수익률(%)": round((ev/sv-1)*100, 2)})
-    df_mon = pd.DataFrame(mon_rows)
-    if not df_mon.empty:
-        _mp = df_mon.pivot(index="연도", columns="월", values="수익률(%)")
-        _mp.columns = [f"{m}월" for m in _mp.columns]
-        fig_h = px.imshow(_mp, color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
-                          text_auto=".1f", aspect="auto")
-        fig_h.update_layout(height=max(320, len(_mp) * 38 + 120))
-        st.plotly_chart(fig_h, use_container_width=True)
+    # ──────────────────────────────────────────
+    # 6. 성과 분석 (동적 차트)
+    # ──────────────────────────────────────────
+    st.subheader("📊 전략 성과 분석")
+    st.markdown("사이드바의 파라미터와 기간 설정을 기반으로 성과를 분석합니다.")
 
-    # ── 총자산 추이 & 낙폭 ──
-    st.divider()
-    st.subheader("📈 총자산 추이 & 낙폭")
-    fig_a = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-    fig_a.add_trace(go.Scatter(x=_dates, y=_assets, mode='lines', name='총자산',
-                               line=dict(color='#1565C0', width=1.5)), row=1, col=1)
-    fig_a.add_trace(go.Scatter(x=_dates, y=_dd*100, mode='lines', name='낙폭(%)',
-                               fill='tozeroy', fillcolor='rgba(198,40,40,0.15)',
-                               line=dict(color='#C62828', width=1)), row=2, col=1)
-    fig_a.update_layout(height=500, showlegend=True, legend=dict(orientation='h', y=1.02))
-    st.plotly_chart(fig_a, use_container_width=True)
+    _initial_capital = float(p["initial_capital"])
+    _start_date = str(p["start_date"])
+    _end_date = str(p["end_date"])
 
-    # ── B&H 비교 ──
-    st.divider()
-    st.subheader("📉 DSS vs Buy & Hold")
-    _bh_p0 = float(bt.iloc[0]['종가'])
-    _bh_prices = bt['종가'].values.astype(float)
-    _bh_sh = int(_init / _bh_p0)
-    _bh_lo = _init - _bh_sh * _bh_p0
-    _bh_a = _bh_sh * _bh_prices + _bh_lo
-    _bh_ret = (_bh_a[-1] / _init - 1) * 100
+    if st.button("▶ 성과 분석 실행", type="primary", key="dss_run_intro_perf"):
+        with st.spinner("데이터 로드 및 분석 중..."):
+            soxl_intro = get_soxl_data()
+            qqq_intro = get_qqq_data()
+            mode_series_intro = get_mode_series(len(qqq_intro))
 
-    fig_bh = go.Figure()
-    fig_bh.add_trace(go.Scatter(x=_dates, y=_assets, name="DSS 동파법", line=dict(color='#1565C0', width=2)))
-    fig_bh.add_trace(go.Scatter(x=_dates, y=_bh_a, name="Buy & Hold", line=dict(color='#EF5350', width=2, dash='dot')))
-    fig_bh.update_layout(title=f"DSS {_total_ret*100:+,.1f}% vs B&H {_bh_ret:+,.1f}%",
-                         yaxis_title="자산 ($)", height=400)
-    st.plotly_chart(fig_bh, use_container_width=True)
+            params_intro = DSSParams(
+                sf_divisions=p["sf_div"], sf_max_hold=p["sf_hold"],
+                sf_buy_pct=p["sf_buy"]/100, sf_sell_pct=p["sf_sell"]/100,
+                ag_divisions=p["ag_div"], ag_max_hold=p["ag_hold"],
+                ag_buy_pct=p["ag_buy"]/100, ag_sell_pct=p["ag_sell"]/100,
+                initial_capital=_initial_capital,
+                fee_rate=p["fee_rate"]/100,
+                renewal_period=p["renewal_period"],
+                pcr=p["pcr"]/100, lcr=p["lcr"]/100,
+            )
 
-    # ── 종합 요약 ──
-    st.divider()
-    st.subheader("📋 종합 성과 요약")
-    _sell_recs = []
-    for _, row in bt.iterrows():
-        if row['매도내역'] is not None:
-            _sell_recs.extend(row['매도내역'])
-    _ts = len(_sell_recs)
-    _tw = len([s for s in _sell_recs if s['pnl'] >= 0])
-    st.dataframe(pd.DataFrame({
-        "항목": ["시작 자본", "최종 자산", "총 수익률", "CAGR", "MDD", "Calmar", "Sharpe", "Sortino",
-                 "총 매도", "승률"],
-        "수치": [f"${_init:,.0f}", f"${_final:,.0f}", f"{_total_ret*100:+.2f}%",
-                 f"{_cagr*100:.2f}%", f"{_mdd*100:.2f}%", f"{_calmar:.3f}",
-                 f"{_sharpe:.3f}", f"{_sortino:.3f}", f"{_ts}회",
-                 f"{_tw/_ts*100:.1f}% ({_tw}승 {_ts-_tw}패)" if _ts > 0 else "-"],
-    }), hide_index=True, use_container_width=True)
+            bt_intro = run_backtest(
+                params_intro, soxl_intro, mode_series_intro,
+                _start_date, _end_date,
+            )
+
+        if bt_intro is not None and not bt_intro.empty:
+            st.session_state["dss_intro_bt"] = bt_intro
+
+    _intro_bt = st.session_state.get("dss_intro_bt")
+    if _intro_bt is not None and not _intro_bt.empty:
+        bt = _intro_bt
+
+        # 핵심 지표
+        _final = float(bt.iloc[-1]['총자산'])
+        _days = len(bt)
+        _years = _days / 252
+        _total_ret = (_final / _initial_capital - 1)
+        _cagr = (_final / _initial_capital) ** (1 / _years) - 1 if _years > 0 else 0
+
+        _peak = bt['총자산'].cummax()
+        _dd = (bt['총자산'] - _peak) / _peak
+        _mdd = float(_dd.min())
+        _calmar = abs(_cagr / _mdd) if _mdd != 0 else 0
+
+        # 일간 수익률 기반 Sharpe/Sortino
+        _assets = bt['총자산'].values.astype(float)
+        _daily_rets = np.diff(_assets) / _assets[:-1]
+        _sharpe = (np.mean(_daily_rets) / np.std(_daily_rets) * np.sqrt(252)) if np.std(_daily_rets) > 0 else 0
+        _neg_rets = _daily_rets[_daily_rets < 0]
+        _sortino = (np.mean(_daily_rets) / np.std(_neg_rets) * np.sqrt(252)) if len(_neg_rets) > 0 and np.std(_neg_rets) > 0 else 0
+
+        st.markdown(f"""
+        <div style="display:flex;gap:10px;margin:12px 0">
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:0.72em;color:#888">CAGR</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_cagr*100:.2f}%</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:0.72em;color:#888">총 수익률</div>
+            <div style="font-size:1.15em;font-weight:700;color:{'#2E7D32' if _total_ret >= 0 else '#C62828'}">{_total_ret*100:+,.1f}%</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:0.72em;color:#888">최대 MDD</div>
+            <div style="font-size:1.15em;font-weight:700;color:#C62828">{_mdd*100:.2f}%</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:0.72em;color:#888">Calmar Ratio</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_calmar:.3f}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:0.72em;color:#888">Sharpe Ratio</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_sharpe:.3f}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px;text-align:center">
+            <div style="font-size:0.72em;color:#888">Sortino Ratio</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_sortino:.3f}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.divider()
+
+        # ── 연도별 성과 ──
+        st.subheader("📅 연도별 성과")
+        bt_yearly = bt.copy()
+        bt_yearly['날짜'] = pd.to_datetime(bt_yearly['날짜'])
+        bt_yearly['연도'] = bt_yearly['날짜'].dt.year
+
+        yearly_rows = []
+        for year, grp in bt_yearly.groupby('연도'):
+            start_val = float(grp.iloc[0]['총자산'])
+            end_val = float(grp.iloc[-1]['총자산'])
+            yr_ret = (end_val / start_val - 1) * 100
+            yr_peak = grp['총자산'].cummax()
+            yr_dd = (grp['총자산'] - yr_peak) / yr_peak
+            yr_mdd = float(yr_dd.min()) * 100
+            yearly_rows.append({"연도": int(year), "연간수익률(%)": yr_ret, "MDD(%)": yr_mdd})
+        df_yearly = pd.DataFrame(yearly_rows)
+
+        def _color_yr(val):
+            if isinstance(val, (int, float)):
+                if val > 0: return "color: #2E7D32; font-weight:bold"
+                if val < 0: return "color: #C62828; font-weight:bold"
+            return ""
+        st.dataframe(
+            df_yearly.style
+                .map(_color_yr, subset=["연간수익률(%)"])
+                .format({"연간수익률(%)": "{:+.2f}%", "MDD(%)": "{:.2f}%"}),
+            hide_index=True, use_container_width=True,
+        )
+        st.divider()
+
+        # ── 월별 수익률 히트맵 ──
+        st.subheader("🗓️ 월별 수익률 히트맵")
+        bt_monthly = bt.copy()
+        bt_monthly['날짜'] = pd.to_datetime(bt_monthly['날짜'])
+        bt_monthly['연도'] = bt_monthly['날짜'].dt.year
+        bt_monthly['월'] = bt_monthly['날짜'].dt.month
+
+        monthly_rows = []
+        for (year, month), grp in bt_monthly.groupby(['연도', '월']):
+            sv = float(grp.iloc[0]['총자산'])
+            ev = float(grp.iloc[-1]['총자산'])
+            mr = (ev / sv - 1) * 100 if sv > 0 else 0
+            monthly_rows.append({"연도": int(year), "월": int(month), "수익률(%)": round(mr, 2)})
+        df_mon = pd.DataFrame(monthly_rows)
+        if not df_mon.empty:
+            _mp = df_mon.pivot(index="연도", columns="월", values="수익률(%)")
+            _mp.columns = [f"{m}월" for m in _mp.columns]
+            fig_heatmap = px.imshow(
+                _mp, color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
+                text_auto=".1f", labels={"x": "월", "y": "연도", "color": "수익률(%)"},
+                aspect="auto",
+            )
+            fig_heatmap.update_layout(
+                height=max(320, len(_mp) * 38 + 120),
+                coloraxis_colorbar=dict(title="수익률(%)"),
+            )
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+        st.divider()
+
+        # ── 총자산 추이 & 낙폭 차트 ──
+        st.subheader("📈 총자산 추이 & 낙폭")
+        _dates = pd.to_datetime(bt['날짜'])
+        fig_asset = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                  row_heights=[0.7, 0.3], vertical_spacing=0.05)
+        fig_asset.add_trace(go.Scatter(x=_dates, y=_assets,
+                                       mode='lines', name='총자산',
+                                       line=dict(color='#1565C0', width=1.5)), row=1, col=1)
+        fig_asset.add_trace(go.Scatter(x=_dates, y=_dd.values * 100,
+                                       mode='lines', name='낙폭(%)',
+                                       fill='tozeroy', fillcolor='rgba(198,40,40,0.15)',
+                                       line=dict(color='#C62828', width=1)), row=2, col=1)
+        fig_asset.update_layout(height=500, showlegend=True,
+                                legend=dict(orientation='h', y=1.02),
+                                margin=dict(l=60, r=20, t=40, b=30))
+        fig_asset.update_yaxes(title_text="총자산 ($)", row=1, col=1)
+        fig_asset.update_yaxes(title_text="낙폭 (%)", row=2, col=1)
+        st.plotly_chart(fig_asset, use_container_width=True)
+        st.divider()
+
+        # ── 모드별 RSI 추이 시각화 ──
+        st.subheader("🔄 QQQ 주간 RSI & 모드 변화")
+        try:
+            qqq_intro2 = get_qqq_data()
+            rsi_df = build_weekly_rsi_series(qqq_intro2)
+            if len(rsi_df) > 0:
+                mode_s = build_mode_series(len(qqq_intro2))
+                rsi_df_plot = rsi_df.copy()
+                rsi_df_plot['mode'] = rsi_df_plot.index.map(
+                    lambda i: mode_s[i] if i < len(mode_s) else 'SF')
+                fig_rsi = go.Figure()
+                # RSI 라인
+                fig_rsi.add_trace(go.Scatter(
+                    x=rsi_df_plot['week_end'], y=rsi_df_plot['rsi'],
+                    mode='lines', name='QQQ 주간 RSI',
+                    line=dict(color='#555', width=1.5)))
+                # 기준선
+                for lvl, clr, nm in [(35, '#C62828', 'RSI 35'), (50, '#FF9800', 'RSI 50'), (65, '#2E7D32', 'RSI 65')]:
+                    fig_rsi.add_hline(y=lvl, line_dash="dot",
+                                      line_color=clr, opacity=0.5,
+                                      annotation_text=nm, annotation_position="right")
+                # AG/SF 배경
+                ag_mask = rsi_df_plot['mode'] == 'AG'
+                fig_rsi.add_trace(go.Scatter(
+                    x=rsi_df_plot.loc[ag_mask, 'week_end'],
+                    y=rsi_df_plot.loc[ag_mask, 'rsi'],
+                    mode='markers', name='공세 (AG)',
+                    marker=dict(color='#4CAF50', size=4, opacity=0.7)))
+                sf_mask = rsi_df_plot['mode'] == 'SF'
+                fig_rsi.add_trace(go.Scatter(
+                    x=rsi_df_plot.loc[sf_mask, 'week_end'],
+                    y=rsi_df_plot.loc[sf_mask, 'rsi'],
+                    mode='markers', name='안전 (SF)',
+                    marker=dict(color='#1565C0', size=4, opacity=0.7)))
+                fig_rsi.update_layout(height=350, showlegend=True,
+                                      legend=dict(orientation='h', y=1.05),
+                                      margin=dict(l=50, r=20, t=40, b=30),
+                                      yaxis_title="RSI")
+                st.plotly_chart(fig_rsi, use_container_width=True)
+        except Exception:
+            st.info("RSI 차트를 생성할 수 없습니다.")
+        st.divider()
+
+        # ── 승률 & 손익비 분석 ──
+        st.subheader("🎯 승률 & 손익비 분석")
+        _sell_recs = []
+        for _, row in bt.iterrows():
+            if row['매도내역'] is not None:
+                for sr in row['매도내역']:
+                    _sell_recs.append(sr)
+        if _sell_recs:
+            _wins = [s for s in _sell_recs if s['pnl'] >= 0]
+            _losses = [s for s in _sell_recs if s['pnl'] < 0]
+            _win_rate = len(_wins) / len(_sell_recs) * 100
+            _avg_win = np.mean([s['pnl'] for s in _wins]) if _wins else 0
+            _avg_loss = abs(np.mean([s['pnl'] for s in _losses])) if _losses else 0
+            _payoff = _avg_win / _avg_loss if _avg_loss > 0 else float('inf')
+            _total_pnl = sum(s['pnl'] for s in _sell_recs)
+
+            st.markdown(f"""
+            <div style="display:flex;gap:10px;margin:8px 0">
+              <div style="flex:1;background:#E8F5E9;border-radius:10px;padding:14px;text-align:center">
+                <div style="font-size:0.72em;color:#888">총 매도</div>
+                <div style="font-size:1.1em;font-weight:700">{len(_sell_recs)}회</div>
+              </div>
+              <div style="flex:1;background:#E8F5E9;border-radius:10px;padding:14px;text-align:center">
+                <div style="font-size:0.72em;color:#888">승률</div>
+                <div style="font-size:1.1em;font-weight:700;color:#2E7D32">{_win_rate:.1f}%</div>
+              </div>
+              <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px;text-align:center">
+                <div style="font-size:0.72em;color:#888">평균 익절</div>
+                <div style="font-size:1.1em;font-weight:700;color:#2E7D32">${_avg_win:+,.2f}</div>
+              </div>
+              <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px;text-align:center">
+                <div style="font-size:0.72em;color:#888">평균 손절</div>
+                <div style="font-size:1.1em;font-weight:700;color:#C62828">-${_avg_loss:,.2f}</div>
+              </div>
+              <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px;text-align:center">
+                <div style="font-size:0.72em;color:#888">손익비</div>
+                <div style="font-size:1.1em;font-weight:700">{_payoff:.2f}</div>
+              </div>
+              <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px;text-align:center">
+                <div style="font-size:0.72em;color:#888">누적 실현손익</div>
+                <div style="font-size:1.1em;font-weight:700;color:{'#2E7D32' if _total_pnl>=0 else '#C62828'}">${_total_pnl:+,.0f}</div>
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # 손익 분포 히스토그램
+            _pnls = [s['pnl'] for s in _sell_recs]
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(
+                x=_pnls, nbinsx=50, name='실현손익 분포',
+                marker_color=['#2E7D32' if p >= 0 else '#C62828' for p in sorted(_pnls)]))
+            fig_hist.update_layout(height=300, showlegend=False,
+                                    xaxis_title="실현손익 ($)", yaxis_title="빈도",
+                                    margin=dict(l=50, r=20, t=30, b=30))
+            fig_hist.add_vline(x=0, line_dash="dash", line_color="gray")
+            st.plotly_chart(fig_hist, use_container_width=True)
+        else:
+            st.info("매도 기록이 없어 승률 분석을 표시할 수 없습니다.")
+
+        st.divider()
+
+        # ── DSS vs Buy & Hold 비교 ──
+        st.subheader("📉 DSS 동파법 vs Buy & Hold 비교")
+        st.caption("같은 기간 SOXL을 단순 보유했을 때와 DSS 전략 성과를 비교합니다.")
+        _bh_start_price = float(bt.iloc[0]['종가'])
+        _bh_prices = bt['종가'].values.astype(float)
+        _bh_shares = int(_initial_capital / _bh_start_price)
+        _bh_leftover = _initial_capital - _bh_shares * _bh_start_price
+        _bh_assets = _bh_shares * _bh_prices + _bh_leftover
+        _bh_final = float(_bh_assets[-1])
+        _bh_ret = (_bh_final / _initial_capital - 1) * 100
+        _bh_cagr = (_bh_final / _initial_capital) ** (1 / _years) - 1 if _years > 0 else 0
+
+        fig_bh = go.Figure()
+        fig_bh.add_trace(go.Scatter(
+            x=_dates, y=_assets, name="DSS 동파법",
+            line=dict(color='#1565C0', width=2)))
+        fig_bh.add_trace(go.Scatter(
+            x=_dates, y=_bh_assets, name="Buy & Hold (SOXL)",
+            line=dict(color='#EF5350', width=2, dash='dot')))
+        fig_bh.add_hline(y=_initial_capital, line_dash="dash", line_color="#aaa",
+                          annotation_text="시작 자본")
+        fig_bh.update_layout(
+            title=f"전략 수익 {_total_ret*100:+,.1f}% vs B&H {_bh_ret:+,.1f}%",
+            yaxis_title="자산 ($)", height=400,
+            legend=dict(orientation='h', y=1.08),
+            margin=dict(l=60, r=20, t=60, b=30))
+        st.plotly_chart(fig_bh, use_container_width=True)
+
+        st.markdown(f"""
+        <div style="display:flex;gap:12px;margin:8px 0">
+          <div style="flex:1;background:#E3F2FD;border-radius:10px;padding:16px;text-align:center">
+            <div style="font-size:0.8em;color:#1565C0;font-weight:600">DSS 동파법</div>
+            <div style="font-size:1.2em;font-weight:700;margin:4px 0">${_final:,.0f}</div>
+            <div style="font-size:0.75em;color:#555">수익률 {_total_ret*100:+,.1f}% · CAGR {_cagr*100:.1f}% · MDD {_mdd*100:.1f}%</div>
+          </div>
+          <div style="flex:1;background:#FFF3E0;border-radius:10px;padding:16px;text-align:center">
+            <div style="font-size:0.8em;color:#E65100;font-weight:600">Buy & Hold (SOXL)</div>
+            <div style="font-size:1.2em;font-weight:700;margin:4px 0">${_bh_final:,.0f}</div>
+            <div style="font-size:0.75em;color:#555">수익률 {_bh_ret:+,.1f}% · CAGR {_bh_cagr*100:.1f}%</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.divider()
+
+        # ── 회복력 분석 ──
+        st.subheader("🛡️ 회복력 분석 (10% 이상 하락 에피소드)")
+        st.caption("고점 대비 10% 이상 하락한 구간별로, 어디까지 빠지고 얼마 만에 회복했는지 분석합니다.")
+        _recovery_records = []
+        _peak_val = float(_assets[0])
+        _peak_idx = 0
+        _in_dd = False
+        _trough_val = _peak_val
+        _trough_idx = 0
+        _dates_list = pd.to_datetime(bt['날짜']).tolist()
+        for i in range(1, len(_assets)):
+            curr = float(_assets[i])
+            dd_pct = (curr - _peak_val) / _peak_val * 100
+            if not _in_dd:
+                if curr > _peak_val:
+                    _peak_val = curr; _peak_idx = i
+                elif dd_pct <= -10:
+                    _in_dd = True; _trough_val = curr; _trough_idx = i
+            else:
+                if curr < _trough_val:
+                    _trough_val = curr; _trough_idx = i
+                if curr >= _peak_val:
+                    _recovery_records.append({
+                        "고점": str(_dates_list[_peak_idx].date()),
+                        "고점 자산": f"${_peak_val:,.0f}",
+                        "최대하락 시점": str(_dates_list[_trough_idx].date()),
+                        "저점 자산": f"${_trough_val:,.0f}",
+                        "하락율": f"{(_trough_val - _peak_val) / _peak_val * 100:.1f}%",
+                        "회복 시점": str(_dates_list[i].date()),
+                        "기간(일)": (_dates_list[i] - _dates_list[_peak_idx]).days,
+                    })
+                    _in_dd = False; _peak_val = curr; _peak_idx = i
+                    _trough_val = curr; _trough_idx = i
+        if _in_dd:
+            _recovery_records.append({
+                "고점": str(_dates_list[_peak_idx].date()),
+                "고점 자산": f"${_peak_val:,.0f}",
+                "최대하락 시점": str(_dates_list[_trough_idx].date()),
+                "저점 자산": f"${_trough_val:,.0f}",
+                "하락율": f"{(_trough_val - _peak_val) / _peak_val * 100:.1f}%",
+                "회복 시점": "미회복 ⏳",
+                "기간(일)": (_dates_list[-1] - _dates_list[_peak_idx]).days,
+            })
+        if _recovery_records:
+            def _clr_recovery(val):
+                s = str(val)
+                if s.startswith("-") and "%" in s: return "color:#C62828;font-weight:bold"
+                if "미회복" in s: return "color:#C62828;font-weight:bold"
+                return ""
+            st.dataframe(
+                pd.DataFrame(_recovery_records).style.map(_clr_recovery),
+                hide_index=True, use_container_width=True)
+        else:
+            st.info("10% 이상 하락 에피소드가 없습니다.")
+        st.divider()
+
+        # ── 모드별 성과 비교 ──
+        st.subheader("🔄 안전모드 vs 공세모드 매매 성과")
+        st.caption("각 모드에서 발생한 매도 건의 수익/손실을 비교합니다.")
+        if _sell_recs:
+            _sf_sells = [s for s in _sell_recs if s.get('mode') == 'SF']
+            _ag_sells = [s for s in _sell_recs if s.get('mode') == 'AG']
+
+            def _mode_stats(sells, name):
+                if not sells:
+                    return {"모드": name, "매도 횟수": 0, "승률": "-",
+                            "평균 손익($)": "-", "총 손익($)": "-"}
+                wins = [s for s in sells if s['pnl'] >= 0]
+                wr = len(wins) / len(sells) * 100
+                avg_pnl = np.mean([s['pnl'] for s in sells])
+                total_pnl = sum(s['pnl'] for s in sells)
+                return {
+                    "모드": name, "매도 횟수": len(sells),
+                    "승률": f"{wr:.1f}%",
+                    "평균 손익($)": f"${avg_pnl:+,.2f}",
+                    "총 손익($)": f"${total_pnl:+,.0f}",
+                }
+
+            df_mode_cmp = pd.DataFrame([
+                _mode_stats(_sf_sells, "🔵 안전모드 (SF)"),
+                _mode_stats(_ag_sells, "🟢 공세모드 (AG)"),
+                _mode_stats(_sell_recs, "📊 전체"),
+            ])
+            st.dataframe(df_mode_cmp, hide_index=True, use_container_width=True)
+
+            # 모드별 손익 분포
+            if _sf_sells and _ag_sells:
+                fig_mode_box = go.Figure()
+                fig_mode_box.add_trace(go.Box(
+                    y=[s['pnl'] for s in _sf_sells], name='안전모드 (SF)',
+                    marker_color='#1565C0', boxmean=True))
+                fig_mode_box.add_trace(go.Box(
+                    y=[s['pnl'] for s in _ag_sells], name='공세모드 (AG)',
+                    marker_color='#4CAF50', boxmean=True))
+                fig_mode_box.update_layout(
+                    height=350, yaxis_title="실현손익 ($)",
+                    showlegend=False, margin=dict(l=60, r=20, t=30, b=30))
+                fig_mode_box.add_hline(y=0, line_dash="dash", line_color="gray")
+                st.plotly_chart(fig_mode_box, use_container_width=True)
+
+        st.divider()
+
+        # ── 드로다운 (Underwater) 분석 ──
+        st.subheader("🌊 드로다운 (Underwater) 분석")
+        st.caption("고점 대비 현재 손실 비율 추이. 얼마나 깊이, 얼마나 오래 손실 구간에 있었는지 보여줍니다.")
+        _peak_arr = np.maximum.accumulate(_assets)
+        _dd_arr = (_assets - _peak_arr) / _peak_arr * 100
+        _fig_uw = go.Figure()
+        _fig_uw.add_trace(go.Scatter(
+            x=_dates, y=_dd_arr.tolist(),
+            fill="tozeroy", name="드로다운(%)",
+            line=dict(color="#EF5350", width=1),
+            fillcolor="rgba(239,83,80,0.25)",
+        ))
+        _fig_uw.add_hline(y=0, line_color="#888", line_width=1)
+        _fig_uw.update_layout(yaxis_title="드로다운 (%)", height=300, yaxis=dict(tickformat=".1f"),
+                              margin=dict(l=60, r=20, t=30, b=30))
+        st.plotly_chart(_fig_uw, use_container_width=True)
+
+        # 드로다운 구간 TOP5
+        _dd_s = pd.Series(_dd_arr, index=_dates)
+        _in_dd2 = False; _dd2_start = None; _dd2_periods = []
+        for _di2, (_ddate2, _dval2) in enumerate(_dd_s.items()):
+            if _dval2 < 0 and not _in_dd2:
+                _in_dd2 = True; _dd2_start = _ddate2
+            elif _dval2 == 0 and _in_dd2:
+                _in_dd2 = False
+                _sub_dd2 = _dd_s[_dd2_start:_ddate2]
+                _dd2_periods.append({
+                    "시작일": str(_dd2_start.date()) if hasattr(_dd2_start, 'date') else str(_dd2_start),
+                    "회복일": str(_ddate2.date()) if hasattr(_ddate2, 'date') else str(_ddate2),
+                    "기간(일)": (_ddate2 - _dd2_start).days,
+                    "최대낙폭(%)": round(float(_sub_dd2.min()), 2),
+                })
+        if _dd2_periods:
+            _dd2_df = pd.DataFrame(_dd2_periods).nsmallest(5, "최대낙폭(%)").reset_index(drop=True)
+            _dd2_df.index += 1
+            st.markdown("**Top 5 최대 낙폭 구간**")
+            st.dataframe(_dd2_df.style.format({"최대낙폭(%)": "{:.2f}%"}),
+                         hide_index=False, use_container_width=True)
+        st.divider()
+
+        # ── 롤링 성과 분석 ──
+        st.subheader("📉 롤링 성과 분석")
+        st.caption("구간별 성과 추이. 특정 시기에만 좋은 게 아닌지 검증합니다.")
+        _roll_tabs = st.tabs(["1년 롤링", "2년 롤링", "3년 롤링"])
+        for _rwin, _rtab in zip([252, 504, 756], _roll_tabs):
+            with _rtab:
+                if len(_assets) > _rwin:
+                    _rc_arr = np.full(len(_assets), np.nan)
+                    _rm_arr = np.full(len(_assets), np.nan)
+                    for _ri in range(_rwin, len(_assets)):
+                        _seg = _assets[_ri - _rwin:_ri + 1]
+                        _yrs_r = _rwin / 252
+                        _rc_arr[_ri] = ((_seg[-1] / _seg[0]) ** (1 / _yrs_r) - 1) * 100
+                        _seg_peak = np.maximum.accumulate(_seg)
+                        _rm_arr[_ri] = float(((_seg - _seg_peak) / _seg_peak).min()) * 100
+                    _valid_r = ~np.isnan(_rc_arr)
+                    if _valid_r.sum() > 0:
+                        _rdates = _dates[_valid_r]
+                        _fig_roll = go.Figure()
+                        _fig_roll.add_trace(go.Scatter(
+                            x=_rdates, y=_rc_arr[_valid_r].tolist(),
+                            name="롤링 CAGR(%)", line=dict(color="#1565C0", width=2), yaxis="y1"))
+                        _fig_roll.add_trace(go.Scatter(
+                            x=_rdates, y=_rm_arr[_valid_r].tolist(),
+                            name="롤링 MDD(%)", line=dict(color="#EF5350", width=1.5, dash="dot"), yaxis="y2"))
+                        _fig_roll.add_hline(y=0, line_dash="dash", line_color="#aaa", yref="y1")
+                        _fig_roll.update_layout(
+                            yaxis=dict(title="롤링 CAGR (%)", side="left"),
+                            yaxis2=dict(title="롤링 MDD (%)", side="right", overlaying="y"),
+                            legend=dict(orientation="h", y=1.08), height=340)
+                        st.plotly_chart(_fig_roll, use_container_width=True)
+                        _r1, _r2, _r3 = st.columns(3)
+                        _r1.metric("평균 CAGR", f"{np.nanmean(_rc_arr):+.1f}%")
+                        _r2.metric("최고 CAGR", f"{np.nanmax(_rc_arr):+.1f}%")
+                        _r3.metric("최저 CAGR", f"{np.nanmin(_rc_arr):+.1f}%")
+                    else:
+                        st.info(f"분석 기간이 {_rwin // 252}년보다 짧아 롤링 분석이 불가합니다.")
+                else:
+                    st.info(f"분석 기간이 {_rwin // 252}년보다 짧아 롤링 분석이 불가합니다.")
+        st.divider()
+
+        # ── 매도 손익률 분포 (왜도/첨도 포함) ──
+        st.subheader("📊 매도 손익률 분포")
+        st.caption("매도 시마다 발생한 손익률의 분포. 수익/손실의 패턴을 분석합니다.")
+        if _sell_recs:
+            _pnl_pcts = [(s['pnl'] / (s['buy_price'] * s['qty'])) * 100
+                         for s in _sell_recs if s['buy_price'] * s['qty'] > 0]
+            if _pnl_pcts:
+                _pnl_arr2 = np.array(_pnl_pcts)
+                _skew = float(pd.Series(_pnl_arr2).skew())
+                _kurt = float(pd.Series(_pnl_arr2).kurtosis())
+                _fig_pnl2 = go.Figure()
+                _fig_pnl2.add_trace(go.Histogram(
+                    x=_pnl_arr2.tolist(), nbinsx=40,
+                    marker_color=["#EF5350" if v < 0 else "#43A047" for v in sorted(_pnl_arr2)],
+                    name="손익률 빈도"))
+                _fig_pnl2.add_vline(x=0, line_dash="dash", line_color="#333")
+                _fig_pnl2.add_vline(x=float(np.mean(_pnl_arr2)), line_dash="dot",
+                                    line_color="#1565C0",
+                                    annotation_text=f"평균 {np.mean(_pnl_arr2):+.2f}%",
+                                    annotation_position="top right")
+                _fig_pnl2.update_layout(xaxis_title="손익률 (%)", yaxis_title="빈도 (회)", height=320,
+                                        margin=dict(l=60, r=20, t=30, b=30))
+                st.plotly_chart(_fig_pnl2, use_container_width=True)
+                _pd1, _pd2, _pd3, _pd4 = st.columns(4)
+                _pd1.metric("평균 손익률", f"{np.mean(_pnl_arr2):+.2f}%")
+                _pd2.metric("중앙값", f"{np.median(_pnl_arr2):+.2f}%")
+                _pd3.metric("왜도 (Skew)", f"{_skew:.3f}",
+                            help="양수=우측 꼬리(큰 수익 가끔), 음수=좌측 꼬리(큰 손실 가끔)")
+                _pd4.metric("첨도 (Kurt)", f"{_kurt:.3f}",
+                            help="높을수록 극단값(큰 수익/손실) 빈도 높음")
+        else:
+            st.info("매도 이력이 없어 분포 분석이 불가합니다.")
+        st.divider()
+
+        # ── 현금 활용률 & 매매 타이밍 패턴 ──
+        st.subheader("💵 현금 활용률 & 매매 타이밍 패턴")
+        _cash_arr = bt['예수금'].values.astype(float)
+        if len(_cash_arr) > 0 and len(_assets) > 0:
+            _inv_ratio = (1 - _cash_arr / _assets) * 100
+            _inv_ratio = np.clip(_inv_ratio, 0, 100)
+            _cu1, _cu2, _cu3 = st.columns(3)
+            _cu1.metric("평균 투자 비율", f"{np.mean(_inv_ratio):.1f}%",
+                        help="현금이 아닌 주식에 투자된 비율의 평균")
+            _cu2.metric("최대 투자 비율", f"{np.max(_inv_ratio):.1f}%")
+            _cu3.metric("현금 보유 비율", f"{100 - np.mean(_inv_ratio):.1f}%")
+
+            # 스택 영역 차트
+            _ratio_s = pd.Series(_inv_ratio, index=_dates)
+            _total_days_r = (_ratio_s.index[-1] - _ratio_s.index[0]).days
+            _win_r = 5 if _total_days_r > 365 else 0
+            _trend_s = _ratio_s.rolling(_win_r, min_periods=1).mean() if _win_r > 0 else None
+            _x_dates_r = _dates.tolist()
+            _fig_cu = go.Figure()
+            _fig_cu.add_trace(go.Scatter(
+                x=_x_dates_r, y=[100.0] * len(_x_dates_r), name="현금",
+                mode="lines", line=dict(width=0), fill="tozeroy",
+                fillcolor="rgba(200,200,200,0.6)", hoverinfo="skip"))
+            _fig_cu.add_trace(go.Scatter(
+                x=_x_dates_r, y=_ratio_s.tolist(), name="주식(ETF)",
+                mode="lines", line=dict(width=0), fill="tozeroy",
+                fillcolor="rgba(255,179,0,0.75)",
+                hovertemplate="%{x}<br>주식(ETF): %{y:.1f}%<extra></extra>"))
+            if _trend_s is not None:
+                _fig_cu.add_trace(go.Scatter(
+                    x=_x_dates_r, y=_trend_s.tolist(), name="5일 이동평균 추세선",
+                    mode="lines", line=dict(color="rgba(180,80,0,0.85)", width=1.5),
+                    hoverinfo="skip"))
+            _fig_cu.update_layout(
+                yaxis_title="비율 (%)", yaxis=dict(range=[0, 100]),
+                height=300, hovermode="x unified",
+                legend=dict(orientation="h", x=1.0, y=1.02, xanchor="right", yanchor="bottom",
+                            bgcolor="rgba(255,255,255,0.85)", bordercolor="#ccc", borderwidth=1),
+                margin=dict(l=60, r=20, t=20, b=40))
+            st.plotly_chart(_fig_cu, use_container_width=True)
+            if _win_r > 0:
+                st.caption("※ 영역: 일별 실제 투자비율 | 주황 선: 5일 이동평균 추세선")
+
+        # 매매 타이밍 패턴 (요일별/월별)
+        if _sell_recs:
+            _buy_dates_all = []
+            _sell_dates_all = []
+            for _, row in bt.iterrows():
+                if row.get('매수체결') is not None:
+                    _buy_dates_all.append(pd.to_datetime(row['날짜']))
+                if row['매도내역'] is not None:
+                    _sell_dates_all.append(pd.to_datetime(row['날짜']))
+            if _buy_dates_all:
+                _buy_dows = pd.Series([d.day_name() for d in _buy_dates_all])
+                _sell_dows = pd.Series([d.day_name() for d in _sell_dates_all])
+                _buy_months = pd.Series([d.month for d in _buy_dates_all])
+                _sell_months = pd.Series([d.month for d in _sell_dates_all])
+                _dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+                _dow_labels = ["월", "화", "수", "목", "금"]
+                _buy_dow = _buy_dows.value_counts().reindex(_dow_order, fill_value=0)
+                _sell_dow = _sell_dows.value_counts().reindex(_dow_order, fill_value=0)
+                _fig_dow = go.Figure()
+                _fig_dow.add_trace(go.Bar(x=_dow_labels, y=_buy_dow.values.tolist(),
+                                          name="매수", marker_color="#EF5350"))
+                _fig_dow.add_trace(go.Bar(x=_dow_labels, y=_sell_dow.values.tolist(),
+                                          name="매도", marker_color="#43A047"))
+                _fig_dow.update_layout(barmode="group", title="요일별 매매 빈도",
+                                       yaxis_title="횟수", height=300)
+                _buy_mon = _buy_months.value_counts().sort_index()
+                _sell_mon = _sell_months.value_counts().sort_index()
+                _fig_mon = go.Figure()
+                _fig_mon.add_trace(go.Bar(x=[f"{m}월" for m in _buy_mon.index],
+                                          y=_buy_mon.values.tolist(), name="매수", marker_color="#EF5350"))
+                _fig_mon.add_trace(go.Bar(x=[f"{m}월" for m in _sell_mon.index],
+                                          y=_sell_mon.values.tolist(), name="매도", marker_color="#43A047"))
+                _fig_mon.update_layout(barmode="group", title="월별 매매 빈도",
+                                       yaxis_title="횟수", height=300)
+                _tc1, _tc2 = st.columns(2)
+                with _tc1:
+                    st.plotly_chart(_fig_dow, use_container_width=True)
+                with _tc2:
+                    st.plotly_chart(_fig_mon, use_container_width=True)
+        st.divider()
+
+        # ── 파라미터 민감도 분석 ──
+        st.subheader("🎛️ 파라미터 민감도 분석")
+        st.caption("현재 매수/매도 조건 주변의 Calmar Ratio 분포. 과최적화 여부를 확인합니다.")
+        with st.expander("🔍 민감도 히트맵 보기 (클릭하여 실행)", expanded=False):
+            _sens_mode = st.radio("분석 대상 모드", ["안전모드 (SF)", "공세모드 (AG)"],
+                                  horizontal=True, key="dss_sens_mode_radio")
+            if _sens_mode == "안전모드 (SF)":
+                _sb_cur, _ss_cur = p["sf_buy"] / 100, p["sf_sell"] / 100
+            else:
+                _sb_cur, _ss_cur = p["ag_buy"] / 100, p["ag_sell"] / 100
+            _n_sens = 5
+            _b_range = np.linspace(max(0.001, _sb_cur - 0.015), _sb_cur + 0.015, _n_sens)
+            _s_range = np.linspace(max(0.001, _ss_cur - 0.015), _ss_cur + 0.015, _n_sens)
+            _heat = np.zeros((_n_sens, _n_sens))
+            if st.button("▶ 민감도 분석 실행", key="dss_run_sensitivity"):
+                with st.spinner("민감도 분석 중... (25회 시뮬레이션)"):
+                    soxl_s = get_soxl_data()
+                    ms_s = get_mode_series(len(get_qqq_data()))
+                    for _bi, _bv in enumerate(_b_range):
+                        for _si, _sv in enumerate(_s_range):
+                            _p_s = DSSParams(
+                                sf_divisions=p["sf_div"] if _sens_mode == "안전모드 (SF)" else p["sf_div"],
+                                sf_max_hold=p["sf_hold"],
+                                sf_buy_pct=_bv if _sens_mode == "안전모드 (SF)" else p["sf_buy"]/100,
+                                sf_sell_pct=_sv if _sens_mode == "안전모드 (SF)" else p["sf_sell"]/100,
+                                ag_divisions=p["ag_div"], ag_max_hold=p["ag_hold"],
+                                ag_buy_pct=_bv if _sens_mode != "안전모드 (SF)" else p["ag_buy"]/100,
+                                ag_sell_pct=_sv if _sens_mode != "안전모드 (SF)" else p["ag_sell"]/100,
+                                initial_capital=_initial_capital, fee_rate=p["fee_rate"]/100,
+                                renewal_period=p["renewal_period"], pcr=p["pcr"]/100, lcr=p["lcr"]/100,
+                            )
+                            _bt_s = run_backtest(_p_s, soxl_s, ms_s, _start_date, _end_date)
+                            if _bt_s is not None and len(_bt_s) > 10:
+                                _a_s = _bt_s['총자산'].values.astype(float)
+                                _yrs_s = len(_bt_s) / 252
+                                _cagr_s = (_a_s[-1] / _a_s[0]) ** (1 / _yrs_s) - 1 if _yrs_s > 0 else 0
+                                _pk_s = np.maximum.accumulate(_a_s)
+                                _mdd_s = float(((_a_s - _pk_s) / _pk_s).min())
+                                _heat[_bi][_si] = abs(_cagr_s / _mdd_s) if _mdd_s != 0 else 0
+                            else:
+                                _heat[_bi][_si] = 0
+                st.session_state["dss_sens_heat"] = _heat
+                st.session_state["dss_sens_b_range"] = _b_range
+                st.session_state["dss_sens_s_range"] = _s_range
+                st.session_state["dss_sens_cur"] = (_sb_cur, _ss_cur)
+                st.session_state["dss_sens_mode_label"] = _sens_mode
+
+            if st.session_state.get("dss_sens_heat") is not None:
+                _h = st.session_state["dss_sens_heat"]
+                _br = st.session_state["dss_sens_b_range"]
+                _sr2 = st.session_state["dss_sens_s_range"]
+                _scur = st.session_state["dss_sens_cur"]
+                _sml = st.session_state.get("dss_sens_mode_label", "")
+                _b_labels = [f"{v*100:.2f}%" for v in _br]
+                _s_labels = [f"{v*100:.2f}%" for v in _sr2]
+                _fig_heat = px.imshow(
+                    _h, x=_s_labels, y=_b_labels,
+                    color_continuous_scale="RdYlGn",
+                    labels={"x": "매도조건(%)", "y": "매수조건(%)", "color": "Calmar"},
+                    text_auto=".2f", aspect="auto",
+                    title=f"Calmar Ratio 히트맵 — {_sml} (매수% × 매도%)")
+                _fig_heat.add_annotation(
+                    x=f"{_scur[1]*100:.2f}%", y=f"{_scur[0]*100:.2f}%",
+                    text="★ 현재", showarrow=True, arrowhead=2,
+                    font=dict(color="white", size=13, family="Arial Black"))
+                _fig_heat.update_layout(height=380)
+                st.plotly_chart(_fig_heat, use_container_width=True)
+                st.caption("녹색일수록 Calmar Ratio가 높습니다. 현재 파라미터(★) 주변이 고르게 녹색이면 과최적화 위험이 낮습니다.")
+        st.divider()
+
+        # ── 무작위 기간 강건성 분석 ──
+        st.subheader("🎲 무작위 기간 강건성 분석")
+        st.caption(
+            "2010~현재까지 1년(252 거래일) 구간 100개를 무작위 추출하여 백테스트를 반복합니다. "
+            "시작 시점과 무관하게 전략이 일관된 성과를 내는지 확인합니다.")
+        with st.expander("🔍 강건성 분석 실행 (클릭)", expanded=False):
+            if st.button("▶ 무작위 100구간 분석 시작", key="dss_mc_run"):
+                st.session_state["dss_mc_result"] = None
+                with st.spinner("분석 중..."):
+                    soxl_mc = get_soxl_data()
+                    qqq_mc = get_qqq_data()
+                    ms_mc = get_mode_series(len(qqq_mc))
+                    _mc_closes = soxl_mc['Close'].dropna()
+                    _mc_idx = _mc_closes.index
+                    _WINDOW = 252
+                    _mc_valid = [i for i in range(len(_mc_idx) - _WINDOW)]
+                    if len(_mc_valid) < 100:
+                        st.warning("데이터가 100구간 분석에 충분하지 않습니다.")
+                    else:
+                        random.seed(None)
+                        _mc_chosen = random.sample(_mc_valid, 100)
+                        _mc_strat_ret = []; _mc_strat_mdd = []
+                        _mc_bnh_ret = []; _mc_bnh_mdd = []
+                        _mc_periods = []
+                        _mc_prog = st.progress(0, text="시뮬레이션 중...")
+                        _p_mc = DSSParams(
+                            sf_divisions=p["sf_div"], sf_max_hold=p["sf_hold"],
+                            sf_buy_pct=p["sf_buy"]/100, sf_sell_pct=p["sf_sell"]/100,
+                            ag_divisions=p["ag_div"], ag_max_hold=p["ag_hold"],
+                            ag_buy_pct=p["ag_buy"]/100, ag_sell_pct=p["ag_sell"]/100,
+                            initial_capital=_initial_capital, fee_rate=p["fee_rate"]/100,
+                            renewal_period=p["renewal_period"], pcr=p["pcr"]/100, lcr=p["lcr"]/100)
+                        for _ci, _si in enumerate(_mc_chosen):
+                            _s_dt = str(_mc_idx[_si].date())
+                            _e_dt = str(_mc_idx[_si + _WINDOW - 1].date())
+                            _bt_mc = run_backtest(_p_mc, soxl_mc, ms_mc, _s_dt, _e_dt)
+                            if _bt_mc is not None and not _bt_mc.empty:
+                                _a_mc = _bt_mc['총자산'].values.astype(float)
+                                _tr_mc = (_a_mc[-1] / _a_mc[0] - 1) * 100
+                                _pk_mc = np.maximum.accumulate(_a_mc)
+                                _md_mc = abs(float(((_a_mc - _pk_mc) / _pk_mc).min())) * 100
+                                _mc_strat_ret.append(round(_tr_mc, 2))
+                                _mc_strat_mdd.append(round(_md_mc, 2))
+                                # B&H
+                                _bh_p = _bt_mc['종가'].values.astype(float)
+                                _bh_sh = int(_initial_capital / _bh_p[0])
+                                _bh_lo = _initial_capital - _bh_sh * _bh_p[0]
+                                _bh_a = _bh_sh * _bh_p + _bh_lo
+                                _bnh_tr = (_bh_a[-1] / _bh_a[0] - 1) * 100
+                                _bnh_pk = np.maximum.accumulate(_bh_a)
+                                _bnh_md = abs(float(((_bh_a - _bnh_pk) / _bnh_pk).min())) * 100
+                                _mc_bnh_ret.append(round(_bnh_tr, 2))
+                                _mc_bnh_mdd.append(round(_bnh_md, 2))
+                                _mc_periods.append((_s_dt, _e_dt))
+                            _mc_prog.progress((_ci + 1) / 100, text=f"시뮬레이션 중... {_ci+1}/100")
+                        _mc_prog.empty()
+                        st.session_state["dss_mc_result"] = {
+                            "strat_ret": _mc_strat_ret, "strat_mdd": _mc_strat_mdd,
+                            "bnh_ret": _mc_bnh_ret, "bnh_mdd": _mc_bnh_mdd,
+                            "periods": _mc_periods}
+
+            _mc_res = st.session_state.get("dss_mc_result")
+            if _mc_res and _mc_res["strat_ret"]:
+                _sr_arr = np.array(_mc_res["strat_ret"])
+                _sm_arr = np.array(_mc_res["strat_mdd"])
+                _br_arr = np.array(_mc_res["bnh_ret"]) if _mc_res["bnh_ret"] else None
+                _bm_arr = np.array(_mc_res["bnh_mdd"]) if _mc_res["bnh_mdd"] else None
+                _n_mc = len(_sr_arr)
+
+                def _mc_stats(arr, label):
+                    return {"구분": label, "평균": f"{np.mean(arr):+.1f}%",
+                            "중앙값": f"{np.median(arr):+.1f}%", "표준편차": f"{np.std(arr):.1f}%",
+                            "최솟값": f"{np.min(arr):+.1f}%", "최댓값": f"{np.max(arr):+.1f}%",
+                            "양(+) 비율": f"{(arr > 0).sum() / len(arr) * 100:.0f}%"}
+
+                _mc_rows = [_mc_stats(_sr_arr, "DSS 전략 (1년 수익률)")]
+                if _br_arr is not None:
+                    _mc_rows.append(_mc_stats(_br_arr, "SOXL B&H (1년 수익률)"))
+                _mc_rows.append({"구분": "DSS 전략 (MDD)", "평균": f"{np.mean(_sm_arr):.1f}%",
+                                 "중앙값": f"{np.median(_sm_arr):.1f}%", "표준편차": f"{np.std(_sm_arr):.1f}%",
+                                 "최솟값": f"{np.min(_sm_arr):.1f}%", "최댓값": f"{np.max(_sm_arr):.1f}%",
+                                 "양(+) 비율": "-"})
+                if _bm_arr is not None:
+                    _mc_rows.append({"구분": "SOXL B&H (MDD)", "평균": f"{np.mean(_bm_arr):.1f}%",
+                                     "중앙값": f"{np.median(_bm_arr):.1f}%", "표준편차": f"{np.std(_bm_arr):.1f}%",
+                                     "최솟값": f"{np.min(_bm_arr):.1f}%", "최댓값": f"{np.max(_bm_arr):.1f}%",
+                                     "양(+) 비율": "-"})
+                st.markdown(f"**📋 요약 통계 (n={_n_mc})**")
+                st.dataframe(pd.DataFrame(_mc_rows), hide_index=True, use_container_width=True)
+
+                # 100구간 상세 결과
+                with st.expander("📄 100구간 상세 결과 보기"):
+                    _det_rows = []
+                    for _di, (_psd, _ped) in enumerate(_mc_res["periods"]):
+                        _row = {"#": _di + 1, "시작일": _psd, "종료일": _ped,
+                                "전략 수익률(%)": f"{_mc_res['strat_ret'][_di]:+.1f}%",
+                                "전략 MDD(%)": f"{_mc_res['strat_mdd'][_di]:.1f}%"}
+                        if _br_arr is not None and _di < len(_mc_res["bnh_ret"]):
+                            _row["B&H 수익률(%)"] = f"{_mc_res['bnh_ret'][_di]:+.1f}%"
+                            _row["B&H MDD(%)"] = f"{_mc_res['bnh_mdd'][_di]:.1f}%"
+                        _det_rows.append(_row)
+                    _det_df = pd.DataFrame(_det_rows)
+                    def _hl_det(row):
+                        try:
+                            ret = float(row["전략 수익률(%)"].replace("%", "").replace("+", ""))
+                            clr = "background-color: #e8f5e9" if ret > 0 else "background-color: #ffebee"
+                            return [clr] * len(row)
+                        except Exception:
+                            return [""] * len(row)
+                    st.dataframe(_det_df.style.apply(_hl_det, axis=1),
+                                 hide_index=True, use_container_width=True,
+                                 height=min(38 + 35 * len(_det_df), 500))
+
+                # 차트: 수익률 분포 + MDD 분포
+                _fig_mc = make_subplots(rows=1, cols=2,
+                    subplot_titles=["수익률 분포 (1년)", "최대 낙폭(MDD) 분포"],
+                    horizontal_spacing=0.12)
+                def _add_mc_hist(fig, arr, color, name, row, col, lg, sl):
+                    fig.add_trace(go.Histogram(x=arr.tolist(), nbinsx=20, name=name,
+                                               opacity=0.55, marker_color=color,
+                                               legendgroup=lg, showlegend=sl), row=row, col=col)
+                if _br_arr is not None:
+                    _add_mc_hist(_fig_mc, _br_arr, "#FB8C00", "SOXL B&H", 1, 1, "bnh", True)
+                if _bm_arr is not None:
+                    _add_mc_hist(_fig_mc, _bm_arr, "#FB8C00", "SOXL B&H", 1, 2, "bnh", False)
+                _add_mc_hist(_fig_mc, _sr_arr, "#1565C0", "DSS 전략", 1, 1, "strat", True)
+                _add_mc_hist(_fig_mc, _sm_arr, "#1565C0", "DSS 전략", 1, 2, "strat", False)
+                _fig_mc.add_vline(x=0, line_dash="dash", line_color="#555", row=1, col=1)
+                _fig_mc.update_xaxes(title_text="1년 수익률 (%)", row=1, col=1)
+                _fig_mc.update_xaxes(title_text="MDD (%)", row=1, col=2)
+                _fig_mc.update_yaxes(title_text="빈도 (구간수)", row=1, col=1)
+                _fig_mc.update_yaxes(title_text="빈도 (구간수)", row=1, col=2)
+                _fig_mc.update_layout(height=420, barmode="overlay",
+                    legend=dict(orientation="v", x=1.02, y=1.0, xanchor="left",
+                                bgcolor="rgba(255,255,255,0.85)", bordercolor="#ccc", borderwidth=1),
+                    margin=dict(r=140))
+                st.plotly_chart(_fig_mc, use_container_width=True)
+                st.caption("전략이 B&H 대비 수익률 분포가 오른쪽에 집중(높은 수익)되고, "
+                           "MDD 분포가 왼쪽에 집중(낮은 손실)될수록 강건한 전략입니다.")
+
+                # 박스플롯
+                st.markdown("**📦 박스플롯 — 분포 요약 (중앙값 · 사분위 · 이상치)**")
+                _fig_box2 = make_subplots(rows=1, cols=2,
+                    subplot_titles=["수익률 박스플롯", "최대 낙폭(MDD) 박스플롯"],
+                    horizontal_spacing=0.12)
+                if _br_arr is not None:
+                    _fig_box2.add_trace(go.Box(y=_br_arr.tolist(), name="SOXL B&H",
+                        marker_color="#FB8C00", boxmean=True, legendgroup="bnh_box", showlegend=True), row=1, col=1)
+                _fig_box2.add_trace(go.Box(y=_sr_arr.tolist(), name="DSS 전략",
+                    marker_color="#1565C0", boxmean=True, legendgroup="strat_box", showlegend=True), row=1, col=1)
+                if _bm_arr is not None:
+                    _fig_box2.add_trace(go.Box(y=_bm_arr.tolist(), name="SOXL B&H",
+                        marker_color="#FB8C00", boxmean=True, legendgroup="bnh_box", showlegend=False), row=1, col=2)
+                _fig_box2.add_trace(go.Box(y=_sm_arr.tolist(), name="DSS 전략",
+                    marker_color="#1565C0", boxmean=True, legendgroup="strat_box", showlegend=False), row=1, col=2)
+                _fig_box2.add_hline(y=0, line_dash="dash", line_color="#888", row=1, col=1)
+                _fig_box2.update_yaxes(title_text="수익률 (%)", row=1, col=1)
+                _fig_box2.update_yaxes(title_text="MDD (%)", row=1, col=2)
+                _fig_box2.update_layout(height=420,
+                    legend=dict(orientation="v", x=1.02, y=1.0, xanchor="left",
+                                bgcolor="rgba(255,255,255,0.85)", bordercolor="#ccc", borderwidth=1),
+                    margin=dict(r=140))
+                st.plotly_chart(_fig_box2, use_container_width=True)
+                st.caption("박스: 25~75 백분위 구간 / 선: 중앙값 / 삼각형(▲): 평균 / 점: 이상치")
+        st.divider()
+
+        # ── 전략 인사이트 ──
+        st.subheader("💡 전략 인사이트 & 맥락 참고")
+        st.warning("**다음 내용은 SOXL DSS 동파법 백테스트 결과 해석입니다. 과거 성과가 미래 수익을 보장하지 않습니다.**")
+        with st.container(border=True):
+            st.markdown("""
+**왜 DSS 동파법이 SOXL에서 잘 작동하나?**
+- **모드 전환 시스템**: QQQ 주간 RSI 기반으로 시장 상황을 자동 판단하여 안전/공세 모드 전환
+- **공세모드(AG)**: RSI 저점 반등 시 활성화 — 큰 변동성에서 높은 매수조건으로 저가 매수 기회 포착
+- **안전모드(SF)**: RSI 고점 하락 시 활성화 — 작은 매수조건 + 긴 보유로 안정적 수익 추구
+- **투자금 갱신(복리)**: 이익의 80%, 손실의 30%만 반영하여 점진적 복리 + 급락 시 방어
+
+**주요 지표 해석**
+- **Calmar 1.0 이상**: 우수 / **2.0 이상**: 최상급
+- **MDD**: 레버리지 3x ETF(SOXL)는 MDD가 크게 나올 수 있으므로 감내 가능한 수준인지 확인
+- **승률**: 높은 승률도 손익비(평균 수익 vs 평균 손실)와 함께 고려 필요
+
+**주의사항**
+- 전체 시드가 투입된 상태에서 추가 하락 시 **매수 불가** (빈 시드 없음)
+- 급락장(코로나, 금리 충격)에서는 **MDD가 일시적으로 크게 확대**될 수 있음
+- 모드 전환은 **2주 지연** 적용 → 급변 시 늦은 대응 가능
+- 실제 거래에서는 **슬리피지, 수수료, 세금** 등이 수익률에 영향
+- 전략 파라미터를 너무 자주 바꾸면 과최적화(overfitting) 위험
+            """)
+        st.divider()
+
+        # ── 종합 성과 요약 테이블 ──
+        st.subheader("📋 종합 성과 요약")
+        _total_sells = len(_sell_recs) if _sell_recs else 0
+        _total_wins = len([s for s in _sell_recs if s['pnl'] >= 0]) if _sell_recs else 0
+        _avg_pnl_pct = np.mean([(s['pnl'] / (s['buy_price'] * s['qty'])) * 100 for s in _sell_recs]) if _sell_recs else 0
+        _max_pnl = max([s['pnl'] for s in _sell_recs]) if _sell_recs else 0
+        _min_pnl = min([s['pnl'] for s in _sell_recs]) if _sell_recs else 0
+        st.dataframe(pd.DataFrame({
+            "항목": ["시작 자본", "최종 자산", "총 수익률", "CAGR (연복리)",
+                     "MDD", "Calmar Ratio", "Sharpe Ratio", "Sortino Ratio",
+                     "총 매도 횟수", "승률", "평균 손익률",
+                     "최대 단일 수익", "최대 단일 손실"],
+            "수치": [
+                f"${_initial_capital:,.0f}", f"${_final:,.0f}",
+                f"{_total_ret*100:+.2f}%", f"{_cagr*100:.2f}%",
+                f"{_mdd*100:.2f}%", f"{_calmar:.3f}",
+                f"{_sharpe:.3f}", f"{_sortino:.3f}",
+                f"{_total_sells}회",
+                f"{_total_wins/_total_sells*100:.1f}% ({_total_wins}승 {_total_sells-_total_wins}패)" if _total_sells > 0 else "-",
+                f"{_avg_pnl_pct:+.2f}%",
+                f"${_max_pnl:+,.2f}", f"${_min_pnl:+,.2f}",
+            ],
+        }), hide_index=True, use_container_width=True)
+
+    elif st.session_state.get("dss_intro_bt") is None:
+        st.info("👆 '성과 분석 실행' 버튼을 클릭하면 현재 파라미터 기준의 성과 분석 결과를 확인할 수 있습니다.")
 
 
 # ══════════════════════════════════════════════
-# 탭 5 (or 6): 설정
+# 탭 7: 설정
 # ══════════════════════════════════════════════
 
 def render_settings_tab():
-    """개인 설정 탭."""
-    st.subheader("⚙️ DSS 동파법 개인 설정")
+    """설정 탭 — 텔레그램, 구글시트, 파라미터 관리."""
+    st.subheader("⚙️ 개인 설정")
 
-    _cfg = _load_dss_config()
-    st.success(f"🖥️ 설정 파일: `{_DSS_CONFIG_PATH}`")
+    _cfg_s = _load_dss_config()
+    st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_DSS_CONFIG_PATH}` 에 저장됩니다.")
 
-    # ── 텔레그램 ──
+    # ── 텔레그램 알림 설정 ─────────────────────────────────
     with st.container(border=True):
-        st.markdown("#### 💬 텔레그램 알림 설정")
-        st.caption("DSS 동파법 주문표를 텔레그램으로 받을 수 있습니다.")
+        col_title_tg, col_help_tg = st.columns([3, 1])
+        with col_title_tg:
+            st.markdown("#### 💬 텔레그램 알림 설정")
+            st.caption("DSS 동파법 주문표를 텔레그램으로 받을 수 있습니다.")
+        with col_help_tg:
+            with st.popover("❓ Chat ID & Bot Token 확인 방법", use_container_width=True):
+                st.markdown("""
+<style>
+.tg-help-section { margin-bottom: 20px; }
+.tg-help-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px;
+}
+.tg-help-badge {
+    background: #4A90D9; color: white;
+    border-radius: 50%; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.tg-help-box {
+    background: #EEF4FB; border-radius: 10px;
+    padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.tg-help-box ol { margin: 0; padding-left: 20px; }
+.tg-tag {
+    background: #D0E8FF; color: #1a5fa8;
+    border-radius: 5px; padding: 1px 7px;
+    font-family: monospace; font-size: 13px;
+}
+.tg-code-box {
+    background: #1e2533; color: #7dd3fc;
+    border-radius: 8px; padding: 10px 14px; margin-top: 8px;
+    font-family: monospace; font-size: 12px; word-break: break-all;
+    line-height: 1.7;
+}
+.tg-example-box {
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 12px 16px; margin-top: 10px; font-size: 13px; color: #555;
+}
+.tg-example-val { color: #4A90D9; font-family: monospace; font-size: 13px; }
+.tg-warn-box {
+    background: #FFFBEB; border: 1px solid #F59E0B;
+    border-radius: 10px; padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.tg-warn-title { font-weight: 700; color: #92400E; margin-bottom: 4px; }
+.tg-sub-title { font-weight: 700; color: #1a5fa8; margin: 10px 0 4px 0; }
+.tg-tip-box {
+    background: #F0FDF4; border: 1px solid #86EFAC;
+    border-radius: 8px; padding: 10px 14px; margin-top: 8px;
+    font-size: 13px; color: #166534;
+}
+</style>
 
-        c1, c2 = st.columns(2)
-        tg_cid = c1.text_input("Chat ID", value=_cfg.get("tg_chat_id", ""),
-                               placeholder="예: 1234567890", key="dss_s_tg_cid")
-        tg_tok = c2.text_input("Bot Token", value=_cfg.get("tg_token", ""),
-                               placeholder="예: 123456789:AAF...", type="password", key="dss_s_tg_tok")
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">1</span> Bot Token 생성하기</div>
+  <div class="tg-help-box">
+    <ol>
+      <li>텔레그램 앱에서 <span class="tg-tag">@BotFather</span> 를 검색합니다.</li>
+      <li><span class="tg-tag">/start</span> → <span class="tg-tag">/newbot</span> 입력</li>
+      <li><strong>봇 표시 이름</strong> 입력 (예: <span class="tg-tag">DSS 동파법 알림봇</span>)</li>
+      <li><strong>봇 username</strong> 입력 — 영문+숫자, <span class="tg-tag">bot</span> 으로 끝나야 함 (예: <span class="tg-tag">dss_soxl_bot</span>)</li>
+      <li>성공 시 <strong>HTTP API Token</strong> 발급 → 이것이 <strong>Bot Token</strong></li>
+    </ol>
+    <div class="tg-example-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">Bot Token 예시:</div>
+      <div class="tg-example-val">1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ</div>
+    </div>
+  </div>
+</div>
 
-        b1, b2, _ = st.columns([1, 1, 4])
-        with b1:
-            if st.button("📨 테스트 발송", use_container_width=True, key="dss_s_tg_test"):
-                if not tg_cid or not tg_tok:
-                    st.warning("Chat ID와 Bot Token을 입력해주세요.")
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">2</span> 내 봇 시작하기 (필수!)</div>
+  <div class="tg-warn-box">
+    <div class="tg-warn-title">⚠ 봇을 먼저 시작해야 Chat ID를 확인하고 메시지를 받을 수 있습니다!</div>
+    <ol>
+      <li>텔레그램에서 내 봇 username 검색 (예: <span class="tg-tag">@dss_soxl_bot</span>)</li>
+      <li><span class="tg-tag">/start</span> 클릭 → 아무 메시지 보내기</li>
+    </ol>
+  </div>
+</div>
+
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">3</span> Chat ID 확인하기</div>
+  <div class="tg-help-box">
+    <div class="tg-sub-title">✅ 방법 1: getUpdates API</div>
+    <ol>
+      <li>봇에게 메시지 보낸 후 브라우저에 입력:</li>
+    </ol>
+    <div class="tg-code-box">https://api.telegram.org/bot<span style="color:#fde047;">{토큰값}</span>/getUpdates</div>
+    <ol start="2">
+      <li>JSON 응답에서 <span class="tg-tag">"id"</span> 값 = <strong>Chat ID</strong></li>
+    </ol>
+    <div class="tg-sub-title">방법 2: @userinfobot 사용</div>
+    <ol><li><span class="tg-tag">@userinfobot</span> 검색 → <span class="tg-tag">/start</span> → Chat ID 확인</li></ol>
+  </div>
+</div>
+
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">4</span> 연결 테스트</div>
+  <div class="tg-tip-box">
+    💡 Bot Token과 Chat ID를 입력한 후 <strong>📨 주문표 테스트 발송</strong> 버튼을 눌러보세요.<br>
+    메시지가 정상적으로 수신되면 설정 완료입니다! ✅
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        c1_tg, c2_tg = st.columns(2)
+        tg_chat_id = c1_tg.text_input(
+            "텔레그램 Chat ID",
+            value=_cfg_s.get("tg_chat_id", ""),
+            placeholder="예: 1234567890",
+            key="dss_tg_chat_id",
+        )
+        tg_token = c2_tg.text_input(
+            "Bot Token",
+            value=_cfg_s.get("tg_token", ""),
+            placeholder="예: 123456789:AAF...",
+            type="password",
+            key="dss_tg_token",
+        )
+
+        btn_tg1, btn_tg2, spacer_tg = st.columns([1, 1, 4])
+        with btn_tg1:
+            if st.button("📨 주문표 테스트 발송", use_container_width=True, key="dss_tg_test"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
                 else:
                     _tg_os = st.session_state.get("dss_os_result")
                     if _tg_os is None:
-                        st.warning("주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
+                        st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
                     else:
-                        _o = _tg_os
-                        mode_icon = "🟢" if _o["last_mode"] == "AG" else "🔵"
-                        lines = [
-                            f"<b>📋 DSS 동파법 — SOXL 주문표</b>",
-                            f"📅 {next_trading_date().strftime('%Y-%m-%d')}  {mode_icon} {'공세' if _o['last_mode']=='AG' else '안전'}모드",
-                            f"", f"전일종가: <b>${_o['prev_close']:,.2f}</b>",
-                            f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
-                            f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드", f"",
-                        ]
-                        for i, pos in enumerate(_o['open_positions']):
-                            if pos['sell_target']:
-                                lines.append(f"📈 매도 티어{i+1}: LOC ${pos['sell_target']:,.2f} × {pos['qty']}주")
-                        if _o['n_pos'] < _o['cur_divisions']:
-                            lines.append(f"📉 매수 티어{_o['n_pos']+1}: LOC ${_o['next_buy_order']:,.2f} × {_o['buy_qty_est']}주")
-                        result = _send_telegram(tg_tok, tg_cid, "\n".join(lines))
+                        with st.spinner("발송 중..."):
+                            msg = _build_dss_order_text(_tg_os)
+                            result = _send_telegram(tg_token, tg_chat_id, msg)
                         if result.get("ok"):
-                            st.success("✅ 발송 성공!")
+                            st.success("✅ 발송 성공! 텔레그램을 확인하세요.")
                         else:
-                            st.error(f"❌ 실패: {result.get('description')}")
-        with b2:
-            if st.button("💾 저장", use_container_width=True, key="dss_s_tg_save", type="primary"):
-                _cfg["tg_chat_id"] = tg_cid
-                _cfg["tg_token"] = tg_tok
-                _save_dss_config(_cfg)
-                st.success("✅ 저장 완료!")
+                            st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
+
+        with btn_tg2:
+            if st.button("💾 저장하기", use_container_width=True, key="dss_tg_save", type="primary"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
+                else:
+                    _cfg_s["tg_chat_id"] = tg_chat_id
+                    _cfg_s["tg_token"] = tg_token
+                    _save_dss_config(_cfg_s)
+                    st.success(f"✅ 저장 완료! `{_DSS_CONFIG_PATH}`")
 
     st.write("")
 
-    # ── 파라미터 관리 ──
+    # ── 구글 스프레드시트 연동 ──────────────────────────────
     with st.container(border=True):
-        st.markdown("#### 📋 저장된 파라미터")
-        _saved = _cfg.get("params", {})
-        if _saved:
-            st.json(_saved)
-        else:
-            st.info("주문표 탭에서 파라미터를 저장하면 여기에 표시됩니다.")
+        col_title_gs, col_help_gs = st.columns([3, 1])
+        with col_title_gs:
+            st.markdown("#### 🗂️ 구글 스프레드시트 연동")
+            st.caption("DSS 동파법 주문표를 구글 스프레드시트로 전송합니다.")
+        with col_help_gs:
+            with st.popover("❓ 구글 스프레드시트 설정 방법", use_container_width=True):
+                st.markdown("""
+<style>
+.gs-help-section { margin-bottom: 20px; }
+.gs-help-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px;
+}
+.gs-help-badge {
+    background: #2EAA5E; color: white;
+    border-radius: 50%; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.gs-help-box {
+    background: #EDF7F0; border-radius: 10px;
+    padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.gs-help-box ol { margin: 0; padding-left: 20px; }
+.gs-tag {
+    background: #D4EFE0; color: #1a6e3c;
+    border-radius: 5px; padding: 1px 7px;
+    font-family: monospace; font-size: 13px;
+}
+.gs-example-box {
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 12px 16px; margin-top: 10px; font-size: 13px; color: #555;
+}
+.gs-example-val { color: #2EAA5E; font-family: monospace; font-size: 13px; }
+.gs-warn-box {
+    background: #FFFBEB; border: 1px solid #F59E0B;
+    border-radius: 10px; padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.gs-warn-title { font-weight: 700; color: #92400E; margin-bottom: 6px; }
+.gs-email-box {
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 10px 14px; margin: 8px 0 12px 0; font-size: 13px; color: #555;
+}
+.gs-email-val { color: #2EAA5E; font-family: monospace; font-size: 13px; font-weight: 700; }
+</style>
+
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">1</span> 새 스프레드시트 만들기</div>
+  <div class="gs-help-box">
+    <ol>
+      <li><a href="https://sheets.google.com" target="_blank">Google Sheets</a>에서 새 시트 생성</li>
+      <li>시트 이름 지정 (예: DSS 동파법 포트폴리오)</li>
+    </ol>
+  </div>
+</div>
+
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">2</span> URL 복사</div>
+  <div class="gs-help-box">
+    <div>브라우저 주소창의 URL을 복사합니다.</div>
+    <div class="gs-example-box">
+      <div class="gs-example-val">https://docs.google.com/spreadsheets/d/1ABC...XYZ/edit</div>
+    </div>
+  </div>
+</div>
+
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">3</span> 서비스 계정 권한 부여 (중요!)</div>
+  <div class="gs-warn-box">
+    <div class="gs-warn-title">⚠ 아래 이메일에 편집 권한을 부여해야 합니다.</div>
+    <div class="gs-email-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">서비스 계정 이메일:</div>
+      <div class="gs-email-val">connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com</div>
+    </div>
+    <ol>
+      <li>스프레드시트 우측 상단 <span class="gs-tag">공유</span> 클릭</li>
+      <li>위 이메일을 <span class="gs-tag">편집자</span> 로 추가</li>
+    </ol>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+        gs_url = st.text_input(
+            "스프레드시트 URL",
+            value=_cfg_s.get("gs_url", ""),
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            key="dss_gs_url",
+        )
+        gs_sheet_name = st.text_input(
+            "SOXL 시트(탭) 이름",
+            value=_cfg_s.get("gs_sheet", "SOXL"),
+            placeholder="예: SOXL",
+            key="dss_gs_sheet",
+        )
+        st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
+
+        btn_gs1, btn_gs2, btn_gs3 = st.columns(3)
+        with btn_gs1:
+            if st.button("🔗 시트 연결 테스트", use_container_width=True, key="dss_gs_test"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 먼저 입력해주세요.")
+                else:
+                    try:
+                        gc = _get_gspread_client()
+                        sh = gc.open_by_url(gs_url)
+                        st.success(f"✅ 연결 성공! 스프레드시트: **{sh.title}**")
+                    except FileNotFoundError as e:
+                        st.error(f"❌ {e}")
+                    except Exception as e:
+                        st.error(f"❌ 연결 실패: {e}")
+
+        with btn_gs2:
+            if st.button("📊 주문 시트 전송", use_container_width=True, key="dss_gs_send", type="primary"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 먼저 입력해주세요.")
+                else:
+                    _gs_os = st.session_state.get("dss_os_result")
+                    if _gs_os is None:
+                        st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
+                    else:
+                        with st.spinner(f"SOXL → '{gs_sheet_name}' 전송 중..."):
+                            try:
+                                n = _write_dss_orders_to_sheet(gs_url, gs_sheet_name, _gs_os)
+                                st.success(f"✅ SOXL → '{gs_sheet_name}' 탭 L4에 {n}건 전송 완료!")
+                            except FileNotFoundError as e:
+                                st.error(f"❌ {e}")
+                            except Exception as e:
+                                st.error(f"❌ 전송 실패: {e}")
+
+        with btn_gs3:
+            if st.button("💾 저장하기 ", use_container_width=True, key="dss_gs_save", type="primary"):
+                if not gs_url:
+                    st.warning("스프레드시트 URL을 입력해주세요.")
+                else:
+                    _cfg_s["gs_url"] = gs_url
+                    _cfg_s["gs_sheet"] = gs_sheet_name
+                    _save_dss_config(_cfg_s)
+                    st.success(f"✅ URL 및 시트 이름 저장 완료!")
+
+    st.write("")
+
+    # ── 파라미터 프리셋 내보내기/가져오기 ──────────────────────
+    with st.container(border=True):
+        st.markdown("#### 📋 파라미터 설정 관리")
+        st.caption("현재 사이드바 파라미터를 JSON으로 내보내거나, 저장된 설정을 확인합니다.")
+
+        _cur_params_dict = {
+            "sf_div": st.session_state.get("dss_sf_div", 7),
+            "sf_hold": st.session_state.get("dss_sf_hold", 30),
+            "sf_buy": st.session_state.get("dss_sf_buy", 3.0),
+            "sf_sell": st.session_state.get("dss_sf_sell", 0.2),
+            "ag_div": st.session_state.get("dss_ag_div", 7),
+            "ag_hold": st.session_state.get("dss_ag_hold", 7),
+            "ag_buy": st.session_state.get("dss_ag_buy", 5.0),
+            "ag_sell": st.session_state.get("dss_ag_sell", 2.5),
+            "pcr": st.session_state.get("dss_pcr", 80),
+            "lcr": st.session_state.get("dss_lcr", 30),
+            "renewal_period": st.session_state.get("dss_renew", 10),
+            "fee_rate": st.session_state.get("dss_fee", 0.04),
+            "initial_capital": st.session_state.get("dss_capital", 100000),
+        }
+
+        _prm1, _prm2 = st.columns(2)
+        with _prm1:
+            st.markdown("**현재 사이드바 파라미터**")
+            st.json(_cur_params_dict)
+        with _prm2:
+            st.markdown("**저장된 설정 (config.json)**")
+            _saved = _cfg_s.get("params", {})
+            if _saved:
+                st.json(_saved)
+            else:
+                st.info("주문표 탭에서 파라미터를 저장하면 여기에 표시됩니다.")
+
+        if st.button("📥 현재 파라미터를 설정 파일에 저장", key="dss_save_params_to_config"):
+            _cfg_s["params"] = _cur_params_dict
+            _save_dss_config(_cfg_s)
+            st.success("✅ 현재 사이드바 파라미터가 config.json에 저장되었습니다.")
