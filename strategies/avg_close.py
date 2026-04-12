@@ -997,7 +997,7 @@ def render_backtest_tab(ticker, params, data_source, excel_file, start_date, end
 # TAB 2 – 파라미터 최적화
 # ══════════════════════════════════════════════
 
-_NUM_WORKERS = max(1, os.cpu_count() - 1)
+_NUM_WORKERS = max(1, (os.cpu_count() or 1) - 1)
 
 def _run_parallel_opt_avg(combos, price_df, progress_bar):
     import pickle, tempfile

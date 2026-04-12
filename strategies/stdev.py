@@ -900,7 +900,7 @@ def _sd_make_row(kb, ks, sr, dv, r):
     }
 
 
-_NUM_WORKERS = max(1, os.cpu_count() - 1)
+_NUM_WORKERS = max(1, (os.cpu_count() or 1) - 1)
 
 def _run_parallel_opt_stdev(combos, price_df, progress_bar):
     import pickle, tempfile
