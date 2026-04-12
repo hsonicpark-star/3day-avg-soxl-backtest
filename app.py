@@ -28,29 +28,16 @@ except Exception as _import_err:
     st.code(traceback.format_exc())
     st.stop()
 
-# DSS는 Python 3.14 호환성 해결 후 활성화 예정
-_dss_available = False
-# try:
-#     from strategies import dss
-#     _dss_available = True
-# except Exception as _dss_err:
-#     pass
-
 # ── 전략 목록 ────────────────────────────────────────────────
 _STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매"]
-if _dss_available:
-    _STRATEGIES.append("🌊 DSS 동파법")
 
 # ── 전략 판별 ────────────────────────────────────────────────
 _strategy_title = st.session_state.get("strategy_radio", "📐 표준편차매매")
 _is_stdev = (_strategy_title == "📐 표준편차매매")
 _is_sigma = (_strategy_title == "📐 Sigma매매")
-_is_dss = (_strategy_title == "🌊 DSS 동파법")
 
 # ── 타이틀 ───────────────────────────────────────────────────
-if _is_dss:
-    st.title("🌊 DSS 동파법 백테스터")
-elif _is_stdev:
+if _is_stdev:
     st.title("📐 표준편차매매")
 elif _is_sigma:
     st.title("📐 Sigma매매법 백테스터")
@@ -68,8 +55,8 @@ with st.sidebar:
     st.selectbox("전략 선택", _STRATEGIES, key="strategy_radio")
     st.markdown("---")
 
-    # ── 공통 종목 선택 (Sigma·DSS 제외 — 자체 사이드바 사용) ──
-    if not _is_sigma and not _is_dss:
+    # ── 공통 종목 선택 (Sigma 제외 — Sigma는 자체 사이드바 사용) ──
+    if not _is_sigma:
         st.subheader("📌 종목")
         _PRESET_TICKERS = ["SOXL", "USD", "TQQQ", "직접입력"]
         _ticker_select = st.selectbox("종목코드 (Ticker)", _PRESET_TICKERS, index=0)
@@ -135,16 +122,6 @@ with st.sidebar:
             excel_file = st.file_uploader("엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
             st.caption("엑셀 내 **Daily_Close** 시트의 날짜/종가 두 컬럼이 사용됩니다.")
 
-    elif _is_dss and _dss_available:
-        # DSS: 자체 사이드바 (SOXL 전용, QQQ RSI 모드 전환 포함)
-        params = dss.render_sidebar()
-        ticker = params.get("bt_ticker", "SOXL")
-        start_date = params.get("bt_start_date")
-        end_date = params.get("bt_end_date")
-        initial_capital = params.get("bt_initial_capital", 100000.0)
-        data_source = "야후 파이낸스 (yfinance)"
-        excel_file = None
-
     else:
         # Sigma: 자체 사이드바 (종목, 날짜, 파라미터 포함)
         params = sigma.render_sidebar()
@@ -173,16 +150,7 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════
 # 탭 구성 & 라우팅
 # ══════════════════════════════════════════════════════════════
-if _is_dss and _dss_available:
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표",
-        "📖 전략 소개 & 성과", "📂 DB 조회", "⚙️ 개인 설정",
-    ])
-elif _is_dss and not _dss_available:
-    st.error(f"⚠️ DSS 모듈 로드 실패: {_dss_error_msg}")
-    st.code(_dss_error_tb)
-    st.stop()
-elif _is_sigma:
+if _is_sigma:
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 백테스트", "📈 매도 전략 가이드", "📋 주문표 & 계좌관리",
         "📖 전략 소개", "⚙️ 개인설정",
@@ -200,9 +168,7 @@ else:
 
 
 with tab1:
-    if _is_dss and _dss_available:
-        dss.render_backtest_tab(params)
-    elif _is_sigma:
+    if _is_sigma:
         sigma.render_backtest_tab(params)
     elif _is_stdev:
         stdev.render_backtest_tab(ticker, params, data_source, excel_file,
@@ -212,9 +178,7 @@ with tab1:
                                       start_date, end_date, initial_capital)
 
 with tab2:
-    if _is_dss and _dss_available:
-        dss.render_optimization_tab(params)
-    elif _is_sigma:
+    if _is_sigma:
         sigma.render_optimization_tab(params)
     elif _is_stdev:
         stdev.render_optimization_tab(ticker, params, start_date, end_date,
@@ -224,9 +188,7 @@ with tab2:
                                           initial_capital, data_source, excel_file)
 
 with tab3:
-    if _is_dss and _dss_available:
-        dss.render_ordersheet_tab(params)
-    elif _is_sigma:
+    if _is_sigma:
         sigma.render_ordersheet_tab(params)
     elif _is_stdev:
         stdev.render_ordersheet_tab(ticker, params, initial_capital,
@@ -236,9 +198,7 @@ with tab3:
                                         data_source, excel_file)
 
 with tab4:
-    if _is_dss and _dss_available:
-        dss.render_intro_tab(params)
-    elif _is_sigma:
+    if _is_sigma:
         sigma.render_intro_tab()
     elif _is_stdev:
         stdev.render_intro_tab(ticker, params, data_source, excel_file,
@@ -248,16 +208,9 @@ with tab4:
                                    start_date, end_date, initial_capital)
 
 with tab5:
-    if _is_dss and _dss_available:
-        dss.render_db_tab(params)
-    elif _is_sigma:
+    if _is_sigma:
         sigma.render_settings_tab()
     elif _is_stdev:
         stdev.render_settings_tab()
     else:
         avg_close.render_settings_tab()
-
-# DSS 6번째 탭 (설정)
-if _is_dss and _dss_available:
-    with tab6:
-        dss.render_settings_tab()
