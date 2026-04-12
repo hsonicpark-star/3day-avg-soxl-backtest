@@ -20,7 +20,13 @@ if _IS_CLOUD:
     render_login_gate()
 
 # ── 전략 모듈 import ─────────────────────────────────────────
-from strategies import avg_close, stdev, sigma
+try:
+    from strategies import avg_close, stdev, sigma
+except Exception as _import_err:
+    st.error(f"⚠️ 전략 모듈 로드 실패: {_import_err}")
+    import traceback
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ── 전략 목록 ────────────────────────────────────────────────
 _STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매"]
