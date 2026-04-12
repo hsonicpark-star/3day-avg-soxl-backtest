@@ -11,6 +11,8 @@ import pandas as pd
 import numpy as np
 import math
 import json
+import os
+import multiprocessing as mp
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -249,6 +251,164 @@ def run_backtest_stdev(
     if return_history:
         out["history"] = pd.DataFrame(history)
     return out
+
+
+def run_backtest_stdev_fast(
+    price_df, start_date, end_date,
+    sigma_period=2, k_buy=0.55, k_sell=0.55,
+    sell_ratio=75.0, divisions=5, renewal=5,
+    pcr=1.0, lcr=1.0,
+    initial_capital=20000.0,
+):
+    """
+    run_backtest_stdev 경량 버전 -- 최적화 전용.
+    history/DataFrame 생성 없이 핵심 지표만 반환.
+    """
+    # sigma 워밍업
+    _df_sigma = price_df.loc[:pd.to_datetime(end_date)]
+    df_idx    = _df_sigma.loc[pd.to_datetime(start_date):].index
+    if len(df_idx) == 0 or len(_df_sigma) < sigma_period + 2:
+        return None
+
+    # numpy 배열 사전 추출
+    _c_all = _df_sigma["Close"].values.astype(np.float64)
+    _n_all = len(_c_all)
+
+    # 수익률 + sigma 사전 계산
+    _r_all = np.empty(_n_all, dtype=np.float64)
+    _r_all[0] = np.nan
+    _r_all[1:] = np.where(_c_all[:-1] > 0, (_c_all[1:] - _c_all[:-1]) / _c_all[:-1], np.nan)
+
+    _s_all = np.full(_n_all, np.nan, dtype=np.float64)
+    for i in range(sigma_period, _n_all):
+        w = _r_all[i - sigma_period:i]
+        if not np.any(np.isnan(w)):
+            _s_all[i] = np.std(w, ddof=0)
+
+    # 시뮬레이션 구간 오프셋
+    _sim_offset = _df_sigma.index.searchsorted(df_idx[0])
+    n = len(df_idx)
+    closes = _c_all[_sim_offset:_sim_offset + n]
+    sigmas = _s_all[_sim_offset:_sim_offset + n]
+
+    if _sim_offset > 0:
+        prev_closes = _c_all[_sim_offset - 1:_sim_offset - 1 + n]
+    else:
+        prev_closes = np.empty(n, dtype=np.float64)
+        prev_closes[0] = np.nan
+        prev_closes[1:] = closes[:-1]
+
+    # 시뮬레이션 상태 (스칼라)
+    cash         = float(initial_capital)
+    holdings     = 0
+    avg_cost     = 0.0
+    cum_realized = 0.0
+    total_invest = float(initial_capital)
+    tier         = 0
+    buy_count    = 0
+    sell_count   = 0
+
+    # MDD 실시간 추적
+    peak_asset   = 0.0
+    mdd          = 0.0
+
+    # cum_realized 히스토리 (갱신 로직에 필요)
+    cum_r_buf    = np.empty(n + 1, dtype=np.float64)
+    cum_r_idx    = 0
+
+    sell_ratio_f = sell_ratio / 100.0
+
+    for i in range(n):
+        close = closes[i]
+        sigma = sigmas[i]
+
+        if np.isnan(sigma):
+            total_asset = cash + holdings * close
+            cum_r_buf[cum_r_idx] = cum_realized
+            cum_r_idx += 1
+            if total_asset > peak_asset:
+                peak_asset = total_asset
+            if peak_asset > 0.0:
+                dd = (total_asset - peak_asset) / peak_asset
+                if dd < mdd:
+                    mdd = dd
+            continue
+
+        prev_close = prev_closes[i]
+        buy_loc    = prev_close * (1.0 + sigma * k_buy)
+        sell_loc   = prev_close * (1.0 + sigma * k_sell)
+
+        tier = (tier % divisions) + 1
+
+        if tier == 1 and cum_r_idx > 0:
+            lookback = (renewal + 1) if cum_r_idx > 2 * divisions else renewal
+            prev_cum = cum_r_buf[cum_r_idx - lookback] if cum_r_idx >= lookback else 0.0
+            delta    = cum_realized - prev_cum
+            total_invest += delta * (pcr if delta >= 0 else lcr)
+
+        daily_invest = total_invest / divisions
+        prev_avg     = avg_cost
+        prev_hold    = holdings
+
+        # 매도
+        sell_qty = 0
+        if holdings > 0 and close >= sell_loc:
+            sell_qty = int(round(float(holdings) * sell_ratio_f))
+
+        # 매수
+        buy_qty = 0
+        if close <= buy_loc:
+            available = min(daily_invest, cash)
+            buy_qty   = math.floor(available / buy_loc)
+
+        # 체결
+        sell_amt = close * sell_qty
+        buy_amt  = close * buy_qty
+
+        if sell_qty > 0:
+            cum_realized += sell_amt - prev_avg * sell_qty
+            sell_count += 1
+
+        remaining = prev_hold - sell_qty
+        new_hold  = remaining + buy_qty
+        if new_hold > 0:
+            avg_cost = ((remaining * prev_avg + close * buy_qty) / new_hold
+                        if buy_qty > 0 else prev_avg)
+        else:
+            avg_cost = 0.0
+
+        if buy_qty > 0:
+            buy_count += 1
+
+        holdings    = new_hold
+        cash        = cash - buy_amt + sell_amt
+        total_asset = cash + holdings * close
+
+        cum_r_buf[cum_r_idx] = cum_realized
+        cum_r_idx += 1
+
+        # MDD 실시간 갱신
+        if total_asset > peak_asset:
+            peak_asset = total_asset
+        if peak_asset > 0.0:
+            dd = (total_asset - peak_asset) / peak_asset
+            if dd < mdd:
+                mdd = dd
+
+    if cum_r_idx == 0:
+        return None
+
+    final_asset  = cash + holdings * closes[-1]
+    years        = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
+    total_return = (final_asset / initial_capital) - 1.0
+    cagr         = ((final_asset / initial_capital) ** (1.0 / years) - 1.0) if years > 0 else 0.0
+    calmar       = cagr / abs(mdd) if mdd != 0 else 0.0
+
+    return dict(
+        final_asset=final_asset, total_return=total_return,
+        cagr=cagr, mdd=mdd, calmar=calmar,
+        buy_count=buy_count, sell_count=sell_count,
+    )
 
 
 def run_stdev_tier_analysis(hist_df: "pd.DataFrame", div4: int) -> list:
@@ -740,6 +900,32 @@ def _sd_make_row(kb, ks, sr, dv, r):
     }
 
 
+_NUM_WORKERS = max(1, os.cpu_count() - 1)
+
+def _run_parallel_opt_stdev(combos, price_df, progress_bar):
+    import pickle, tempfile
+    tmp_path = os.path.join(tempfile.gettempdir(), f'stdev_opt_{os.getpid()}.pkl')
+    with open(tmp_path, 'wb') as f:
+        pickle.dump(price_df, f, protocol=pickle.HIGHEST_PROTOCOL)
+    total = len(combos)
+    rows = []
+    from opt_worker_stdev import init_worker, run_single_bt
+    try:
+        with mp.Pool(_NUM_WORKERS, initializer=init_worker, initargs=(tmp_path,)) as pool:
+            count = 0
+            for r in pool.imap_unordered(run_single_bt, combos, chunksize=max(1, total // _NUM_WORKERS)):
+                if r is not None:
+                    rows.append(r)
+                count += 1
+                if count % max(1, total // 50) == 0:
+                    progress_bar.progress(min(count / total, 1.0), text=f"실행 중... {count:,} / {total:,} ({_NUM_WORKERS}코어)")
+    finally:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+    progress_bar.progress(1.0, text="완료!")
+    return rows
+
+
 def render_optimization_tab(ticker, params, start_date, end_date, initial_capital, data_source, excel_file):
     """표준편차매매 파라미터 최적화 탭 렌더링."""
     sd_sigma_period = params["sd_sigma_period"]
@@ -831,23 +1017,11 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                 st.error("데이터 로드 실패.")
                 st.stop()
             progress = st.progress(0.0, text="그리드 탐색 실행 중...")
-            rows, cnt = [], 0
-            upd = max(1, sd_n_total // 100)
-            for kb in sd_kb_vals:
-                for ks in sd_ks_vals:
-                    for dv in sd_dv_vals:
-                        for sr in sd_sr_vals:
-                            r = run_backtest_stdev(
-                                price_df_opt, str(start_date), str(end_date),
-                                sigma_period=sd_sigma_period, k_buy=kb, k_sell=ks,
-                                sell_ratio=float(sr), divisions=int(dv), renewal=sd_renewal,
-                                initial_capital=initial_capital,
-                            )
-                            if r: rows.append(_sd_make_row(kb, ks, sr, dv, r))
-                            cnt += 1
-                            if cnt % upd == 0:
-                                progress.progress(min(cnt/sd_n_total,1.0), text=f"실행 중... {cnt:,}/{sd_n_total:,}")
-            progress.progress(1.0, text="완료!")
+            combos = [
+                (kb, ks, sr, dv, str(start_date), str(end_date), initial_capital, sd_sigma_period, sd_renewal)
+                for kb in sd_kb_vals for ks in sd_ks_vals for dv in sd_dv_vals for sr in sd_sr_vals
+            ]
+            rows = _run_parallel_opt_stdev(combos, price_df_opt, progress)
             if not rows: st.error("유효한 결과가 없습니다."); st.stop()
             res_df = pd.DataFrame(rows).sort_values(_sd_sort_col, ascending=_sd_sort_asc).reset_index(drop=True)
             _show_stdev_opt_results(res_df, _sd_sort_col, sd_kb_vals,
@@ -875,18 +1049,11 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                 for _ in range(int(sd_n_samples))
             ]
             progress = st.progress(0.0, text="랜덤 탐색 실행 중...")
-            rows = []
-            for i, (kb, ks, dv, sr) in enumerate(sampled):
-                r = run_backtest_stdev(
-                    price_df_opt, str(start_date), str(end_date),
-                    sigma_period=sd_sigma_period, k_buy=kb, k_sell=ks,
-                    sell_ratio=float(sr), divisions=int(dv), renewal=sd_renewal,
-                    initial_capital=initial_capital,
-                )
-                if r: rows.append(_sd_make_row(kb, ks, sr, dv, r))
-                if i % max(1, int(sd_n_samples)//100) == 0:
-                    progress.progress(min(i/int(sd_n_samples),1.0), text=f"실행 중... {i:,}/{int(sd_n_samples):,}")
-            progress.progress(1.0, text="완료!")
+            combos = [
+                (kb, ks, sr, dv, str(start_date), str(end_date), initial_capital, sd_sigma_period, sd_renewal)
+                for kb, ks, dv, sr in sampled
+            ]
+            rows = _run_parallel_opt_stdev(combos, price_df_opt, progress)
             if not rows: st.error("유효한 결과가 없습니다."); st.stop()
             res_df = pd.DataFrame(rows).sort_values(_sd_sort_col, ascending=_sd_sort_asc).reset_index(drop=True)
             _show_stdev_opt_results(res_df, _sd_sort_col, None, None, ticker, "random")
@@ -922,38 +1089,32 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
             if not windows:
                 st.error("데이터 기간이 너무 짧아 윈도우를 생성할 수 없습니다."); st.stop()
             st.info(f"총 **{len(windows)}개** 윈도우 생성됨")
-            total_steps = len(windows) * max(sd_n_total, 1)
             progress    = st.progress(0.0, text="워크포워드 실행 중...")
-            step_count  = 0
             wfo_rows    = []
             cur_capital = initial_capital
             for wi, (is_s, is_e, oos_s, oos_e) in enumerate(windows):
+                # IS 구간 병렬 탐색
+                is_combos = [
+                    (kb, ks, sr, dv, str(is_s), str(is_e), initial_capital, sd_sigma_period, sd_renewal)
+                    for kb in sd_kb_vals for ks in sd_ks_vals for dv in sd_dv_vals for sr in sd_sr_vals
+                ]
+                is_progress_text = f"윈도우 {wi+1}/{len(windows)} IS 최적화 중..."
+                progress.progress(min((wi) / len(windows), 0.99), text=is_progress_text)
+                is_rows = _run_parallel_opt_stdev(is_combos, price_df_opt, progress)
+                # best score 추출
                 best_score, best_params = -999.0, None
-                for kb in sd_kb_vals:
-                    for ks in sd_ks_vals:
-                        for dv in sd_dv_vals:
-                            for sr in sd_sr_vals:
-                                r = run_backtest_stdev(
-                                    price_df_opt, str(is_s), str(is_e),
-                                    sigma_period=sd_sigma_period, k_buy=kb, k_sell=ks,
-                                    sell_ratio=float(sr), divisions=int(dv), renewal=sd_renewal,
-                                    initial_capital=initial_capital,
-                                )
-                                if r:
-                                    if "Calmar"   in sd_metric_key: score = r["calmar"]
-                                    elif "CAGR"   in sd_metric_key: score = r["cagr"] * 100
-                                    elif "총수익률" in sd_metric_key: score = r["total_return"] * 100
-                                    else:                            score = -abs(r["mdd"] * 100)
-                                    if score > best_score:
-                                        best_score  = score
-                                        best_params = (kb, ks, dv, sr)
-                                step_count += 1
-                                if step_count % max(1, total_steps//200) == 0:
-                                    progress.progress(min(step_count/total_steps, 0.99),
-                                                      text=f"윈도우 {wi+1}/{len(windows)} IS 최적화 중...")
+                for row in is_rows:
+                    if "Calmar"   in sd_metric_key: score = row["Calmar"]
+                    elif "CAGR"   in sd_metric_key: score = row["CAGR(%)"]
+                    elif "총수익률" in sd_metric_key: score = row["총수익(%)"]
+                    else:                            score = -abs(row["MDD(%)"])
+                    if score > best_score:
+                        best_score  = score
+                        best_params = (row["k_buy"], row["k_sell"], row["분할수"], row["매도비율(%)"])
                 if best_params is None: continue
                 kb_b, ks_b, dv_b, sr_b = best_params
-                oos_r = run_backtest_stdev(
+                # OOS 단일 실행 (run_backtest_stdev_fast)
+                oos_r = run_backtest_stdev_fast(
                     price_df_opt, str(oos_s), str(oos_e),
                     sigma_period=sd_sigma_period, k_buy=kb_b, k_sell=ks_b,
                     sell_ratio=float(sr_b), divisions=int(dv_b), renewal=sd_renewal,
@@ -1040,7 +1201,7 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                     ks  = kb if _sd_kb_same else trial.suggest_float("k_sell", sd_ks_min, sd_ks_max)
                     dv  = trial.suggest_categorical("분할수", [int(x) for x in sd_dv_vals])
                     sr  = trial.suggest_int("매도비율", int(sd_sr_min), int(sd_sr_max), step=int(sd_sr_step))
-                    r   = run_backtest_stdev(
+                    r   = run_backtest_stdev_fast(
                         price_df_opt, str(start_date), str(end_date),
                         sigma_period=sd_sigma_period, k_buy=kb, k_sell=ks,
                         sell_ratio=float(sr), divisions=int(dv), renewal=sd_renewal,

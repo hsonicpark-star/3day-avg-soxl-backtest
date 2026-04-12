@@ -10,6 +10,9 @@ import pandas as pd
 import numpy as np
 import math
 import json
+import os
+import multiprocessing as mp
+import itertools
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -148,6 +151,80 @@ def run_backtest(
     if return_history:
         out["history"] = pd.DataFrame(history)
     return out
+
+
+def run_backtest_fast(
+    price_df, start_date, end_date,
+    a_buy, a_sell, sell_ratio, divisions, initial_capital,
+    n_days=2,
+):
+    """run_backtest 경량 버전 — 최적화 전용. history/assets 배열 생성 없이 최종 지표만 반환."""
+    sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
+    # inline _prep_sim to avoid extra overhead
+    for k in range(1, n_days + 1):
+        sim_raw[f"p{k}"] = sim_raw["Close"].shift(k)
+    sim_raw = sim_raw.dropna(subset=[f"p{n_days}"])
+    if sim_raw.empty:
+        return None
+
+    psum = np.zeros(len(sim_raw), dtype=np.float64)
+    for k in range(1, n_days + 1):
+        psum += sim_raw[f"p{k}"].values.astype(np.float64)
+    closes  = sim_raw["Close"].values.astype(np.float64)
+    tgt_buy  = psum * (1.0 + a_buy)  / (n_days - a_buy)
+    tgt_sell = psum * (1.0 + a_sell) / (n_days - a_sell)
+
+    cash      = float(initial_capital)
+    shares    = 0
+    avg_cost  = 0.0
+    prev_asset = float(initial_capital)
+    peak      = float(initial_capital)
+    max_dd    = 0.0
+    buy_count = 0
+    sell_count = 0
+    sell_ratio_f = sell_ratio / 100.0
+    n = len(closes)
+
+    for i in range(n):
+        x  = closes[i]
+        tb = tgt_buy[i]
+        ts = tgt_sell[i]
+        current_chunk = prev_asset / divisions
+
+        if shares > 0 and x >= ts:
+            sell_qty = int(shares * sell_ratio_f)
+            if sell_qty > 0:
+                cash += sell_qty * x
+                shares -= sell_qty
+                sell_count += 1
+                if shares == 0:
+                    avg_cost = 0.0
+        elif x <= tb:
+            buy_qty = min(int(current_chunk / tb + 1e-9), int(cash / tb + 1e-9))
+            if buy_qty > 0:
+                avg_cost = (avg_cost * shares + x * buy_qty) / (shares + buy_qty)
+                cash -= buy_qty * x
+                shares += buy_qty
+                buy_count += 1
+
+        asset = cash + shares * x
+        prev_asset = asset
+        if asset > peak:
+            peak = asset
+        dd = (asset - peak) / peak
+        if dd < max_dd:
+            max_dd = dd
+
+    final_asset = cash + shares * closes[-1] if n > 0 else float(initial_capital)
+    years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
+    total_return = (final_asset / initial_capital) - 1.0
+    cagr = ((final_asset / initial_capital) ** (1.0 / years) - 1.0) if years > 0 else 0.0
+    calmar = cagr / abs(max_dd) if max_dd != 0.0 else 0.0
+
+    return dict(
+        final_asset=final_asset, cagr=cagr, mdd=max_dd, calmar=calmar,
+        total_return=total_return, buy_count=buy_count, sell_count=sell_count,
+    )
 
 
 def run_portfolio_for_ordersheet(
@@ -920,6 +997,31 @@ def render_backtest_tab(ticker, params, data_source, excel_file, start_date, end
 # TAB 2 – 파라미터 최적화
 # ══════════════════════════════════════════════
 
+_NUM_WORKERS = max(1, os.cpu_count() - 1)
+
+def _run_parallel_opt_avg(combos, price_df, progress_bar):
+    import pickle, tempfile
+    tmp_path = os.path.join(tempfile.gettempdir(), f'avg_opt_{os.getpid()}.pkl')
+    with open(tmp_path, 'wb') as f:
+        pickle.dump(price_df, f, protocol=pickle.HIGHEST_PROTOCOL)
+    total = len(combos)
+    rows = []
+    from opt_worker import init_worker, run_single_bt
+    try:
+        with mp.Pool(_NUM_WORKERS, initializer=init_worker, initargs=(tmp_path,)) as pool:
+            count = 0
+            for r in pool.imap_unordered(run_single_bt, combos, chunksize=max(1, total // _NUM_WORKERS)):
+                if r is not None:
+                    rows.append(r)
+                count += 1
+                if count % max(1, total // 50) == 0:
+                    progress_bar.progress(min(count / total, 1.0), text=f"실행 중... {count:,} / {total:,} ({_NUM_WORKERS}코어)")
+    finally:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+    progress_bar.progress(1.0, text="완료!")
+    return rows
+
 def render_optimization_tab(ticker, params, start_date, end_date, initial_capital, data_source, excel_file):
     """종가평균매매 최적화 탭 렌더링."""
     n_days = params["n_days"]
@@ -1006,34 +1108,10 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                 st.error("가격 데이터를 불러오지 못했습니다.")
                 st.stop()
 
-            progress     = st.progress(0.0, text="그리드 탐색 실행 중...")
-            update_every = max(1, n_total // 100)
-            rows, count  = [], 0
-
-            for ab in ab_vals:
-                for as_ in as_vals:
-                    for dv in dv_list:
-                        for sr in sr_list:
-                            r = run_backtest(price_df_opt, start_date, end_date,
-                                             ab, as_, sr, dv, initial_capital, n_days=n_days)
-                            if r:
-                                rows.append({
-                                    "a_buy": ab, "a_sell": as_,
-                                    "분할수": dv, "매도비율": sr,
-                                    "CAGR(%)":     round(r["cagr"]         * 100, 2),
-                                    "MDD(%)":      round(r["mdd"]          * 100, 2),
-                                    "Calmar":      round(r["calmar"],             4),
-                                    "총수익(%)":   round(r["total_return"] * 100, 2),
-                                    "최종자산($)": round(r["final_asset"],        2),
-                                    "매수횟수":    r["buy_count"],
-                                    "매도횟수":    r["sell_count"],
-                                })
-                            count += 1
-                            if count % update_every == 0:
-                                progress.progress(min(count / n_total, 1.0),
-                                                  text=f"실행 중... {count:,} / {n_total:,}")
-
-            progress.progress(1.0, text="완료!")
+            progress = st.progress(0.0, text="그리드 탐색 실행 중...")
+            combos = [(ab, as_, sr, dv, start_date, end_date, initial_capital, n_days)
+                      for ab, as_, dv, sr in itertools.product(ab_vals, as_vals, dv_list, sr_list)]
+            rows = _run_parallel_opt_avg(combos, price_df_opt, progress)
             if not rows:
                 st.error("유효한 결과가 없습니다.")
                 st.stop()
@@ -1064,28 +1142,10 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                  random.choice(sr_list))
                 for _ in range(int(n_samples))
             ]
+            combos = [(ab, as_, sr, dv, start_date, end_date, initial_capital, n_days)
+                      for ab, as_, dv, sr in sampled]
             progress = st.progress(0.0, text="랜덤 탐색 실행 중...")
-            rows = []
-            for i, (ab, as_, dv, sr) in enumerate(sampled):
-                r = run_backtest(price_df_opt, start_date, end_date,
-                                 ab, as_, sr, dv, initial_capital, n_days=n_days)
-                if r:
-                    rows.append({
-                        "a_buy": ab, "a_sell": as_,
-                        "분할수": dv, "매도비율": sr,
-                        "CAGR(%)":     round(r["cagr"]         * 100, 2),
-                        "MDD(%)":      round(r["mdd"]          * 100, 2),
-                        "Calmar":      round(r["calmar"],             4),
-                        "총수익(%)":   round(r["total_return"] * 100, 2),
-                        "최종자산($)": round(r["final_asset"],        2),
-                        "매수횟수":    r["buy_count"],
-                        "매도횟수":    r["sell_count"],
-                    })
-                if i % max(1, int(n_samples) // 100) == 0:
-                    progress.progress(min(i / int(n_samples), 1.0),
-                                      text=f"실행 중... {i:,} / {int(n_samples):,}")
-
-            progress.progress(1.0, text="완료!")
+            rows = _run_parallel_opt_avg(combos, price_df_opt, progress)
             if not rows:
                 st.error("유효한 결과가 없습니다.")
                 st.stop()
@@ -1132,36 +1192,30 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                 st.stop()
 
             st.info(f"총 **{len(windows)}개** 윈도우 생성됨")
-            total_steps = len(windows) * max(n_total, 1)
             progress    = st.progress(0.0, text="워크포워드 실행 중...")
-            step_count  = 0
             wfo_rows    = []
             cur_capital = initial_capital
 
             for wi, (is_s, is_e, oos_s, oos_e) in enumerate(windows):
-                best_score, best_params, best_is_r = -999.0, None, None
+                # IS 구간 병렬 최적화
+                is_combos = [(ab, as_, sr, dv, str(is_s), str(is_e), initial_capital, n_days)
+                             for ab, as_, dv, sr in itertools.product(ab_vals, as_vals, dv_list, sr_list)]
+                progress.progress(
+                    min((wi) / len(windows), 0.99),
+                    text=f"윈도우 {wi+1}/{len(windows)} IS 최적화 중..."
+                )
+                is_rows = _run_parallel_opt_avg(is_combos, price_df_opt, progress)
 
-                for ab in ab_vals:
-                    for as_ in as_vals:
-                        for dv in dv_list:
-                            for sr in sr_list:
-                                r = run_backtest(price_df_opt, str(is_s), str(is_e),
-                                                 ab, as_, sr, dv, initial_capital, n_days=n_days)
-                                if r:
-                                    if "Calmar" in metric_key:    score = r["calmar"]
-                                    elif "CAGR" in metric_key:    score = r["cagr"] * 100
-                                    elif "총수익률" in metric_key: score = r["total_return"] * 100
-                                    else:                          score = -abs(r["mdd"] * 100)
-                                    if score > best_score:
-                                        best_score  = score
-                                        best_params = (ab, as_, dv, sr)
-                                        best_is_r   = r
-                                step_count += 1
-                                if step_count % max(1, total_steps // 200) == 0:
-                                    progress.progress(
-                                        min(step_count / total_steps, 0.99),
-                                        text=f"윈도우 {wi+1}/{len(windows)} IS 최적화 중..."
-                                    )
+                # IS 결과에서 best score 파라미터 추출
+                best_score, best_params = -999.0, None
+                for row in is_rows:
+                    if "Calmar" in metric_key:    score = row["Calmar"]
+                    elif "CAGR" in metric_key:    score = row["CAGR(%)"]
+                    elif "총수익률" in metric_key: score = row["총수익(%)"]
+                    else:                          score = -abs(row["MDD(%)"])
+                    if score > best_score:
+                        best_score = score
+                        best_params = (row["a_buy"], row["a_sell"], row["분할수"], row["매도비율"])
 
                 if best_params is None:
                     continue
@@ -1275,8 +1329,8 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                     as_ = trial.suggest_float("a_sell", as_min, as_max)
                     dv  = trial.suggest_int("분할수",  int(dv_min), int(dv_max)) if dv_min != dv_max else int(dv_min)
                     sr  = trial.suggest_int("매도비율", int(sr_min), int(sr_max), step=int(sr_step)) if sr_min != sr_max else int(sr_min)
-                    r   = run_backtest(price_df_opt, start_date, end_date,
-                                       ab, as_, sr, dv, initial_capital, n_days=n_days)
+                    r   = run_backtest_fast(price_df_opt, start_date, end_date,
+                                            ab, as_, sr, dv, initial_capital, n_days=n_days)
                     if r is None:
                         return -999.0
                     if "Calmar" in metric_key:    score = r["calmar"]
