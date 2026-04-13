@@ -1238,16 +1238,85 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
     # ── 성과 분석 ──
     st.subheader("📊 전략 성과 분석")
 
-    result = st.session_state.get("iuo_bt_result")
+    # ── 파라미터 소스 선택 (사이드바 or 프리셋) ──
+    _IUO_INTRO_PRESETS = [
+        {"label": "🚀 공격형", "first_buy_ratio": 40, "buy1_pct": -1.0, "buy2_pct": -11.0,
+         "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6},
+        {"label": "⚖️ 균형형", "first_buy_ratio": 35, "buy1_pct": -1.0, "buy2_pct": -11.0,
+         "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6},
+        {"label": "🛡️ 안정형", "first_buy_ratio": 25, "buy1_pct": -1.0, "buy2_pct": -11.0,
+         "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6},
+    ]
+    _src_options = ["📐 사이드바 설정값"] + [pr["label"] for pr in _IUO_INTRO_PRESETS]
+    _src_sel = st.radio("파라미터 소스", _src_options, index=0, horizontal=True,
+                        key="iuo_intro_param_src")
+    _src_idx = _src_options.index(_src_sel)
+
+    if _src_idx == 0:
+        _use_p = dict(params)
+    else:
+        _pr = _IUO_INTRO_PRESETS[_src_idx - 1]
+        _use_p = dict(params)
+        _use_p["first_buy_ratio"] = _pr["first_buy_ratio"] / 100
+        _use_p["buy1_pct"] = _pr["buy1_pct"] / 100
+        _use_p["buy2_pct"] = _pr["buy2_pct"] / 100
+        _use_p["sell_pct"] = _pr["sell_pct"] / 100
+        _use_p["moc_days"] = _pr["moc_days"]
+        _use_p["max_additional_buys"] = _pr["max_add_buys"]
+        _use_p["divisions"] = _pr["divisions"]
+
+    with st.expander("🔍 적용 파라미터 확인", expanded=False):
+        st.markdown(
+            f"첫매수 **{_use_p['first_buy_ratio']*100:.0f}%** · "
+            f"매수1 **{_use_p['buy1_pct']*100:.1f}%** · "
+            f"매수2 **{_use_p['buy2_pct']*100:.1f}%** · "
+            f"매도 **{_use_p['sell_pct']*100:.1f}%** · "
+            f"MOC **{_use_p['moc_days']}일** · "
+            f"매수제한 **{_use_p['max_additional_buys']}회** · "
+            f"분할 **{_use_p['divisions']}**")
+        st.caption(
+            f"기간 {_use_p['bt_start_date']} ~ {_use_p['bt_end_date']} · "
+            f"자본 ${_use_p['bt_initial_capital']:,.0f}")
+
+    _intro_ss_key = f"iuo_intro_result_{_src_idx}"
+    if st.button("▶ 성과 분석 실행", type="primary", key="iuo_run_intro_perf"):
+        with st.spinner("데이터 로드 및 분석 중..."):
+            try:
+                _intro_price = _download_ticker(_use_p["bt_ticker"])
+            except Exception as _e:
+                st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                return
+            _intro_params = IUOParams(
+                initial_capital=_use_p["bt_initial_capital"],
+                first_buy_ratio=_use_p["first_buy_ratio"],
+                buy0_pct=_use_p["buy0_pct"],
+                buy1_pct=_use_p["buy1_pct"],
+                buy2_pct=_use_p["buy2_pct"],
+                sell_pct=_use_p["sell_pct"],
+                moc_days=_use_p["moc_days"],
+                max_additional_buys=_use_p["max_additional_buys"],
+                divisions=_use_p["divisions"],
+            )
+            _intro_result = run_backtest(
+                _intro_params, _intro_price, None,
+                str(_use_p["bt_start_date"]), str(_use_p["bt_end_date"]),
+            )
+            if _intro_result:
+                st.session_state[_intro_ss_key] = _intro_result
+            else:
+                st.warning("백테스트 결과가 없습니다.")
+                return
+
+    result = st.session_state.get(_intro_ss_key)
     if result is None:
-        st.info("백테스트를 실행하면 상세 성과 분석이 여기에 표시됩니다.")
+        st.info("💡 사이드바 설정값 또는 추천 프리셋을 선택하여 '▶ 성과 분석 실행' 버튼을 눌러주세요.")
         return
 
     log = result["daily_log"]
     sells = result["sell_records"]
     m = result["metrics"]
-    cap = params["bt_initial_capital"]
-    ticker = params["bt_ticker"]
+    cap = _use_p["bt_initial_capital"]
+    ticker = _use_p["bt_ticker"]
     df = pd.DataFrame(log)
     df["날짜"] = pd.to_datetime(df["날짜"])
     assets = df["총자산"].values.astype(float)
