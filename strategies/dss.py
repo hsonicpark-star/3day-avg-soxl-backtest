@@ -1165,6 +1165,12 @@ def _build_os_result_fallback(os_params, os_capital):
     """백테스트 결과 없을 때 (신규 계좌/오늘 시작) → 최신 시장 데이터로 주문표 생성."""
     soxl = get_soxl_data()
     qqq = get_qqq_data()
+
+    if soxl is None or soxl.empty:
+        return None
+    if qqq is None or qqq.empty:
+        return None
+
     mode_series_df = get_mode_series(len(qqq))
 
     prev_close = float(soxl.iloc[-1]['Close'])
@@ -1394,8 +1400,12 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx,
             st.session_state[_ss_key] = _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq)
         else:
             # 시작일이 최근이어서 백테스트 결과 없음 → 최신 시장 데이터로 폴백
-            st.session_state[_ss_key] = _build_os_result_fallback(os_params, os_capital)
-            st.info("ℹ️ 시작일이 최근이어서 매매 내역은 없지만, 현재 시장 데이터 기반으로 주문표를 생성했습니다.")
+            _fallback = _build_os_result_fallback(os_params, os_capital)
+            if _fallback is not None:
+                st.session_state[_ss_key] = _fallback
+                st.info("ℹ️ 시작일이 최근이어서 매매 내역은 없지만, 현재 시장 데이터 기반으로 주문표를 생성했습니다.")
+            else:
+                st.error("⚠️ 가격 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
 
     # ── 결과 렌더링 ──
     _os = st.session_state.get(_ss_key)
