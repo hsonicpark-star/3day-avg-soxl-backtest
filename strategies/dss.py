@@ -1551,9 +1551,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx,
 
         # ── 오늘의 LOC 주문 ──
         st.divider()
-        _next_td = next_trading_date()
-        _next_td_str = _next_td.strftime('%Y-%m-%d')
-        st.subheader(f"📑 오늘의 LOC 주문  ({_next_td_str})")
+        _today_date_str = datetime.today().strftime('%Y-%m-%d')
+        st.subheader(f"📑 오늘의 LOC 주문  ({_today_date_str})")
         st.markdown(
             f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
             f"전일종가 = <b>${_os['prev_close']:,.2f}</b>&ensp;·&ensp;"
