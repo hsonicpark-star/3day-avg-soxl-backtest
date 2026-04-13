@@ -1283,12 +1283,145 @@ def _build_os_result_fallback(os_params, os_capital):
     }
 
 
-def _render_dss_account(acct_name, acct_data, cfg, p, idx,
-                        cur_sf_div, cur_sf_hold, cur_sf_buy, cur_sf_sell,
-                        cur_ag_div, cur_ag_hold, cur_ag_buy, cur_ag_sell,
-                        cur_pcr, cur_lcr, cur_renew, cur_fee):
+_DSS_PRESETS = [
+    {"label": "🚀 공격형", "sf_div": 7, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
+     "ag_div": 7, "ag_hold": 8, "ag_buy": 3.15, "ag_sell": 3.75,
+     "pcr": 75, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+     "help": "공격형 파라미터\nCAGR 66.8% | MDD -45% | Calmar 1.485"},
+    {"label": "⚖️ 균형형", "sf_div": 7, "sf_hold": 35, "sf_buy": 3.5, "sf_sell": 1.8,
+     "ag_div": 8, "ag_hold": 7, "ag_buy": 3.6, "ag_sell": 6.0,
+     "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.04,
+     "help": "균형형 파라미터\nCAGR 63.24% | MDD -43.77% | Calmar 1.445"},
+    {"label": "🛡️ 안정형 ⭐", "sf_div": 7, "sf_hold": 36, "sf_buy": 4.91, "sf_sell": 0.9,
+     "ag_div": 7, "ag_hold": 8, "ag_buy": 2.77, "ag_sell": 3.06,
+     "pcr": 70, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+     "help": "안정형 파라미터\nCAGR 58.07% | MDD -40.69% | Calmar 1.427"},
+]
+
+_DSS_PARAM_KEYS = ["sf_div","sf_hold","sf_buy","sf_sell",
+                   "ag_div","ag_hold","ag_buy","ag_sell",
+                   "pcr","lcr","renewal_period","fee_rate"]
+
+_DSS_DEFAULT_PARAMS = _DSS_PRESETS[2]  # 안정형을 기본값으로
+
+
+def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     """개별 계좌 탭 렌더링."""
     sfx = f"a{idx}"
+
+    # ── 계좌별 파라미터 로드 ──
+    _ap = acct_data.get("params", {})
+    cur_sf_div  = _ap.get("sf_div",  _DSS_DEFAULT_PARAMS["sf_div"])
+    cur_sf_hold = _ap.get("sf_hold", _DSS_DEFAULT_PARAMS["sf_hold"])
+    cur_sf_buy  = _ap.get("sf_buy",  _DSS_DEFAULT_PARAMS["sf_buy"])
+    cur_sf_sell = _ap.get("sf_sell", _DSS_DEFAULT_PARAMS["sf_sell"])
+    cur_ag_div  = _ap.get("ag_div",  _DSS_DEFAULT_PARAMS["ag_div"])
+    cur_ag_hold = _ap.get("ag_hold", _DSS_DEFAULT_PARAMS["ag_hold"])
+    cur_ag_buy  = _ap.get("ag_buy",  _DSS_DEFAULT_PARAMS["ag_buy"])
+    cur_ag_sell = _ap.get("ag_sell", _DSS_DEFAULT_PARAMS["ag_sell"])
+    cur_pcr     = _ap.get("pcr",     _DSS_DEFAULT_PARAMS["pcr"])
+    cur_lcr     = _ap.get("lcr",     _DSS_DEFAULT_PARAMS["lcr"])
+    cur_renew   = _ap.get("renewal_period", _DSS_DEFAULT_PARAMS["renewal_period"])
+    cur_fee     = _ap.get("fee_rate", _DSS_DEFAULT_PARAMS["fee_rate"])
+
+    # ── 파라미터 테이블 ──
+    with st.container(border=True):
+        st.markdown(
+            f"""
+            <table style="width:100%; border-collapse:collapse; font-size:14px;">
+            <tr style="border-bottom:1px solid #eee;">
+                <th style="text-align:left; padding:6px 10px; color:#888; font-weight:500; width:12%;">모드</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">분할수</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">보유기간</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">매수조건</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">매도조건</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">PCR</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">LCR</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">갱신주기</th>
+                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">수수료</th>
+            </tr>
+            <tr style="border-bottom:1px solid #f0f0f0;">
+                <td style="padding:8px 10px; font-weight:600; color:#1976D2;">🔵 안전(SF)</td>
+                <td style="text-align:center; padding:8px;">{cur_sf_div}</td>
+                <td style="text-align:center; padding:8px;">{cur_sf_hold}일</td>
+                <td style="text-align:center; padding:8px;">{cur_sf_buy}%</td>
+                <td style="text-align:center; padding:8px;">{cur_sf_sell}%</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{cur_pcr}%</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{cur_lcr}%</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{cur_renew}일</td>
+                <td style="text-align:center; padding:8px;" rowspan="2">{cur_fee}%</td>
+            </tr>
+            <tr>
+                <td style="padding:8px 10px; font-weight:600; color:#2E7D32;">🟢 공세(AG)</td>
+                <td style="text-align:center; padding:8px;">{cur_ag_div}</td>
+                <td style="text-align:center; padding:8px;">{cur_ag_hold}일</td>
+                <td style="text-align:center; padding:8px;">{cur_ag_buy}%</td>
+                <td style="text-align:center; padding:8px;">{cur_ag_sell}%</td>
+            </tr>
+            </table>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
+        with st.expander("✏️ 파라미터 수정"):
+            st.caption("💡 추천 프리셋")
+            _pc1, _pc2, _pc3 = st.columns(3)
+            for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _DSS_PRESETS)):
+                if _pcol.button(_pr["label"], key=f"dss_{sfx}_preset_{_pi}",
+                                help=_pr["help"], use_container_width=True):
+                    for _k in _DSS_PARAM_KEYS:
+                        st.session_state[f"dss_{sfx}_edit_{_k}"] = _pr[_k]
+                    st.rerun()
+            st.divider()
+
+            _edit_defaults = {
+                "sf_div": cur_sf_div, "sf_hold": cur_sf_hold,
+                "sf_buy": float(cur_sf_buy), "sf_sell": float(cur_sf_sell),
+                "ag_div": cur_ag_div, "ag_hold": cur_ag_hold,
+                "ag_buy": float(cur_ag_buy), "ag_sell": float(cur_ag_sell),
+                "pcr": cur_pcr, "lcr": cur_lcr,
+                "renewal_period": cur_renew, "fee_rate": float(cur_fee),
+            }
+            for _k, _v in _edit_defaults.items():
+                _skey = f"dss_{sfx}_edit_{_k}"
+                if _skey not in st.session_state:
+                    st.session_state[_skey] = _v
+
+            st.markdown("**안전모드 (SF)**")
+            _es1, _es2, _es3, _es4 = st.columns(4)
+            _es1.number_input("SF 분할수",      min_value=1, max_value=50, step=1, key=f"dss_{sfx}_edit_sf_div")
+            _es2.number_input("SF 최대보유기간", min_value=1, max_value=100, step=1, key=f"dss_{sfx}_edit_sf_hold")
+            _es3.number_input("SF 매수조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key=f"dss_{sfx}_edit_sf_buy")
+            _es4.number_input("SF 매도조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key=f"dss_{sfx}_edit_sf_sell")
+
+            st.markdown("**공세모드 (AG)**")
+            _ea1, _ea2, _ea3, _ea4 = st.columns(4)
+            _ea1.number_input("AG 분할수",      min_value=1, max_value=50, step=1, key=f"dss_{sfx}_edit_ag_div")
+            _ea2.number_input("AG 최대보유기간", min_value=1, max_value=100, step=1, key=f"dss_{sfx}_edit_ag_hold")
+            _ea3.number_input("AG 매수조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key=f"dss_{sfx}_edit_ag_buy")
+            _ea4.number_input("AG 매도조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key=f"dss_{sfx}_edit_ag_sell")
+
+            st.markdown("**공통**")
+            _ec1, _ec2, _ec3, _ec4 = st.columns(4)
+            _ec1.number_input("이익복리율 PCR(%)", min_value=0, max_value=100, step=1, key=f"dss_{sfx}_edit_pcr")
+            _ec2.number_input("손실복리율 LCR(%)", min_value=0, max_value=100, step=1, key=f"dss_{sfx}_edit_lcr")
+            _ec3.number_input("투자금갱신주기",     min_value=1, max_value=100, step=1, key=f"dss_{sfx}_edit_renewal_period")
+            _ec4.number_input("수수료(%)",         min_value=0.0, max_value=1.0, step=0.001, format="%.3f", key=f"dss_{sfx}_edit_fee_rate")
+
+            if st.button("💾 파라미터 저장", type="primary", key=f"dss_{sfx}_save_params",
+                         use_container_width=True):
+                _new_params = {}
+                for _k in _edit_defaults:
+                    _new_params[_k] = st.session_state[f"dss_{sfx}_edit_{_k}"]
+                acct_data["params"] = _new_params
+                cfg["accounts"][acct_name] = acct_data
+                _save_dss_config(cfg)
+                for _k in _edit_defaults:
+                    st.session_state.pop(f"dss_{sfx}_edit_{_k}", None)
+                st.session_state.pop(f"dss_{sfx}_result", None)
+                st.success("✅ 파라미터가 저장되었습니다!")
+                st.rerun()
 
     # ── 계좌 관리 (이름변경 / 삭제) ──
     _mgr1, _mgr2, _ = st.columns([1, 1, 4])
@@ -1819,138 +1952,6 @@ def render_ordersheet_tab(params):
     # ── 설정 로드 ──
     _cfg = _load_dss_config()
 
-    # ── 적용 파라미터 표시 ──
-    _sp = _cfg.get("params", {})
-    _cur_sf_div  = _sp.get("sf_div",  p["sf_div"])
-    _cur_sf_hold = _sp.get("sf_hold", p["sf_hold"])
-    _cur_sf_buy  = _sp.get("sf_buy",  p["sf_buy"])
-    _cur_sf_sell = _sp.get("sf_sell", p["sf_sell"])
-    _cur_ag_div  = _sp.get("ag_div",  p["ag_div"])
-    _cur_ag_hold = _sp.get("ag_hold", p["ag_hold"])
-    _cur_ag_buy  = _sp.get("ag_buy",  p["ag_buy"])
-    _cur_ag_sell = _sp.get("ag_sell", p["ag_sell"])
-    _cur_pcr     = _sp.get("pcr",     p["pcr"])
-    _cur_lcr     = _sp.get("lcr",     p["lcr"])
-    _cur_renew   = _sp.get("renewal_period", p["renewal_period"])
-    _cur_fee     = _sp.get("fee_rate", p["fee_rate"])
-
-    # ── 파라미터 테이블 (HTML) ──
-    with st.container(border=True):
-        st.markdown(
-            f"""
-            <table style="width:100%; border-collapse:collapse; font-size:14px;">
-            <tr style="border-bottom:1px solid #eee;">
-                <th style="text-align:left; padding:6px 10px; color:#888; font-weight:500; width:12%;">모드</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">분할수</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">보유기간</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">매수조건</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">매도조건</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">PCR</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">LCR</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">갱신주기</th>
-                <th style="text-align:center; padding:6px 8px; color:#888; font-weight:500;">수수료</th>
-            </tr>
-            <tr style="border-bottom:1px solid #f0f0f0;">
-                <td style="padding:8px 10px; font-weight:600; color:#1976D2;">🔵 안전(SF)</td>
-                <td style="text-align:center; padding:8px;">{_cur_sf_div}</td>
-                <td style="text-align:center; padding:8px;">{_cur_sf_hold}일</td>
-                <td style="text-align:center; padding:8px;">{_cur_sf_buy}%</td>
-                <td style="text-align:center; padding:8px;">{_cur_sf_sell}%</td>
-                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_pcr}%</td>
-                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_lcr}%</td>
-                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_renew}회</td>
-                <td style="text-align:center; padding:8px;" rowspan="2">{_cur_fee}%</td>
-            </tr>
-            <tr>
-                <td style="padding:8px 10px; font-weight:600; color:#2E7D32;">🟢 공세(AG)</td>
-                <td style="text-align:center; padding:8px;">{_cur_ag_div}</td>
-                <td style="text-align:center; padding:8px;">{_cur_ag_hold}일</td>
-                <td style="text-align:center; padding:8px;">{_cur_ag_buy}%</td>
-                <td style="text-align:center; padding:8px;">{_cur_ag_sell}%</td>
-            </tr>
-            </table>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
-        with st.expander("✏️ 파라미터 수정"):
-            _DSS_PRESETS = [
-                {"label": "🚀 공격형", "sf_div": 7, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
-                 "ag_div": 7, "ag_hold": 8, "ag_buy": 3.15, "ag_sell": 3.75,
-                 "pcr": 75, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
-                 "help": "공격형 파라미터\nCAGR 66.8% | MDD -45% | Calmar 1.485"},
-                {"label": "⚖️ 균형형", "sf_div": 7, "sf_hold": 35, "sf_buy": 3.5, "sf_sell": 1.8,
-                 "ag_div": 8, "ag_hold": 7, "ag_buy": 3.6, "ag_sell": 6.0,
-                 "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.04,
-                 "help": "균형형 파라미터\nCAGR 63.24% | MDD -43.77% | Calmar 1.445"},
-                {"label": "🛡️ 안정형 ⭐", "sf_div": 7, "sf_hold": 36, "sf_buy": 4.91, "sf_sell": 0.9,
-                 "ag_div": 7, "ag_hold": 8, "ag_buy": 2.77, "ag_sell": 3.06,
-                 "pcr": 70, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
-                 "help": "안정형 파라미터\nCAGR 58.07% | MDD -40.69% | Calmar 1.427"},
-            ]
-            st.caption("💡 추천 프리셋")
-            _pc1, _pc2, _pc3 = st.columns(3)
-            for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _DSS_PRESETS)):
-                if _pcol.button(_pr["label"], key=f"dss_os_preset_{_pi}",
-                                help=_pr["help"], use_container_width=True):
-                    for _k in ["sf_div","sf_hold","sf_buy","sf_sell",
-                               "ag_div","ag_hold","ag_buy","ag_sell",
-                               "pcr","lcr","renewal_period","fee_rate"]:
-                        st.session_state[f"dss_os_edit_{_k}"] = _pr[_k]
-                    st.rerun()
-            st.divider()
-
-            _edit_defaults = {
-                "sf_div": _cur_sf_div, "sf_hold": _cur_sf_hold,
-                "sf_buy": float(_cur_sf_buy), "sf_sell": float(_cur_sf_sell),
-                "ag_div": _cur_ag_div, "ag_hold": _cur_ag_hold,
-                "ag_buy": float(_cur_ag_buy), "ag_sell": float(_cur_ag_sell),
-                "pcr": _cur_pcr, "lcr": _cur_lcr,
-                "renewal_period": _cur_renew, "fee_rate": float(_cur_fee),
-            }
-            for _k, _v in _edit_defaults.items():
-                _skey = f"dss_os_edit_{_k}"
-                if _skey not in st.session_state:
-                    st.session_state[_skey] = _v
-
-            st.markdown("**안전모드 (SF)**")
-            _es1, _es2, _es3, _es4 = st.columns(4)
-            _es1.number_input("SF 분할수",      min_value=1, max_value=50, step=1, key="dss_os_edit_sf_div")
-            _es2.number_input("SF 최대보유기간", min_value=1, max_value=100, step=1, key="dss_os_edit_sf_hold")
-            _es3.number_input("SF 매수조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key="dss_os_edit_sf_buy")
-            _es4.number_input("SF 매도조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key="dss_os_edit_sf_sell")
-
-            st.markdown("**공세모드 (AG)**")
-            _ea1, _ea2, _ea3, _ea4 = st.columns(4)
-            _ea1.number_input("AG 분할수",      min_value=1, max_value=50, step=1, key="dss_os_edit_ag_div")
-            _ea2.number_input("AG 최대보유기간", min_value=1, max_value=100, step=1, key="dss_os_edit_ag_hold")
-            _ea3.number_input("AG 매수조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key="dss_os_edit_ag_buy")
-            _ea4.number_input("AG 매도조건(%)", min_value=0.0, max_value=30.0, step=0.01, format="%.2f", key="dss_os_edit_ag_sell")
-
-            st.markdown("**공통**")
-            _ec1, _ec2, _ec3, _ec4 = st.columns(4)
-            _ec1.number_input("이익복리율 PCR(%)", min_value=0, max_value=100, step=1, key="dss_os_edit_pcr")
-            _ec2.number_input("손실복리율 LCR(%)", min_value=0, max_value=100, step=1, key="dss_os_edit_lcr")
-            _ec3.number_input("투자금갱신주기",     min_value=1, max_value=100, step=1, key="dss_os_edit_renewal_period")
-            _ec4.number_input("수수료(%)",         min_value=0.0, max_value=1.0, step=0.001, format="%.3f", key="dss_os_edit_fee_rate")
-
-            if st.button("💾 파라미터 저장", type="primary", key="dss_os_save_params",
-                         use_container_width=True):
-                _new_params = {}
-                for _k in _edit_defaults:
-                    _new_params[_k] = st.session_state[f"dss_os_edit_{_k}"]
-                _cfg["params"] = _new_params
-                _save_dss_config(_cfg)
-                for _k in _edit_defaults:
-                    st.session_state.pop(f"dss_os_edit_{_k}", None)
-                # 모든 계좌의 결과 캐시 클리어
-                for _sk in list(st.session_state.keys()):
-                    if _sk.startswith("dss_a") and _sk.endswith("_result"):
-                        st.session_state.pop(_sk, None)
-                st.success("✅ 파라미터가 저장되었습니다!")
-                st.rerun()
-
     # ══════════════════════════════════════════════
     # 계좌 관리
     # ══════════════════════════════════════════════
@@ -1965,6 +1966,7 @@ def render_ordersheet_tab(params):
             "os_start": str(_legacy_start),
             "os_capital": float(_legacy_capital),
             "capital_adj_history": _legacy_adj if isinstance(_legacy_adj, list) else [],
+            "params": {k: _DSS_DEFAULT_PARAMS[k] for k in _DSS_PARAM_KEYS},
         }}
         _cfg["accounts"] = _accounts
         _save_dss_config(_cfg)
@@ -1978,6 +1980,11 @@ def render_ordersheet_tab(params):
                                       key="dss_new_acct_start")
         _new_capital = _ac3.number_input("시작 자본 ($)", value=100000.0, step=1000.0,
                                           key="dss_new_acct_capital")
+        # 프리셋 선택
+        _preset_labels = [pr["label"] for pr in _DSS_PRESETS]
+        _preset_idx = st.selectbox("파라미터 프리셋", range(len(_DSS_PRESETS)),
+                                    format_func=lambda i: _preset_labels[i],
+                                    index=2, key="dss_new_acct_preset")
         if st.button("✅ 계좌 등록", type="primary", key="dss_add_account_btn",
                      use_container_width=True):
             _nm = _new_name.strip()
@@ -1986,14 +1993,16 @@ def render_ordersheet_tab(params):
             elif _nm in _accounts:
                 st.warning(f"'{_nm}' 계좌가 이미 존재합니다.")
             else:
+                _sel_preset = _DSS_PRESETS[_preset_idx]
                 _accounts[_nm] = {
                     "os_start": str(_new_start),
                     "os_capital": float(_new_capital),
                     "capital_adj_history": [],
+                    "params": {k: _sel_preset[k] for k in _DSS_PARAM_KEYS},
                 }
                 _cfg["accounts"] = _accounts
                 _save_dss_config(_cfg)
-                st.success(f"✅ '{_nm}' 계좌가 등록되었습니다.")
+                st.success(f"✅ '{_nm}' 계좌가 등록되었습니다. (프리셋: {_sel_preset['label']})")
                 st.rerun()
 
     # ── 계좌 탭 ──
@@ -2006,12 +2015,7 @@ def render_ordersheet_tab(params):
 
     for _ai, (_aname, _atab) in enumerate(zip(_acct_names, _acct_tabs)):
         with _atab:
-            _render_dss_account(
-                _aname, _accounts[_aname], _cfg, p, _ai,
-                _cur_sf_div, _cur_sf_hold, _cur_sf_buy, _cur_sf_sell,
-                _cur_ag_div, _cur_ag_hold, _cur_ag_buy, _cur_ag_sell,
-                _cur_pcr, _cur_lcr, _cur_renew, _cur_fee,
-            )
+            _render_dss_account(_aname, _accounts[_aname], _cfg, p, _ai)
 
 # ══════════════════════════════════════════════
 # 탭 5: DB — xlsx DB 시트 재현 (하루씩 누적 기록)
