@@ -1877,8 +1877,15 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
                         row["초과수익"] = f"{sr_arr[i] - br_arr[i]:+.2f}%"
                     mc_detail_rows.append(row)
                 mc_detail_df = pd.DataFrame(mc_detail_rows)
-                st.dataframe(mc_detail_df, use_container_width=True, hide_index=True,
-                             height=400)
+
+                def _style_mc_row(row):
+                    val = float(str(row.get("IUO 수익률", "0")).replace("%", "").replace("+", ""))
+                    if val < 0:
+                        return ["background-color: #FFF0F0; color: #C62828"] * len(row)
+                    return [""] * len(row)
+
+                st.dataframe(mc_detail_df.style.apply(_style_mc_row, axis=1),
+                             use_container_width=True, hide_index=True, height=400)
     st.divider()
 
     # ── 전략 인사이트 ──
