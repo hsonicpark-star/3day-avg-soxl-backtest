@@ -130,12 +130,40 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
         f"",
     ]
+    # 거래일 인덱스 (예약매도 잔여일 계산)
+    try:
+        _tdays = get_soxl_data().index
+    except Exception:
+        _tdays = None
+    _today_ts = pd.Timestamp(datetime.today().date())
+
     for i, pos in enumerate(_o['open_positions']):
-        if pos['sell_target'] is not None:
-            pnl_pct = (pos['sell_target'] / pos['buy_price'] - 1) * 100
+        if pos['sell_target'] is None:
+            continue
+        _stop = pos.get('stop_date')
+        _is_stop_today = False
+        if _stop is not None:
+            _is_stop_today = (pd.Timestamp(_stop) <= _today_ts)
+
+        if _is_stop_today:
             lines.append(
-                f"📈 매도 티어{i+1}: LOC ${pos['sell_target']:,.2f} "
-                f"× {pos['qty']}주 ({pnl_pct:+.1f}%)"
+                f"🔴 MOC매도 티어{i+1}: 시장가(종가) "
+                f"× {pos['qty']}주 (⏰ 손절일 도래)"
+            )
+        else:
+            pnl_pct = (pos['sell_target'] / pos['buy_price'] - 1) * 100
+            _reserve_info = ""
+            if _stop is not None and _tdays is not None:
+                _stop_ts = pd.Timestamp(_stop)
+                _future = _tdays[(_tdays > _today_ts) & (_tdays <= _stop_ts)]
+                _remain = len(_future)
+                _before = _tdays[_tdays < _stop_ts]
+                if len(_before) > 0:
+                    _rdt = _before[-1]
+                    _reserve_info = f" · 예약~{_rdt.strftime('%m/%d').replace('/0', '/').lstrip('0')}({_remain}일)"
+            lines.append(
+                f"📈 예약매도 티어{i+1}: LOC ${pos['sell_target']:,.2f} "
+                f"× {pos['qty']}주 ({pnl_pct:+.1f}%){_reserve_info}"
             )
     if _o['n_pos'] < _o['cur_divisions']:
         lines.append(
@@ -1724,18 +1752,65 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             unsafe_allow_html=True,
         )
 
+        # 거래일 인덱스 (잔여일 계산용)
+        try:
+            _trading_days_idx = get_soxl_data().index
+        except Exception:
+            _trading_days_idx = None
+        _today_ts = pd.Timestamp(datetime.today().date())
+
         today_orders = []
         for i, pos in enumerate(_os['open_positions']):
-            if pos['sell_target'] is not None:
+            if pos['sell_target'] is None:
+                continue
+            _stop = pos.get('stop_date')
+            _is_stop_today = False
+            _remain_days = None
+            _reserve_date_str = ""
+
+            if _stop is not None and _trading_days_idx is not None:
+                _stop_ts = pd.Timestamp(_stop)
+                # 오늘이 손절일인지 확인
+                _is_stop_today = (_stop_ts <= _today_ts)
+                if not _is_stop_today:
+                    # 손절일까지 잔여 거래일 (오늘 제외)
+                    _future = _trading_days_idx[
+                        (_trading_days_idx > _today_ts) & (_trading_days_idx <= _stop_ts)]
+                    _remain_days = len(_future)
+                    # 예약매도일 = 손절일 전 마지막 거래일
+                    _before_stop = _trading_days_idx[_trading_days_idx < _stop_ts]
+                    if len(_before_stop) > 0:
+                        _reserve_dt = _before_stop[-1]
+                        _reserve_date_str = _reserve_dt.strftime('%m/%d').replace('/0', '/').lstrip('0') if hasattr(_reserve_dt, 'strftime') else str(_reserve_dt)[:5]
+                    else:
+                        _reserve_date_str = _stop_ts.strftime('%m/%d').replace('/0', '/').lstrip('0')
+
+            if _is_stop_today:
+                # 손절일 당일 → MOC(시장가 종가) 매도
                 today_orders.append({
-                    "구분": "매도", "시드": f"티어{i+1}",
+                    "구분": "🔴 MOC매도", "시드": f"티어{i+1}",
+                    "LOC 기준가": "시장가(종가)",
+                    "수량": f"{pos['qty']:,}주",
+                    "예상금액": f"${pos['qty'] * _os['prev_close']:,.2f}",
+                    "전일종가대비": "-",
+                    "비고": (f"⏰ 손절일 도래 — 매수가 ${pos['buy_price']:.2f} "
+                             f"({(_os['prev_close']/pos['buy_price']-1)*100:+.1f}%)"),
+                })
+            else:
+                # 예약매도 (LOC 지정가)
+                _reserve_info = ""
+                if _remain_days is not None and _reserve_date_str:
+                    _reserve_info = f" · 예약 ~{_reserve_date_str} (잔여 {_remain_days}일)"
+                today_orders.append({
+                    "구분": "예약매도", "시드": f"티어{i+1}",
                     "LOC 기준가": f"${pos['sell_target']:,.2f}",
                     "수량": f"{pos['qty']:,}주",
                     "예상금액": f"${pos['qty'] * pos['sell_target']:,.2f}",
                     "전일종가대비": f"{(pos['sell_target']/_os['prev_close']-1)*100:+.2f}%",
                     "비고": (f"매수가 ${pos['buy_price']:.2f} → "
                              f"목표 ${pos['sell_target']:.2f} "
-                             f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
+                             f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"
+                             f"{_reserve_info}"),
                 })
 
         _can_buy = _os['n_pos'] < _os['cur_divisions']
@@ -1757,10 +1832,13 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 s = [""] * len(row)
                 if "구분" in row.index:
                     ix = list(row.index).index("구분")
-                    if row["구분"] == "매도":
-                        s[ix] = "color: #1565C0; font-weight: bold"
-                    elif row["구분"] == "매수":
+                    val = row["구분"]
+                    if "MOC" in val:
                         s[ix] = "color: #C62828; font-weight: bold"
+                    elif "예약매도" in val:
+                        s[ix] = "color: #1565C0; font-weight: bold"
+                    elif val == "매수":
+                        s[ix] = "color: #E65100; font-weight: bold"
                 return s
             st.dataframe(
                 pd.DataFrame(today_orders).style.apply(_style_order_row, axis=1),
