@@ -52,6 +52,17 @@ _IUO_CONFIG_PATH = os.path.join(_IUO_CONFIG_DIR, "config.json")
 
 
 def _load_iuo_config() -> dict:
+    """IUO 설정 로드. Cloud: GSheets(session_state) / 로컬: ~/.iuo/config.json"""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        raw = st.session_state.get("user_settings", {}).get("iuo_config", "")
+        if raw:
+            try:
+                cfg = json.loads(raw) if isinstance(raw, str) else raw
+                return cfg if isinstance(cfg, dict) else {}
+            except Exception:
+                pass
+        return {}
+    # 로컬
     if os.path.exists(_IUO_CONFIG_PATH):
         try:
             with open(_IUO_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -62,9 +73,26 @@ def _load_iuo_config() -> dict:
 
 
 def _save_iuo_config(cfg: dict):
-    os.makedirs(_IUO_CONFIG_DIR, exist_ok=True)
-    with open(_IUO_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """IUO 설정 저장. Cloud: session_state + GSheets / 로컬: ~/.iuo/config.json"""
+    # 로컬 파일 저장
+    try:
+        os.makedirs(_IUO_CONFIG_DIR, exist_ok=True)
+        with open(_IUO_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Cloud: Google Sheets에 사용자별 영구 저장
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            cfg_json = json.dumps(cfg, ensure_ascii=False)
+            if "user_settings" not in st.session_state:
+                st.session_state.user_settings = {}
+            st.session_state.user_settings["iuo_config"] = cfg_json
+            from common.auth import _save_user_settings_to_sheet
+            _save_user_settings_to_sheet(st.session_state.username, {"iuo_config": cfg_json})
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
