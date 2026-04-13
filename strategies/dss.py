@@ -2501,6 +2501,36 @@ RSI   = RS / (1 + RS) × 100
     _start_date = str(p["start_date"])
     _end_date = str(p["end_date"])
 
+    # ── 파라미터 소스 선택 (사이드바 or 프리셋) ──
+    _src_options = ["📐 사이드바 설정값"] + [pr["label"] for pr in _DSS_PRESETS]
+    _src_sel = st.radio("파라미터 소스", _src_options, index=0, horizontal=True,
+                        key="dss_intro_param_src")
+    _src_idx = _src_options.index(_src_sel)
+
+    if _src_idx == 0:
+        # 사이드바 값 사용
+        _use_p = dict(p)
+    else:
+        # 프리셋 값 사용 (사이드바 기간/자본은 유지)
+        _pr = _DSS_PRESETS[_src_idx - 1]
+        _use_p = dict(p)
+        for _k in _DSS_PARAM_KEYS:
+            _use_p[_k] = _pr[_k]
+
+    # 선택된 파라미터 미리보기
+    with st.expander("🔍 적용 파라미터 확인", expanded=False):
+        _pv1, _pv2 = st.columns(2)
+        _pv1.markdown(
+            f"**🔵 안전(SF)** — 분할 {_use_p['sf_div']} · 보유 {_use_p['sf_hold']}일 · "
+            f"매수 {_use_p['sf_buy']}% · 매도 {_use_p['sf_sell']}%")
+        _pv2.markdown(
+            f"**🟢 공세(AG)** — 분할 {_use_p['ag_div']} · 보유 {_use_p['ag_hold']}일 · "
+            f"매수 {_use_p['ag_buy']}% · 매도 {_use_p['ag_sell']}%")
+        st.caption(
+            f"PCR {_use_p['pcr']}% · LCR {_use_p['lcr']}% · "
+            f"갱신주기 {_use_p['renewal_period']}일 · 수수료 {_use_p['fee_rate']}% · "
+            f"기간 {_start_date} ~ {_end_date} · 자본 ${_initial_capital:,.0f}")
+
     if st.button("▶ 성과 분석 실행", type="primary", key="dss_run_intro_perf"):
         with st.spinner("데이터 로드 및 분석 중..."):
             try:
@@ -2512,14 +2542,14 @@ RSI   = RS / (1 + RS) × 100
                 return
 
             params_intro = DSSParams(
-                sf_divisions=p["sf_div"], sf_max_hold=p["sf_hold"],
-                sf_buy_pct=p["sf_buy"]/100, sf_sell_pct=p["sf_sell"]/100,
-                ag_divisions=p["ag_div"], ag_max_hold=p["ag_hold"],
-                ag_buy_pct=p["ag_buy"]/100, ag_sell_pct=p["ag_sell"]/100,
+                sf_divisions=_use_p["sf_div"], sf_max_hold=_use_p["sf_hold"],
+                sf_buy_pct=_use_p["sf_buy"]/100, sf_sell_pct=_use_p["sf_sell"]/100,
+                ag_divisions=_use_p["ag_div"], ag_max_hold=_use_p["ag_hold"],
+                ag_buy_pct=_use_p["ag_buy"]/100, ag_sell_pct=_use_p["ag_sell"]/100,
                 initial_capital=_initial_capital,
-                fee_rate=p["fee_rate"]/100,
-                renewal_period=p["renewal_period"],
-                pcr=p["pcr"]/100, lcr=p["lcr"]/100,
+                fee_rate=_use_p["fee_rate"]/100,
+                renewal_period=_use_p["renewal_period"],
+                pcr=_use_p["pcr"]/100, lcr=_use_p["lcr"]/100,
             )
 
             bt_intro = run_backtest(
@@ -2529,10 +2559,14 @@ RSI   = RS / (1 + RS) × 100
 
         if bt_intro is not None and not bt_intro.empty:
             st.session_state["dss_intro_bt"] = bt_intro
+            st.session_state["dss_intro_bt_label"] = _src_sel
 
     _intro_bt = st.session_state.get("dss_intro_bt")
     if _intro_bt is not None and not _intro_bt.empty:
         bt = _intro_bt
+        _bt_label = st.session_state.get("dss_intro_bt_label", "")
+        if _bt_label:
+            st.caption(f"📌 분석 기준: **{_bt_label}**")
 
         # 핵심 지표
         _final = float(bt.iloc[-1]['총자산'])
@@ -3406,7 +3440,8 @@ RSI   = RS / (1 + RS) × 100
         }), hide_index=True, use_container_width=True)
 
     elif st.session_state.get("dss_intro_bt") is None:
-        st.info("👆 '성과 분석 실행' 버튼을 클릭하면 현재 파라미터 기준의 성과 분석 결과를 확인할 수 있습니다.")
+        st.info("👆 '성과 분석 실행' 버튼을 클릭하면 현재 파라미터 기준의 성과 분석 결과를 확인할 수 있습니다.\n\n"
+               "💡 사이드바 설정값 또는 추천 프리셋을 선택하여 비교 분석할 수 있습니다.")
 
 
 # ══════════════════════════════════════════════
