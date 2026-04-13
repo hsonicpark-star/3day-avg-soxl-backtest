@@ -1140,18 +1140,18 @@ def render_ordersheet_tab(params):
         # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
         with st.expander("✏️ 파라미터 수정"):
             _DSS_PRESETS = [
-                {"label": "🚀 공격형", "sf_div": 7, "sf_hold": 30, "sf_buy": 3.0, "sf_sell": 0.2,
-                 "ag_div": 7, "ag_hold": 7, "ag_buy": 5.0, "ag_sell": 2.5,
-                 "pcr": 80, "lcr": 30, "renewal_period": 10, "fee_rate": 0.04,
-                 "help": "순정 파라미터\n알고리C님 기본 설정"},
+                {"label": "🚀 공격형", "sf_div": 7, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
+                 "ag_div": 7, "ag_hold": 8, "ag_buy": 3.15, "ag_sell": 3.75,
+                 "pcr": 75, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+                 "help": "공격형 파라미터\nCAGR 66.8% | MDD -45% | Calmar 1.485"},
                 {"label": "⚖️ 균형형", "sf_div": 7, "sf_hold": 35, "sf_buy": 3.5, "sf_sell": 1.8,
                  "ag_div": 8, "ag_hold": 7, "ag_buy": 3.6, "ag_sell": 6.0,
-                 "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.044,
-                 "help": "균형 파라미터\n매수 조건 강화, 매도 여유"},
-                {"label": "🛡️ 안정형 ⭐", "sf_div": 7, "sf_hold": 35, "sf_buy": 3.5, "sf_sell": 1.8,
-                 "ag_div": 8, "ag_hold": 7, "ag_buy": 3.6, "ag_sell": 6.0,
-                 "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.044,
-                 "help": "안정 파라미터\n(최적화 후 업데이트 예정)"},
+                 "pcr": 72, "lcr": 21, "renewal_period": 10, "fee_rate": 0.04,
+                 "help": "균형형 파라미터\nCAGR 63.24% | MDD -43.77% | Calmar 1.445"},
+                {"label": "🛡️ 안정형 ⭐", "sf_div": 7, "sf_hold": 36, "sf_buy": 4.91, "sf_sell": 0.9,
+                 "ag_div": 7, "ag_hold": 8, "ag_buy": 2.77, "ag_sell": 3.06,
+                 "pcr": 70, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+                 "help": "안정형 파라미터\nCAGR 58.07% | MDD -40.69% | Calmar 1.427"},
             ]
             st.caption("💡 추천 프리셋")
             _pc1, _pc2, _pc3 = st.columns(3)
