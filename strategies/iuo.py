@@ -1789,14 +1789,14 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
                     e_dt = str(mc_idx[si + WINDOW - 1].date())
                     p = IUOParams(
                         initial_capital=cap,
-                        first_buy_ratio=params["first_buy_ratio"],
-                        buy0_pct=params["buy0_pct"],
-                        buy1_pct=params["buy1_pct"],
-                        buy2_pct=params["buy2_pct"],
-                        sell_pct=params["sell_pct"],
-                        moc_days=params["moc_days"],
-                        max_additional_buys=params["max_additional_buys"],
-                        divisions=params["divisions"],
+                        first_buy_ratio=_use_p["first_buy_ratio"],
+                        buy0_pct=_use_p["buy0_pct"],
+                        buy1_pct=_use_p["buy1_pct"],
+                        buy2_pct=_use_p["buy2_pct"],
+                        sell_pct=_use_p["sell_pct"],
+                        moc_days=_use_p["moc_days"],
+                        max_additional_buys=_use_p["max_additional_buys"],
+                        divisions=_use_p["divisions"],
                     )
                     r = run_backtest_fast(p, mc_pdf, None, s_dt, e_dt)
                     if r:
@@ -1842,20 +1842,43 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
             st.dataframe(pd.DataFrame(stat_rows), hide_index=True, use_container_width=True)
 
             # 히스토그램 + 박스플롯
-            fig_mc = make_subplots(rows=1, cols=2,
+            fig_mc = make_subplots(rows=1, cols=2, horizontal_spacing=0.12,
                                    subplot_titles=["1년 수익률 분포", "MDD 분포"])
             fig_mc.add_trace(go.Histogram(x=sr_arr.tolist(), name="IUO 전략",
                                           marker_color="#1565C0", opacity=0.7), row=1, col=1)
             if br_arr is not None:
                 fig_mc.add_trace(go.Histogram(x=br_arr.tolist(), name="B&H",
                                               marker_color="#EF5350", opacity=0.5), row=1, col=1)
-            fig_mc.add_trace(go.Box(y=sr_arr.tolist(), name="IUO MDD",
+            bm_arr = np.array(mc_res["bnh_mdd"]) if mc_res["bnh_mdd"] else None
+            fig_mc.add_trace(go.Box(y=sm_arr.tolist(), name="IUO MDD",
                                     marker_color="#1565C0"), row=1, col=2)
-            fig_mc.add_trace(go.Box(y=sm_arr.tolist(), name="B&H MDD",
-                                    marker_color="#EF5350"), row=1, col=2)
-            fig_mc.update_layout(height=350, showlegend=True,
-                                 legend=dict(orientation="h", y=1.12))
+            if bm_arr is not None:
+                fig_mc.add_trace(go.Box(y=bm_arr.tolist(), name="B&H MDD",
+                                        marker_color="#EF5350"), row=1, col=2)
+            fig_mc.update_layout(height=400, showlegend=True,
+                                 margin=dict(t=50),
+                                 legend=dict(orientation="h", y=1.08, x=0.5, xanchor="center"))
+            fig_mc.update_xaxes(title_text="수익률 (%)", row=1, col=1)
+            fig_mc.update_yaxes(title_text="빈도", row=1, col=1)
+            fig_mc.update_yaxes(title_text="MDD (%)", row=1, col=2)
             st.plotly_chart(fig_mc, use_container_width=True)
+
+            # 100구간 상세 데이터 테이블
+            with st.expander("📋 100구간 상세 데이터", expanded=False):
+                mc_detail_rows = []
+                for i in range(len(sr_arr)):
+                    row = {"#": i + 1, "IUO 수익률": f"{sr_arr[i]:+.2f}%",
+                           "IUO MDD": f"{sm_arr[i]:.2f}%"}
+                    if br_arr is not None and i < len(br_arr):
+                        row["B&H 수익률"] = f"{br_arr[i]:+.2f}%"
+                    if bm_arr is not None and i < len(bm_arr):
+                        row["B&H MDD"] = f"{bm_arr[i]:.2f}%"
+                    if br_arr is not None and i < len(br_arr):
+                        row["초과수익"] = f"{sr_arr[i] - br_arr[i]:+.2f}%"
+                    mc_detail_rows.append(row)
+                mc_detail_df = pd.DataFrame(mc_detail_rows)
+                st.dataframe(mc_detail_df, use_container_width=True, hide_index=True,
+                             height=400)
     st.divider()
 
     # ── 전략 인사이트 ──
