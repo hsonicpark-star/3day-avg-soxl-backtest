@@ -129,7 +129,8 @@ def _next_trading_date(d=None):
         if h.weekday() == 5: observed.add(h - timedelta(days=1))
         elif h.weekday() == 6: observed.add(h + timedelta(days=1))
     all_holidays = us_holidays | observed
-    candidate = d + timedelta(days=1)
+    # 오늘이 거래일이면 오늘 (LOC = 당일 장마감 주문)
+    candidate = d
     for _ in range(30):
         if candidate.weekday() < 5 and candidate not in all_holidays:
             return candidate
