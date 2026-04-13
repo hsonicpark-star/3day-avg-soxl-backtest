@@ -685,7 +685,7 @@ def render_ordersheet_tab(params: dict):
 
 
 def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict, idx: int):
-    """개별 IUO 계좌 렌더링 (주문표 + 포트폴리오 + 히스토리 + 계좌관리)."""
+    """개별 IUO 계좌 렌더링 — avg_close 레이아웃 순서 준수."""
     sfx = f"_{idx}"  # session_state key suffix
     tk_params = acct_data.get("params", {})
     acct_ticker = acct_data.get("ticker", acct_key.split("_")[0])
@@ -702,22 +702,156 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
     maxb = int(tk_params.get("max_add_buys", params["max_additional_buys"]))
     div = int(tk_params.get("divisions", params["divisions"]))
 
-    # ── 현재 파라미터 표시 ──
-    st.markdown(f"""
-<div style="background:#f8f9fa;padding:10px 16px;border-radius:8px;margin-bottom:12px;font-size:14px;">
-<b>{acct_key}</b> │
-첫매수 <b>{fbr*100:.0f}%</b> │
-매수1 <b>{b1*100:.1f}%</b> │
-매수2 <b>{b2*100:.1f}%</b> │
-매도 <b>{sp*100:.1f}%</b> │
-MOC <b>{moc}일</b> │
-분할 <b>{div}</b> │
-매수제한 <b>{maxb}회</b> │
-시작자본 <b>${os_capital:,.0f}</b>
-</div>
-""", unsafe_allow_html=True)
+    # ── 1) 계좌 삭제 ──
+    _del_col, _ = st.columns([1, 5])
+    if _del_col.button(f"🗑️ {acct_key} 계좌 삭제", key=f"iuo_del_acct{sfx}", type="secondary"):
+        st.session_state[f"iuo_confirm_del{sfx}"] = True
+    if st.session_state.get(f"iuo_confirm_del{sfx}"):
+        st.warning(f"⚠️ **{acct_key} 계좌를 삭제하시겠습니까?** 저장된 설정 및 매매 히스토리가 모두 삭제됩니다.")
+        dc1, dc2, _ = st.columns([1, 1, 4])
+        if dc1.button("✅ 삭제", key=f"iuo_confirm_yes{sfx}", type="primary"):
+            del cfg["accounts"][acct_key]
+            _save_iuo_config(cfg)
+            hist_path = _get_iuo_history_path(acct_ticker, acct_key)
+            if os.path.exists(hist_path):
+                os.remove(hist_path)
+            st.session_state.pop(f"iuo_confirm_del{sfx}", None)
+            st.success(f"'{acct_key}' 계좌가 삭제되었습니다.")
+            st.rerun()
+        if dc2.button("❌ 취소", key=f"iuo_confirm_no{sfx}"):
+            st.session_state[f"iuo_confirm_del{sfx}"] = False
+            st.rerun()
 
-    # ── 가격 데이터 로드 ──
+    # ── 2) 파라미터 표시 + 수정 (border container) ──
+    with st.container(border=True):
+        _p1, _p2, _p3, _p4, _p5 = st.columns(5)
+        _p1.metric("첫매수비율", f"{fbr*100:.0f}%")
+        _p2.metric("매수1 / 매수2", f"{b1*100:.1f}% / {b2*100:.1f}%")
+        _p3.metric("매도기준", f"{sp*100:.1f}%")
+        _p4.metric("분할수", f"{div}회")
+        _p5.metric("MOC / 매수제한", f"{moc}일 / {maxb}회")
+
+        with st.expander("✏️ 파라미터 수정"):
+            ec1, ec2, ec3, ec4 = st.columns(4)
+            e_fbr = ec1.number_input("첫매수비율(%)", value=fbr * 100, step=1.0,
+                                     key=f"iuo_e_fbr{sfx}")
+            e_b1 = ec2.number_input("매수1(%)", value=b1 * 100, step=0.1,
+                                    key=f"iuo_e_b1{sfx}")
+            e_b2 = ec3.number_input("매수2(%)", value=b2 * 100, step=0.5,
+                                    key=f"iuo_e_b2{sfx}")
+            e_sp = ec4.number_input("매도(%)", value=sp * 100, step=0.1,
+                                    key=f"iuo_e_sp{sfx}")
+            ec5, ec6, ec7 = st.columns(3)
+            e_moc = ec5.number_input("시간청산(일)", value=moc, step=1,
+                                     key=f"iuo_e_moc{sfx}")
+            e_maxb = ec6.number_input("매수제한(회)", value=maxb, step=1,
+                                      key=f"iuo_e_maxb{sfx}")
+            e_div = ec7.number_input("분할수", value=div, step=1,
+                                     key=f"iuo_e_div{sfx}")
+
+            if st.button("💾 파라미터 저장", key=f"iuo_save_p{sfx}", type="primary",
+                         use_container_width=True):
+                acct_data["params"] = {
+                    "first_buy_ratio": e_fbr, "buy0_pct": b0 * 100,
+                    "buy1_pct": e_b1, "buy2_pct": e_b2,
+                    "sell_pct": e_sp, "moc_days": e_moc,
+                    "max_add_buys": e_maxb, "divisions": e_div,
+                }
+                cfg["accounts"][acct_key] = acct_data
+                _save_iuo_config(cfg)
+                st.success(f"✅ {acct_key} 파라미터가 저장되었습니다!")
+                st.rerun()
+
+    # ── 3) 시작일 / 자본금 ──
+    mc1, mc2 = st.columns(2)
+    os_start_input = mc1.date_input("시작일", pd.to_datetime(os_start).date(),
+                                    min_value=datetime(2000, 1, 1).date(),
+                                    max_value=datetime.today().date(),
+                                    key=f"iuo_e_start{sfx}")
+    os_capital_input = mc2.number_input("시작 자본 ($)", value=os_capital, step=1000.0,
+                                        key=f"iuo_e_cap{sfx}")
+
+    # ── 4) 자본 조정 (증액 / 감액) ──
+    with st.expander("💰 자본 조정 (증액 / 감액)"):
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요.")
+        _adj_history_raw = acct_data.get("capital_adj_history", "[]")
+        try:
+            _adj_history = json.loads(_adj_history_raw) if isinstance(_adj_history_raw, str) else _adj_history_raw
+            if not isinstance(_adj_history, list): _adj_history = []
+        except: _adj_history = []
+
+        _adj_c1, _adj_c2 = st.columns([2, 1])
+        _adj_amount = _adj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
+                                            help="증액: 양수 · 감액: 음수",
+                                            key=f"iuo_adj_input{sfx}")
+        _adj_c1.caption(
+            f"적용 후 자본금: **${os_capital + _adj_amount:,.0f}** "
+            f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
+            f"${abs(_adj_amount):,.0f})"
+        )
+        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
+                                        key=f"iuo_adj_memo{sfx}")
+        if _adj_c2.button("💰 적용", use_container_width=True,
+                          key=f"iuo_adj_apply{sfx}", disabled=(_adj_amount == 0)):
+            _new_capital = os_capital + _adj_amount
+            if _new_capital <= 0:
+                st.error("자본금은 0보다 커야 합니다.")
+            else:
+                _adj_history.append({
+                    "날짜": datetime.today().strftime("%Y-%m-%d"),
+                    "조정금액": float(_adj_amount),
+                    "누적자본금": float(_new_capital),
+                    "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
+                })
+                acct_data["os_capital"] = _new_capital
+                acct_data["capital_adj_history"] = json.dumps(_adj_history, ensure_ascii=False)
+                cfg["accounts"][acct_key] = acct_data
+                _save_iuo_config(cfg)
+                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다.")
+                st.rerun()
+
+        if _adj_history:
+            st.markdown("---")
+            st.markdown("**📋 자본 조정 이력**")
+            _df_adj = pd.DataFrame(_adj_history)
+            _df_adj["조정금액"] = _df_adj["조정금액"].apply(lambda x: f"{'↑' if x>0 else '↓'} ${abs(x):,.0f}")
+            _df_adj["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(_df_adj[["날짜","조정금액","누적자본금","메모"]],
+                         use_container_width=True, hide_index=True)
+        else:
+            st.info("아직 자본 조정 이력이 없습니다.")
+
+        # 전체 초기화
+        st.markdown("---")
+        st.markdown("**🔄 전체 초기화**")
+        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다.")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        _reset_start = _rc1.date_input("새 시작일", value=datetime.today().date(),
+                                        key=f"iuo_reset_start{sfx}")
+        _reset_capital = _rc2.number_input("새 시작 자본 ($)", value=os_capital,
+                                            step=1000.0, key=f"iuo_reset_cap{sfx}")
+        if _rc3.button("🔄 초기화", use_container_width=True,
+                       key=f"iuo_do_reset{sfx}", type="secondary"):
+            st.session_state[f"iuo_reset_confirmed{sfx}"] = True
+        if st.session_state.get(f"iuo_reset_confirmed{sfx}", False):
+            st.warning(f"⚠️ **정말 초기화하시겠습니까?**  \n"
+                       f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
+            _conf_c1, _conf_c2 = st.columns(2)
+            if _conf_c1.button("✅ 확인 (초기화)", type="primary", key=f"iuo_confirm_reset{sfx}"):
+                acct_data["os_start"] = str(_reset_start)
+                acct_data["os_capital"] = float(_reset_capital)
+                acct_data["capital_adj_history"] = "[]"
+                cfg["accounts"][acct_key] = acct_data
+                _save_iuo_config(cfg)
+                st.session_state[f"iuo_reset_confirmed{sfx}"] = False
+                st.success(f"✅ 초기화 완료! 시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f}")
+                st.rerun()
+            if _conf_c2.button("❌ 취소", key=f"iuo_cancel_reset{sfx}"):
+                st.session_state[f"iuo_reset_confirmed{sfx}"] = False
+                st.rerun()
+
+    # ── 5) 새로고침 / 주문표 로드 버튼 ──
+    # 가격 데이터 로드
     try:
         price_df = _download_ticker(acct_ticker)
         last_close = round(float(price_df.iloc[-1]["Close"]), 2)
@@ -726,35 +860,33 @@ MOC <b>{moc}일</b> │
         st.error("가격 데이터를 로드할 수 없습니다.")
         return
 
-    next_td = _next_trading_date()
+    _ss_key = f"iuo_os_result{sfx}"
+    _use_start = str(os_start_input)
+    _use_capital = float(os_capital_input)
+    _btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
+    if st.button(_btn_label, type="primary", key=f"iuo_load_os{sfx}", use_container_width=True):
+        # 시작일/자본 저장
+        acct_data["os_start"] = _use_start
+        acct_data["os_capital"] = _use_capital
+        cfg["accounts"][acct_key] = acct_data
+        _save_iuo_config(cfg)
 
-    # ── 주문표 로드 & 백테스트 ──
-    btn_key = f"iuo_load_os{sfx}"
-    if st.button("📊 주문표 로드", key=btn_key, use_container_width=True, type="primary"):
         iuo_p = IUOParams(
-            initial_capital=os_capital,
+            initial_capital=_use_capital,
             first_buy_ratio=fbr, buy0_pct=b0, buy1_pct=b1, buy2_pct=b2,
             sell_pct=sp, moc_days=moc, max_additional_buys=maxb, divisions=div,
         )
         with st.spinner("백테스트 실행 중..."):
-            qqq_df = None
-            result = run_backtest(iuo_p, price_df, qqq_df, os_start, last_date)
+            result = run_backtest(iuo_p, price_df, None, _use_start, last_date)
         if result:
-            st.session_state[f"iuo_os_result{sfx}"] = result
-            # B방식 히스토리 저장
+            st.session_state[_ss_key] = result
             _save_iuo_history(acct_ticker, result["daily_log"], acct_key)
         else:
             st.warning("백테스트 결과가 없습니다. 시작일을 확인하세요.")
 
-    result = st.session_state.get(f"iuo_os_result{sfx}")
+    result = st.session_state.get(_ss_key)
 
-    # ── 오늘의 LOC 주문 ──
-    st.subheader(f"📑 오늘의 LOC 주문 — {next_td.strftime('%Y-%m-%d')}")
-    st.caption(f"기준가 (전일종가): ${last_close:,.2f} ({last_date})")
-
-    buy0_loc = round(last_close * (1 + b0), 2)
-    buy1_loc = round(last_close * (1 + b1), 2)
-    buy2_loc = round(last_close * (1 + b2), 2)
+    next_td = _next_trading_date()
 
     # 현재 보유 상태 파악 (백테스트 결과에서)
     has_position = False
@@ -763,9 +895,9 @@ MOC <b>{moc}일</b> │
     cycle_day = 0
     cur_shares = 0
     avg_cost = 0
-    cash = os_capital
-    total_asset = os_capital
-    cycle_base = os_capital
+    cash = _use_capital
+    total_asset = _use_capital
+    cycle_base = _use_capital
 
     if result:
         log = result["daily_log"]
@@ -777,15 +909,59 @@ MOC <b>{moc}일</b> │
             add_buy_count = last_row.get("추가매수횟수", 0)
             cycle_day = last_row.get("진행일", 0)
             avg_cost = last_row.get("평단가", 0)
-            cash = last_row.get("예수금", os_capital)
-            total_asset = last_row.get("총자산", os_capital)
-            cycle_base = last_row.get("매수기준액", os_capital)
+            cash = last_row.get("예수금", _use_capital)
+            total_asset = last_row.get("총자산", _use_capital)
+            cycle_base = last_row.get("매수기준액", _use_capital)
 
-    # 주문 테이블 구성
+    # ── 6) 포트폴리오 현황 ──
+    if result:
+        st.caption(f"{_use_start} ~ {last_date}")
+        cum_realized = sum(s.get("실현손익", 0) for s in result.get("sell_records", []))
+        dd_val = result.get("metrics", {}).get("mdd", 0)
+        stock_ratio = (cur_shares * last_close / total_asset * 100) if total_asset > 0 else 0
+
+        p1, p2, p3, p4, p5 = st.columns(5)
+        p1.metric("시작 자본", f"${_use_capital:,.0f}")
+        p2.metric("평가 자산", f"${total_asset:,.0f}",
+                  f"📈 CAGR {result.get('metrics',{}).get('cagr',0):.1f}%")
+        p3.metric("실현손익", f"${cum_realized:+,.2f}",
+                  f"{'✅ 수익' if cum_realized > 0 else '❌ 손실'}")
+        p4.metric("현재 DD", f"{dd_val:.2f}%",
+                  f"{'📉' if dd_val < -5 else '📈'} {dd_val:+.2f}%")
+        p5.metric("주식 비중", f"{stock_ratio:.1f}%")
+
+        if has_position:
+            eval_amt = cur_shares * last_close
+            unreal_pnl = eval_amt - (cur_shares * avg_cost) if avg_cost > 0 else 0
+            unreal_pct = (last_close / avg_cost - 1) * 100 if avg_cost > 0 else 0
+
+            st.markdown("**보유 현황**")
+            hold_data = {
+                "종목": [acct_ticker], "보유수량": [f"{cur_shares:,}주"],
+                "평단가": [f"${avg_cost:,.2f}"], "현재가": [f"${last_close:,.2f}"],
+                "평가금액": [f"${eval_amt:,.0f}"],
+                "평가손익": [f"${unreal_pnl:+,.0f} ({unreal_pct:+.1f}%)"],
+                "추가매수": [f"{add_buy_count}/{maxb}회"],
+                "진행일": [f"{cycle_day}/{moc}일"],
+                "마지막매수종가": [f"${last_buy_close:,.2f}" if last_buy_close else "-"],
+            }
+            st.dataframe(pd.DataFrame(hold_data), use_container_width=True, hide_index=True)
+        else:
+            st.info("현재 보유 포지션이 없습니다. 다음 사이클 첫매수를 기다리는 중입니다.")
+    else:
+        st.caption("'📋 주문표 로드' 버튼을 눌러 포트폴리오 현황을 확인하세요.")
+
+    # ── 7) 오늘의 LOC 주문 ──
+    st.divider()
+    st.subheader(f"📑 오늘의 LOC 주문 — {next_td.strftime('%Y-%m-%d')}")
+    st.caption(f"기준가 (전일종가): ${last_close:,.2f} ({last_date})")
+
+    buy0_loc = round(last_close * (1 + b0), 2)
+    buy1_loc = round(last_close * (1 + b1), 2)
+    buy2_loc = round(last_close * (1 + b2), 2)
+
     today_orders = []
-
     if has_position:
-        # 매도 주문 (보유 중일 때)
         if last_buy_close and last_buy_close > 0:
             sell_loc = round(last_buy_close * (1 + sp), 2)
             today_orders.append({
@@ -795,12 +971,9 @@ MOC <b>{moc}일</b> │
                 "전일종가 대비": f"{(sell_loc / last_close - 1) * 100:+.2f}%",
                 "비고": f"마지막매수종가 ${last_buy_close:,.2f} × (1+{sp*100:.1f}%)",
             })
-
-        # 추가매수 주문 (매수제한 미도달 시)
         remaining = maxb - add_buy_count
         if remaining > 0:
-            invested = total_asset - cash
-            buy_amt = invested / div if div > 0 else 0
+            buy_amt = cycle_base / div if div > 0 else 0
             qty1 = math.floor(buy_amt / buy1_loc) if buy1_loc > 0 else 0
             today_orders.append({
                 "구분": "🔴 추가매수1", "LOC 기준가": f"${buy1_loc:,.2f}",
@@ -819,7 +992,6 @@ MOC <b>{moc}일</b> │
                     "비고": f"잔여 {remaining}회 │ 하루 2건 체결 가능",
                 })
     else:
-        # 첫매수 주문 (미보유 시)
         first_amt = cycle_base * fbr
         qty0 = math.floor(first_amt / buy0_loc) if buy0_loc > 0 else 0
         today_orders.append({
@@ -844,50 +1016,12 @@ MOC <b>{moc}일</b> │
     else:
         st.info("주문표를 로드하면 오늘의 LOC 주문이 표시됩니다.")
 
-    st.divider()
-
-    # ── 포트폴리오 현황 ──
-    st.subheader("💼 포트폴리오 현황")
-    if result and has_position:
-        eval_amt = cur_shares * last_close
-        unreal_pnl = eval_amt - (cur_shares * avg_cost) if avg_cost > 0 else 0
-        unreal_pct = (last_close / avg_cost - 1) * 100 if avg_cost > 0 else 0
-
-        p1, p2, p3, p4, p5 = st.columns(5)
-        p1.metric("시작 자본", f"${os_capital:,.0f}")
-        p2.metric("총자산", f"${total_asset:,.0f}",
-                  f"{(total_asset / os_capital - 1) * 100:+.1f}%")
-        p3.metric("평가손익", f"${unreal_pnl:+,.0f}",
-                  f"{unreal_pct:+.1f}%")
-        p4.metric("예수금", f"${cash:,.0f}")
-        p5.metric("현금비율", f"{cash / total_asset * 100:.1f}%")
-
-        st.markdown("**보유 현황**")
-        hold_data = {
-            "종목": [acct_ticker], "보유수량": [f"{cur_shares:,}주"],
-            "평단가": [f"${avg_cost:,.2f}"], "현재가": [f"${last_close:,.2f}"],
-            "평가금액": [f"${eval_amt:,.0f}"],
-            "평가손익": [f"${unreal_pnl:+,.0f} ({unreal_pct:+.1f}%)"],
-            "추가매수": [f"{add_buy_count}/{maxb}회"],
-            "진행일": [f"{cycle_day}/{moc}일"],
-            "마지막매수종가": [f"${last_buy_close:,.2f}" if last_buy_close else "-"],
-        }
-        st.dataframe(pd.DataFrame(hold_data), use_container_width=True, hide_index=True)
-    elif result:
-        p1, p2 = st.columns(2)
-        p1.metric("시작 자본", f"${os_capital:,.0f}")
-        p2.metric("총자산 (예수금)", f"${total_asset:,.0f}",
-                  f"{(total_asset / os_capital - 1) * 100:+.1f}%")
-        st.info("현재 보유 포지션이 없습니다. 다음 사이클 첫매수를 기다리는 중입니다.")
-    else:
-        st.caption("'📊 주문표 로드' 버튼을 눌러 포트폴리오 현황을 확인하세요.")
-
-    # ── 최근 매도 이력 ──
+    # ── 8) 최근 매도 이력 ──
     if result and result.get("sell_records"):
         st.divider()
         st.subheader("📈 최근 매도 이력")
         sells = result["sell_records"]
-        sell_df = pd.DataFrame(sells[-20:])  # 최근 20건
+        sell_df = pd.DataFrame(sells[-20:])
         if not sell_df.empty:
             wins = sum(1 for s in sells if s.get("실현손익", 0) > 0)
             losses = len(sells) - wins
@@ -897,14 +1031,13 @@ MOC <b>{moc}일</b> │
             sc3.metric("승/패", f"{wins}승 {losses}패")
             st.dataframe(sell_df.iloc[::-1], use_container_width=True, hide_index=True)
 
-    # ── 일별 매매 히스토리 ──
+    # ── 9) 일별 매매 히스토리 ──
     st.divider()
     with st.expander("📋 일별 매매 상세표", expanded=False):
         hist_df = _load_iuo_history(acct_ticker, acct_key)
         if hist_df.empty and result:
             hist_df = pd.DataFrame(result["daily_log"])
         if not hist_df.empty:
-            # 매매 건수 집계
             buy_count = (pd.to_numeric(hist_df.get("매수수량", pd.Series(dtype=float)),
                                        errors="coerce").fillna(0) > 0).sum()
             sell_count = (pd.to_numeric(hist_df.get("매도수량", pd.Series(dtype=float)),
@@ -914,7 +1047,6 @@ MOC <b>{moc}일</b> │
             st.caption(f"기록 {first_date} ~ {last_date_h} │ "
                        f"총 {buy_count + sell_count}건 (매수 {buy_count}회 · 매도 {sell_count}회)")
 
-            # 스타일링
             display_df = hist_df.copy()
 
             def _style_trade_row(row):
@@ -929,7 +1061,6 @@ MOC <b>{moc}일</b> │
             st.dataframe(display_df.iloc[::-1].style.apply(_style_trade_row, axis=1),
                          use_container_width=True, hide_index=True)
 
-            # 다운로드
             dl1, dl2 = st.columns(2)
             with dl1:
                 csv_data = display_df.to_csv(index=False, encoding="utf-8-sig")
@@ -951,82 +1082,6 @@ MOC <b>{moc}일</b> │
                     pass
         else:
             st.caption("히스토리가 없습니다. 주문표를 로드하면 자동 생성됩니다.")
-
-    # ── 계좌 관리 ──
-    st.divider()
-    with st.expander("⚙️ 계좌 관리", expanded=False):
-        # 파라미터 수정
-        st.markdown("**파라미터 수정**")
-        ec1, ec2 = st.columns(2)
-        e_fbr = ec1.number_input("첫매수비율(%)", value=fbr * 100, step=1.0,
-                                 key=f"iuo_e_fbr{sfx}")
-        e_sp = ec2.number_input("매도(%)", value=sp * 100, step=0.1,
-                                key=f"iuo_e_sp{sfx}")
-        ec3, ec4 = st.columns(2)
-        e_b1 = ec3.number_input("매수1(%)", value=b1 * 100, step=0.1,
-                                key=f"iuo_e_b1{sfx}")
-        e_b2 = ec4.number_input("매수2(%)", value=b2 * 100, step=0.5,
-                                key=f"iuo_e_b2{sfx}")
-        ec5, ec6, ec7 = st.columns(3)
-        e_moc = ec5.number_input("시간청산(일)", value=moc, step=1,
-                                 key=f"iuo_e_moc{sfx}")
-        e_maxb = ec6.number_input("매수제한(회)", value=maxb, step=1,
-                                  key=f"iuo_e_maxb{sfx}")
-        e_div = ec7.number_input("분할수", value=div, step=1,
-                                 key=f"iuo_e_div{sfx}")
-
-        if st.button("💾 파라미터 저장", key=f"iuo_save_p{sfx}", type="primary"):
-            acct_data["params"] = {
-                "first_buy_ratio": e_fbr, "buy0_pct": b0 * 100,
-                "buy1_pct": e_b1, "buy2_pct": e_b2,
-                "sell_pct": e_sp, "moc_days": e_moc,
-                "max_add_buys": e_maxb, "divisions": e_div,
-            }
-            cfg["accounts"][acct_key] = acct_data
-            _save_iuo_config(cfg)
-            st.success("파라미터가 저장되었습니다.")
-            st.rerun()
-
-        st.markdown("---")
-
-        # 시작일 / 자본 변경
-        st.markdown("**시작일 & 자본 설정**")
-        mc1, mc2 = st.columns(2)
-        new_start = mc1.date_input("시작일", pd.to_datetime(os_start).date(),
-                                   key=f"iuo_e_start{sfx}")
-        new_cap = mc2.number_input("시작 자본 ($)", value=os_capital, step=1000.0,
-                                   key=f"iuo_e_cap{sfx}")
-        if st.button("💾 저장", key=f"iuo_save_cap{sfx}"):
-            acct_data["os_start"] = str(new_start)
-            acct_data["os_capital"] = new_cap
-            cfg["accounts"][acct_key] = acct_data
-            _save_iuo_config(cfg)
-            st.success("시작일/자본이 저장되었습니다.")
-            st.rerun()
-
-        st.markdown("---")
-
-        # 계좌 삭제
-        if st.button(f"🗑️ '{acct_key}' 계좌 삭제", key=f"iuo_del_acct{sfx}",
-                     type="secondary"):
-            st.session_state[f"iuo_confirm_del{sfx}"] = True
-
-        if st.session_state.get(f"iuo_confirm_del{sfx}"):
-            st.warning(f"⚠️ '{acct_key}' 계좌를 삭제하시겠습니까? 히스토리도 함께 삭제됩니다.")
-            dc1, dc2 = st.columns(2)
-            if dc1.button("✅ 확인 삭제", key=f"iuo_confirm_yes{sfx}", type="primary"):
-                del cfg["accounts"][acct_key]
-                _save_iuo_config(cfg)
-                # 히스토리 파일 삭제
-                hist_path = _get_iuo_history_path(acct_ticker, acct_key)
-                if os.path.exists(hist_path):
-                    os.remove(hist_path)
-                st.session_state.pop(f"iuo_confirm_del{sfx}", None)
-                st.success(f"'{acct_key}' 계좌가 삭제되었습니다.")
-                st.rerun()
-            if dc2.button("❌ 취소", key=f"iuo_confirm_no{sfx}"):
-                st.session_state.pop(f"iuo_confirm_del{sfx}", None)
-                st.rerun()
 
 
 # ──────────────────────────────────────────────
