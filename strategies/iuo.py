@@ -732,6 +732,33 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
         _p5.metric("MOC / 매수제한", f"{moc}일 / {maxb}회")
 
         with st.expander("✏️ 파라미터 수정"):
+            # ── 추천 프리셋 ──
+            _IUO_PRESETS = [
+                {"label": "🚀 공격형",    "first_buy_ratio": 40, "buy1_pct": -1.0, "buy2_pct": -11.0,
+                 "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6,
+                 "help": "CAGR 69.51%  |  MDD -44.12%  |  Calmar 1.576  |  승률 78.1%\n높은 수익률 추구, 변동성 감수"},
+                {"label": "⚖️ 균형형",   "first_buy_ratio": 35, "buy1_pct": -1.0, "buy2_pct": -11.0,
+                 "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6,
+                 "help": "CAGR 63.07%  |  MDD -38.82%  |  Calmar 1.625  |  승률 77.5%\n수익률과 안정성의 중간"},
+                {"label": "🛡️ 안정형 ⭐", "first_buy_ratio": 25, "buy1_pct": -1.0, "buy2_pct": -11.0,
+                 "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6,
+                 "help": "CAGR 42.35%  |  MDD -28.00%  |  Calmar 1.512  |  승률 77.2%\n최저 MDD — 안정적 운용 추천"},
+            ]
+            st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
+            _pc1, _pc2, _pc3 = st.columns(3)
+            for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _IUO_PRESETS)):
+                if _pcol.button(_pr["label"], key=f"iuo_preset_{_pi}{sfx}",
+                                help=_pr["help"], use_container_width=True):
+                    st.session_state[f"iuo_e_fbr{sfx}"] = float(_pr["first_buy_ratio"])
+                    st.session_state[f"iuo_e_b1{sfx}"]  = float(_pr["buy1_pct"])
+                    st.session_state[f"iuo_e_b2{sfx}"]  = float(_pr["buy2_pct"])
+                    st.session_state[f"iuo_e_sp{sfx}"]  = float(_pr["sell_pct"])
+                    st.session_state[f"iuo_e_moc{sfx}"] = int(_pr["moc_days"])
+                    st.session_state[f"iuo_e_maxb{sfx}"] = int(_pr["max_add_buys"])
+                    st.session_state[f"iuo_e_div{sfx}"] = int(_pr["divisions"])
+                    st.rerun()
+            st.divider()
+
             ec1, ec2, ec3, ec4 = st.columns(4)
             e_fbr = ec1.number_input("첫매수비율(%)", value=fbr * 100, step=1.0,
                                      key=f"iuo_e_fbr{sfx}")
