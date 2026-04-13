@@ -55,6 +55,17 @@ _DSS_CONFIG_PATH = os.path.join(_DSS_CONFIG_DIR, "config.json")
 
 
 def _load_dss_config() -> dict:
+    """DSS 설정 로드. Cloud: GSheets(session_state) / 로컬: ~/.dss/config.json"""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        raw = st.session_state.get("user_settings", {}).get("dss_config", "")
+        if raw:
+            try:
+                cfg = json.loads(raw) if isinstance(raw, str) else raw
+                return cfg if isinstance(cfg, dict) else {}
+            except Exception:
+                pass
+        return {}
+    # 로컬
     if os.path.exists(_DSS_CONFIG_PATH):
         try:
             with open(_DSS_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -65,9 +76,26 @@ def _load_dss_config() -> dict:
 
 
 def _save_dss_config(cfg: dict):
-    os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
-    with open(_DSS_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    """DSS 설정 저장. Cloud: session_state + GSheets / 로컬: ~/.dss/config.json"""
+    # 로컬 파일 저장 (로컬 PC용 + Cloud 임시 백업)
+    try:
+        os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
+        with open(_DSS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+    # Cloud: Google Sheets에 영구 저장
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            cfg_json = json.dumps(cfg, ensure_ascii=False)
+            if "user_settings" not in st.session_state:
+                st.session_state.user_settings = {}
+            st.session_state.user_settings["dss_config"] = cfg_json
+            from common.auth import _save_user_settings_to_sheet
+            _save_user_settings_to_sheet(st.session_state.username, {"dss_config": cfg_json})
+        except Exception as e:
+            st.warning(f"⚠️ Cloud 저장 실패 (로컬에는 저장됨): {e}")
 
 
 # ──────────────────────────────────────────────
@@ -3386,7 +3414,10 @@ def render_settings_tab():
 
     _cfg_s = _load_dss_config()
     if _IS_CLOUD:
-        st.info("☁️ **Streamlit Cloud 실행 중** — 설정이 세션 내에서만 유지됩니다.")
+        if st.session_state.get("logged_in"):
+            st.success("☁️ **Streamlit Cloud 실행 중** — 설정이 Google Sheets에 영구 저장됩니다.")
+        else:
+            st.warning("☁️ **Streamlit Cloud 실행 중** — 로그인 후 설정이 영구 저장됩니다.")
     else:
         st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_DSS_CONFIG_PATH}` 에 저장됩니다.")
 
@@ -3539,7 +3570,8 @@ def render_settings_tab():
                     _cfg_s["tg_chat_id"] = tg_chat_id
                     _cfg_s["tg_token"] = tg_token
                     _save_dss_config(_cfg_s)
-                    st.success(f"✅ 저장 완료! `{_DSS_CONFIG_PATH}`")
+                    _save_loc = "Google Sheets" if (_IS_CLOUD and st.session_state.get("logged_in")) else _DSS_CONFIG_PATH
+                    st.success(f"✅ 저장 완료! `{_save_loc}`")
 
     st.write("")
 

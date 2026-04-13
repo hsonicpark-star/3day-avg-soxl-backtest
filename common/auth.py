@@ -96,6 +96,7 @@ def render_login_gate():
                             "gs_url", "gs_sheet",
                             "a_buy", "a_sell", "sell_ratio", "divisions",
                             "ticker_settings", "sd_ticker_settings",
+                            "dss_config",                       # DSS 동파법 설정
                         )
                     }
                     st.rerun()
