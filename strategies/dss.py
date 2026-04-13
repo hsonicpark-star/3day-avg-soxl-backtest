@@ -301,13 +301,19 @@ def next_trading_date(d=None):
 # 데이터 캐싱
 # ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner="SOXL 데이터 로딩...")
+@st.cache_data(show_spinner="SOXL 데이터 로딩...", ttl=3600)
 def get_soxl_data():
-    return load_price_data("SOXL", "2009-06-01", "2026-12-31")
+    df = load_price_data("SOXL", "2009-06-01", "2026-12-31")
+    if df is None or df.empty:
+        raise RuntimeError("SOXL 데이터 로드 실패 (yfinance)")
+    return df
 
-@st.cache_data(show_spinner="QQQ 데이터 로딩...")
+@st.cache_data(show_spinner="QQQ 데이터 로딩...", ttl=3600)
 def get_qqq_data():
-    return load_price_data("QQQ", "2009-01-01", "2026-12-31")
+    df = load_price_data("QQQ", "2009-01-01", "2026-12-31")
+    if df is None or df.empty:
+        raise RuntimeError("QQQ 데이터 로드 실패 (yfinance)")
+    return df
 
 @st.cache_data(show_spinner="주간 RSI 계산 중...")
 def get_mode_series(_qqq_hash):
@@ -1163,12 +1169,13 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq):
 
 def _build_os_result_fallback(os_params, os_capital):
     """백테스트 결과 없을 때 (신규 계좌/오늘 시작) → 최신 시장 데이터로 주문표 생성."""
-    soxl = get_soxl_data()
-    qqq = get_qqq_data()
-
-    if soxl is None or soxl.empty:
+    try:
+        soxl = get_soxl_data()
+        qqq = get_qqq_data()
+    except Exception:
         return None
-    if qqq is None or qqq.empty:
+
+    if soxl is None or soxl.empty or qqq is None or qqq.empty:
         return None
 
     mode_series_df = get_mode_series(len(qqq))
@@ -1411,38 +1418,44 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx,
         cfg["accounts"][acct_name] = acct_data
         _save_dss_config(cfg)
 
-        soxl = get_soxl_data()
-        qqq = get_qqq_data()
-        mode_series = get_mode_series(len(qqq))
-        os_params = DSSParams(
-            sf_divisions=cur_sf_div, sf_max_hold=cur_sf_hold,
-            sf_buy_pct=cur_sf_buy / 100, sf_sell_pct=cur_sf_sell / 100,
-            ag_divisions=cur_ag_div, ag_max_hold=cur_ag_hold,
-            ag_buy_pct=cur_ag_buy / 100, ag_sell_pct=cur_ag_sell / 100,
-            initial_capital=float(os_capital),
-            fee_rate=cur_fee / 100,
-            renewal_period=cur_renew,
-            pcr=cur_pcr / 100, lcr=cur_lcr / 100,
-        )
+        try:
+            soxl = get_soxl_data()
+            qqq = get_qqq_data()
+            mode_series = get_mode_series(len(qqq))
+        except Exception as _data_err:
+            st.error(f"⚠️ 가격 데이터 로드 실패: {_data_err}\n\n잠시 후 다시 시도해주세요.")
+            soxl = None
 
-        today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
-        with st.spinner("포트폴리오 시뮬레이션 중..."):
-            bt_df = run_backtest(
-                os_params, soxl, mode_series,
-                str(os_start), today_str,
+        if soxl is not None:
+            os_params = DSSParams(
+                sf_divisions=cur_sf_div, sf_max_hold=cur_sf_hold,
+                sf_buy_pct=cur_sf_buy / 100, sf_sell_pct=cur_sf_sell / 100,
+                ag_divisions=cur_ag_div, ag_max_hold=cur_ag_hold,
+                ag_buy_pct=cur_ag_buy / 100, ag_sell_pct=cur_ag_sell / 100,
+                initial_capital=float(os_capital),
+                fee_rate=cur_fee / 100,
+                renewal_period=cur_renew,
+                pcr=cur_pcr / 100, lcr=cur_lcr / 100,
             )
 
-        if bt_df is not None and not bt_df.empty:
-            _save_dss_history(bt_df, acct_name)
-            st.session_state[_ss_key] = _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq)
-        else:
-            # 시작일이 최근이어서 백테스트 결과 없음 → 최신 시장 데이터로 폴백
-            _fallback = _build_os_result_fallback(os_params, os_capital)
-            if _fallback is not None:
-                st.session_state[_ss_key] = _fallback
-                st.info("ℹ️ 시작일이 최근이어서 매매 내역은 없지만, 현재 시장 데이터 기반으로 주문표를 생성했습니다.")
+            today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
+            with st.spinner("포트폴리오 시뮬레이션 중..."):
+                bt_df = run_backtest(
+                    os_params, soxl, mode_series,
+                    str(os_start), today_str,
+                )
+
+            if bt_df is not None and not bt_df.empty:
+                _save_dss_history(bt_df, acct_name)
+                st.session_state[_ss_key] = _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq)
             else:
-                st.error("⚠️ 가격 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
+                # 시작일이 최근이어서 백테스트 결과 없음 → 최신 시장 데이터로 폴백
+                _fallback = _build_os_result_fallback(os_params, os_capital)
+                if _fallback is not None:
+                    st.session_state[_ss_key] = _fallback
+                    st.info("ℹ️ 시작일이 최근이어서 매매 내역은 없지만, 현재 시장 데이터 기반으로 주문표를 생성했습니다.")
+                else:
+                    st.error("⚠️ 가격 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.")
 
     # ── 결과 렌더링 ──
     _os = st.session_state.get(_ss_key)
