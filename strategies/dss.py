@@ -128,8 +128,8 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         f"전일종가: <b>${_o['prev_close']:,.2f}</b>",
         f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
-        f"",
     ]
+
     # 거래일 인덱스 (예약매도 잔여일 계산)
     try:
         _tdays = get_soxl_data().index
@@ -137,44 +137,73 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         _tdays = None
     _today_ts = pd.Timestamp(datetime.today().date())
 
+    # ── 포지션별 데이터 수집 ──
+    _pos_data = []  # (pos, idx, is_stop, remain, reserve_date_str)
     for i, pos in enumerate(_o['open_positions']):
         if pos['sell_target'] is None:
             continue
         _stop = pos.get('stop_date')
-        _is_stop_today = False
+        _is_stop = False
+        _remain = None
+        _rdate = ""
         if _stop is not None:
-            _is_stop_today = (pd.Timestamp(_stop) <= _today_ts)
-
-        if _is_stop_today:
-            lines.append(
-                f"🔴 MOC매도 티어{i+1}: 시장가(종가) "
-                f"× {pos['qty']}주 (⏰ 손절일 도래)"
-            )
-        else:
-            pnl_pct = (pos['sell_target'] / pos['buy_price'] - 1) * 100
-            _reserve_info = ""
-            if _stop is not None and _tdays is not None:
-                _stop_ts = pd.Timestamp(_stop)
+            _stop_ts = pd.Timestamp(_stop)
+            _is_stop = (_stop_ts <= _today_ts)
+            if not _is_stop and _tdays is not None:
                 _future = _tdays[(_tdays > _today_ts) & (_tdays <= _stop_ts)]
                 _remain = len(_future)
                 _before = _tdays[_tdays < _stop_ts]
                 if len(_before) > 0:
-                    _rdt = _before[-1]
-                    _reserve_info = f" · 예약~{_rdt.strftime('%m/%d').replace('/0', '/').lstrip('0')}({_remain}일)"
+                    _rdate = _before[-1].strftime('%m/%d').replace('/0', '/').lstrip('0')
+                else:
+                    _rdate = _stop_ts.strftime('%m/%d').replace('/0', '/').lstrip('0')
+        _pos_data.append((pos, i, _is_stop, _remain, _rdate))
+
+    # 예약 중인 티어 번호 (손절일 아닌 보유 포지션)
+    _reserve_tiers = {i + 1 for pos, i, _is_stop, _remain, _rdate in _pos_data if not _is_stop}
+
+    # ── 오늘의 주문 ──
+    lines.append(f"")
+    lines.append(f"── 오늘의 주문 ──")
+    for pos, i, _is_stop, _remain, _rdate in _pos_data:
+        _tier = i + 1
+        _star = "★" if _tier in _reserve_tiers else ""
+        if _is_stop:
             lines.append(
-                f"📈 예약매도 티어{i+1}: LOC ${pos['sell_target']:,.2f} "
-                f"× {pos['qty']}주 ({pnl_pct:+.1f}%){_reserve_info}"
+                f"🔴 MOC매도 티어{_tier}: 시장가 "
+                f"× {pos['qty']}주 (손절일)"
+            )
+        else:
+            pnl_pct = (pos['sell_target'] / pos['buy_price'] - 1) * 100
+            lines.append(
+                f"📈 LOC매도 {_star}티어{_tier}: ${pos['sell_target']:,.2f} "
+                f"× {pos['qty']}주 ({pnl_pct:+.1f}%)"
             )
     if _o['n_pos'] < _o['cur_divisions']:
         lines.append(
-            f"📉 매수 티어{_o['n_pos']+1}: LOC ${_o['next_buy_order']:,.2f} "
-            f"× {_o['buy_qty_est']}주 (시드 ${_o['seed_per_trade']:,.0f})"
+            f"📉 LOC매수 티어{_o['n_pos']+1}: ${_o['next_buy_order']:,.2f} "
+            f"× {_o['buy_qty_est']}주"
         )
     else:
         lines.append(f"⚠️ 전 슬롯 사용 중 — 매수 없음")
+
+    # ── 예약 현황 (예약 중인 티어가 있을 때만) ──
+    _reserve_lines = []
+    for pos, i, _is_stop, _remain, _rdate in _pos_data:
+        if _is_stop:
+            continue
+        _tier = i + 1
+        _deadline = f"예약~{_rdate} (잔여 {_remain}일)" if _remain is not None and _rdate else ""
+        _reserve_lines.append(f" ★티어{_tier}: ${pos['sell_target']:,.2f} {_deadline}")
+
+    if _reserve_lines:
+        lines.append(f"")
+        lines.append(f"── 예약 현황 ──")
+        lines.extend(_reserve_lines)
+
     if _o.get('latest_rsi'):
         lines.append(f"")
-        lines.append(f"QQQ RSI: {_o['latest_rsi']:.1f} ({_o.get('latest_rsi_date', '')})")
+        lines.append(f"QQQ RSI: {_o['latest_rsi']:.1f}")
     return "\n".join(lines)
 
 
