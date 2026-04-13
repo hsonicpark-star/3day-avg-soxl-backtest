@@ -1742,7 +1742,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
         # ── 오늘의 LOC 주문 ──
         st.divider()
         _today_date_str = datetime.today().strftime('%Y-%m-%d')
-        st.subheader(f"📑 오늘의 LOC 주문  ({_today_date_str})")
+        st.subheader(f"📑 오늘의 주문  ({_today_date_str})")
         st.markdown(
             f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
             f"전일종가 = <b>${_os['prev_close']:,.2f}</b>&ensp;·&ensp;"
@@ -1759,7 +1759,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             _trading_days_idx = None
         _today_ts = pd.Timestamp(datetime.today().date())
 
-        today_orders = []
+        # ── 포지션별 공통 데이터 계산 ──
+        _pos_info = []  # (pos, idx, is_stop_today, remain_days, reserve_date_str)
         for i, pos in enumerate(_os['open_positions']):
             if pos['sell_target'] is None:
                 continue
@@ -1770,81 +1771,146 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
             if _stop is not None and _trading_days_idx is not None:
                 _stop_ts = pd.Timestamp(_stop)
-                # 오늘이 손절일인지 확인
                 _is_stop_today = (_stop_ts <= _today_ts)
                 if not _is_stop_today:
-                    # 손절일까지 잔여 거래일 (오늘 제외)
                     _future = _trading_days_idx[
                         (_trading_days_idx > _today_ts) & (_trading_days_idx <= _stop_ts)]
                     _remain_days = len(_future)
-                    # 예약매도일 = 손절일 전 마지막 거래일
                     _before_stop = _trading_days_idx[_trading_days_idx < _stop_ts]
                     if len(_before_stop) > 0:
                         _reserve_dt = _before_stop[-1]
-                        _reserve_date_str = _reserve_dt.strftime('%m/%d').replace('/0', '/').lstrip('0') if hasattr(_reserve_dt, 'strftime') else str(_reserve_dt)[:5]
+                        _reserve_date_str = _reserve_dt.strftime('%m/%d').replace('/0', '/').lstrip('0')
                     else:
                         _reserve_date_str = _stop_ts.strftime('%m/%d').replace('/0', '/').lstrip('0')
-
-            if _is_stop_today:
-                # 손절일 당일 → MOC(시장가 종가) 매도
-                today_orders.append({
-                    "구분": "🔴 MOC매도", "시드": f"티어{i+1}",
-                    "LOC 기준가": "시장가(종가)",
-                    "수량": f"{pos['qty']:,}주",
-                    "예상금액": f"${pos['qty'] * _os['prev_close']:,.2f}",
-                    "전일종가대비": "-",
-                    "비고": (f"⏰ 손절일 도래 — 매수가 ${pos['buy_price']:.2f} "
-                             f"({(_os['prev_close']/pos['buy_price']-1)*100:+.1f}%)"),
-                })
-            else:
-                # 예약매도 (LOC 지정가)
-                _reserve_info = ""
-                if _remain_days is not None and _reserve_date_str:
-                    _reserve_info = f" · 예약 ~{_reserve_date_str} (잔여 {_remain_days}일)"
-                today_orders.append({
-                    "구분": "예약매도", "시드": f"티어{i+1}",
-                    "LOC 기준가": f"${pos['sell_target']:,.2f}",
-                    "수량": f"{pos['qty']:,}주",
-                    "예상금액": f"${pos['qty'] * pos['sell_target']:,.2f}",
-                    "전일종가대비": f"{(pos['sell_target']/_os['prev_close']-1)*100:+.2f}%",
-                    "비고": (f"매수가 ${pos['buy_price']:.2f} → "
-                             f"목표 ${pos['sell_target']:.2f} "
-                             f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"
-                             f"{_reserve_info}"),
-                })
+            _pos_info.append((pos, i, _is_stop_today, _remain_days, _reserve_date_str))
 
         _can_buy = _os['n_pos'] < _os['cur_divisions']
-        if _can_buy:
-            today_orders.append({
-                "구분": "매수", "시드": f"티어{_os['n_pos']+1}",
-                "LOC 기준가": f"${_os['next_buy_order']:,.2f}",
-                "수량": f"{_os['buy_qty_est']:,}주",
-                "예상금액": f"${_os['buy_qty_est'] * _os['next_buy_order']:,.2f}",
-                "전일종가대비": f"{(_os['next_buy_order']/_os['prev_close']-1)*100:+.2f}%",
-                "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
-                         f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
-            })
-        else:
-            st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중이므로 매수 주문 없음")
 
-        if today_orders:
-            def _style_order_row(row):
-                s = [""] * len(row)
-                if "구분" in row.index:
-                    ix = list(row.index).index("구분")
-                    val = row["구분"]
-                    if "MOC" in val:
-                        s[ix] = "color: #C62828; font-weight: bold"
-                    elif "예약매도" in val:
-                        s[ix] = "color: #1565C0; font-weight: bold"
-                    elif val == "매수":
-                        s[ix] = "color: #E65100; font-weight: bold"
-                return s
-            st.dataframe(
-                pd.DataFrame(today_orders).style.apply(_style_order_row, axis=1),
-                use_container_width=True, hide_index=True,
-                height=38 + 35 * len(today_orders),
-            )
+        # ── 두 가지 주문 방식 탭 ──
+        _order_tab1, _order_tab2 = st.tabs([
+            "📋 매일 주문 (직접 LOC)",
+            "📅 예약 주문 (세팅 후 대기)",
+        ])
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 탭 1: 매일 주문 — 오늘 직접 넣을 LOC 주문
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        with _order_tab1:
+            st.caption("매일 장 시작 전에 아래 주문을 직접 넣는 방식입니다.")
+            _daily_orders = []
+            for pos, i, _is_stop, _remain, _rdate in _pos_info:
+                if _is_stop:
+                    _daily_orders.append({
+                        "구분": "🔴 MOC매도", "시드": f"티어{i+1}",
+                        "주문가": "시장가(종가)",
+                        "수량": f"{pos['qty']:,}주",
+                        "예상금액": f"${pos['qty'] * _os['prev_close']:,.2f}",
+                        "비고": (f"⏰ 손절일 도래 — 매수가 ${pos['buy_price']:.2f} "
+                                 f"({(_os['prev_close']/pos['buy_price']-1)*100:+.1f}%)"),
+                    })
+                else:
+                    _daily_orders.append({
+                        "구분": "LOC매도", "시드": f"티어{i+1}",
+                        "주문가": f"${pos['sell_target']:,.2f}",
+                        "수량": f"{pos['qty']:,}주",
+                        "예상금액": f"${pos['qty'] * pos['sell_target']:,.2f}",
+                        "비고": (f"매수가 ${pos['buy_price']:.2f} → "
+                                 f"목표 ${pos['sell_target']:.2f} "
+                                 f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
+                    })
+            if _can_buy:
+                _daily_orders.append({
+                    "구분": "LOC매수", "시드": f"티어{_os['n_pos']+1}",
+                    "주문가": f"${_os['next_buy_order']:,.2f}",
+                    "수량": f"{_os['buy_qty_est']:,}주",
+                    "예상금액": f"${_os['buy_qty_est'] * _os['next_buy_order']:,.2f}",
+                    "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
+                             f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
+                })
+            else:
+                st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중 — 매수 없음")
+
+            if _daily_orders:
+                def _style_daily(row):
+                    s = [""] * len(row)
+                    if "구분" in row.index:
+                        ix = list(row.index).index("구분")
+                        val = row["구분"]
+                        if "MOC" in val:
+                            s[ix] = "color: #C62828; font-weight: bold"
+                        elif "매도" in val:
+                            s[ix] = "color: #1565C0; font-weight: bold"
+                        elif "매수" in val:
+                            s[ix] = "color: #E65100; font-weight: bold"
+                    return s
+                st.dataframe(
+                    pd.DataFrame(_daily_orders).style.apply(_style_daily, axis=1),
+                    use_container_width=True, hide_index=True,
+                    height=38 + 35 * len(_daily_orders),
+                )
+                st.info("💡 **매일 주문 방식**: 매일 장 시작 전에 위 LOC 주문을 넣고, "
+                        "장 마감 시 조건 충족되면 체결됩니다. 미체결 시 자동 취소되므로 다음 날 다시 넣어주세요.")
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 탭 2: 예약 주문 — LOC 예약 세팅 후 대기
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        with _order_tab2:
+            st.caption("LOC 예약 주문을 세팅해두면, 조건 도달 시 자동 체결됩니다. 손절일에는 MOC 매도로 전환하세요.")
+            _reserve_orders = []
+            for pos, i, _is_stop, _remain, _rdate in _pos_info:
+                if _is_stop:
+                    _reserve_orders.append({
+                        "구분": "🔴 MOC매도", "시드": f"티어{i+1}",
+                        "주문가": "시장가(종가)",
+                        "수량": f"{pos['qty']:,}주",
+                        "예약기한": "⏰ 오늘",
+                        "비고": (f"손절일 도래 — 매수가 ${pos['buy_price']:.2f} "
+                                 f"({(_os['prev_close']/pos['buy_price']-1)*100:+.1f}%)"),
+                    })
+                else:
+                    _deadline = f"~{_rdate} (잔여 {_remain}일)" if _remain is not None and _rdate else "-"
+                    _reserve_orders.append({
+                        "구분": "예약LOC매도", "시드": f"티어{i+1}",
+                        "주문가": f"${pos['sell_target']:,.2f}",
+                        "수량": f"{pos['qty']:,}주",
+                        "예약기한": _deadline,
+                        "비고": (f"매수가 ${pos['buy_price']:.2f} → "
+                                 f"목표 ${pos['sell_target']:.2f} "
+                                 f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
+                    })
+            if _can_buy:
+                _reserve_orders.append({
+                    "구분": "LOC매수", "시드": f"티어{_os['n_pos']+1}",
+                    "주문가": f"${_os['next_buy_order']:,.2f}",
+                    "수량": f"{_os['buy_qty_est']:,}주",
+                    "예약기한": "당일만",
+                    "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
+                             f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
+                })
+            else:
+                st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중 — 매수 없음")
+
+            if _reserve_orders:
+                def _style_reserve(row):
+                    s = [""] * len(row)
+                    if "구분" in row.index:
+                        ix = list(row.index).index("구분")
+                        val = row["구분"]
+                        if "MOC" in val:
+                            s[ix] = "color: #C62828; font-weight: bold"
+                        elif "매도" in val:
+                            s[ix] = "color: #1565C0; font-weight: bold"
+                        elif "매수" in val:
+                            s[ix] = "color: #E65100; font-weight: bold"
+                    return s
+                st.dataframe(
+                    pd.DataFrame(_reserve_orders).style.apply(_style_reserve, axis=1),
+                    use_container_width=True, hide_index=True,
+                    height=38 + 35 * len(_reserve_orders),
+                )
+                st.info("💡 **예약 주문 방식**: 매도 LOC를 예약 세팅해두면 기한 내 목표가 도달 시 자동 체결됩니다.\n\n"
+                        "⚠️ **예약기한 만료 시** 미체결된 예약은 취소하고, 해당 시드를 **MOC(시장가 종가) 매도**로 전환하세요.\n\n"
+                        "📌 **매수는 매일 갱신** — 전일종가 기준이므로 매일 새로 주문을 넣어야 합니다.")
 
         # ── 현재 보유 현황 ──
         st.divider()
