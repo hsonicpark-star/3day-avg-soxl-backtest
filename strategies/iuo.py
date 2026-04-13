@@ -644,58 +644,55 @@ def render_ordersheet_tab(params: dict):
 
     # ── 등록된 계좌 로드 ──
     accounts = cfg.get("accounts", {})
-    if not accounts:
-        # 마이그레이션: 이전 단일계좌 형식 → 다중계좌
-        tickers_old = [k for k in cfg if isinstance(cfg[k], dict) and k != "accounts"]
-        if tickers_old:
-            accounts = {}
-            for tk in tickers_old:
-                accounts[tk] = {"params": cfg[tk], "os_start": "2015-12-31",
-                                "os_capital": float(cfg[tk].get("initial_capital", 10000))}
-            cfg["accounts"] = accounts
-            _save_iuo_config(cfg)
-        else:
-            accounts = {ticker: {
-                "params": {}, "os_start": "2015-12-31",
-                "os_capital": float(params["bt_initial_capital"]),
-            }}
-            cfg["accounts"] = accounts
-            _save_iuo_config(cfg)
 
     # ── 계좌 추가 ──
-    with st.expander("➕ 새 계좌 등록", expanded=False):
+    _ADD_PRESETS = [
+        {"label": "🚀 공격형", "first_buy_ratio": 40, "buy1_pct": -1.0, "buy2_pct": -11.0,
+         "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6},
+        {"label": "⚖️ 균형형", "first_buy_ratio": 35, "buy1_pct": -1.0, "buy2_pct": -11.0,
+         "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6},
+        {"label": "🛡️ 안정형", "first_buy_ratio": 25, "buy1_pct": -1.0, "buy2_pct": -11.0,
+         "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6},
+    ]
+    _preset_labels = [pr["label"] for pr in _ADD_PRESETS]
+
+    with st.expander("➕ 계좌 추가", expanded=False):
         add_col1, add_col2 = st.columns(2)
-        add_ticker = add_col1.text_input("종목코드", value="SOXL", key="iuo_add_tk").strip().upper()
-        add_name = add_col2.text_input("계좌명 (선택)", value="", key="iuo_add_name",
-                                       placeholder="예: 공격형, 안정형")
+        add_name = add_col1.text_input("계좌 이름", value="", key="iuo_add_name",
+                                       placeholder="예: PJH, 연습용")
+        _preset_idx = add_col2.selectbox("파라미터 프리셋", range(len(_ADD_PRESETS)),
+                                          format_func=lambda i: _preset_labels[i],
+                                          index=2, key="iuo_add_preset")
         add_col3, add_col4 = st.columns(2)
-        add_start = add_col3.date_input("시작일", datetime(2015, 12, 31).date(), key="iuo_add_start")
+        add_start = add_col3.date_input("시작일", datetime.today().date(), key="iuo_add_start")
         add_cap = add_col4.number_input("시작 자본 ($)", value=10000.0, step=1000.0, key="iuo_add_cap")
 
-        acct_key = f"{add_ticker}_{add_name}" if add_name else add_ticker
-
         if st.button("✅ 계좌 등록", type="primary", key="iuo_add_acct", use_container_width=True):
-            if acct_key in accounts:
-                st.error(f"'{acct_key}' 계좌가 이미 존재합니다.")
+            _nm = add_name.strip()
+            if not _nm:
+                st.error("계좌 이름을 입력하세요.")
+            elif _nm in accounts:
+                st.error(f"'{_nm}' 계좌가 이미 존재합니다.")
             else:
-                accounts[acct_key] = {
-                    "ticker": add_ticker,
+                _sel_preset = _ADD_PRESETS[_preset_idx]
+                accounts[_nm] = {
+                    "ticker": ticker,
                     "params": {
-                        "first_buy_ratio": params["first_buy_ratio"] * 100,
+                        "first_buy_ratio": _sel_preset["first_buy_ratio"],
                         "buy0_pct": params["buy0_pct"] * 100,
-                        "buy1_pct": params["buy1_pct"] * 100,
-                        "buy2_pct": params["buy2_pct"] * 100,
-                        "sell_pct": params["sell_pct"] * 100,
-                        "moc_days": params["moc_days"],
-                        "max_add_buys": params["max_additional_buys"],
-                        "divisions": params["divisions"],
+                        "buy1_pct": _sel_preset["buy1_pct"],
+                        "buy2_pct": _sel_preset["buy2_pct"],
+                        "sell_pct": _sel_preset["sell_pct"],
+                        "moc_days": _sel_preset["moc_days"],
+                        "max_add_buys": _sel_preset["max_add_buys"],
+                        "divisions": _sel_preset["divisions"],
                     },
                     "os_start": str(add_start),
                     "os_capital": add_cap,
                 }
                 cfg["accounts"] = accounts
                 _save_iuo_config(cfg)
-                st.success(f"'{acct_key}' 계좌가 등록되었습니다.")
+                st.success(f"✅ '{_nm}' 계좌가 등록되었습니다. (프리셋: {_sel_preset['label']})")
                 st.rerun()
 
     # ── 계좌별 탭 렌더링 ──
@@ -731,27 +728,7 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
     maxb = int(tk_params.get("max_add_buys", params["max_additional_buys"]))
     div = int(tk_params.get("divisions", params["divisions"]))
 
-    # ── 1) 계좌 삭제 ──
-    _del_col, _ = st.columns([1, 5])
-    if _del_col.button(f"🗑️ {acct_key} 계좌 삭제", key=f"iuo_del_acct{sfx}", type="secondary"):
-        st.session_state[f"iuo_confirm_del{sfx}"] = True
-    if st.session_state.get(f"iuo_confirm_del{sfx}"):
-        st.warning(f"⚠️ **{acct_key} 계좌를 삭제하시겠습니까?** 저장된 설정 및 매매 히스토리가 모두 삭제됩니다.")
-        dc1, dc2, _ = st.columns([1, 1, 4])
-        if dc1.button("✅ 삭제", key=f"iuo_confirm_yes{sfx}", type="primary"):
-            del cfg["accounts"][acct_key]
-            _save_iuo_config(cfg)
-            hist_path = _get_iuo_history_path(acct_ticker, acct_key)
-            if os.path.exists(hist_path):
-                os.remove(hist_path)
-            st.session_state.pop(f"iuo_confirm_del{sfx}", None)
-            st.success(f"'{acct_key}' 계좌가 삭제되었습니다.")
-            st.rerun()
-        if dc2.button("❌ 취소", key=f"iuo_confirm_no{sfx}"):
-            st.session_state[f"iuo_confirm_del{sfx}"] = False
-            st.rerun()
-
-    # ── 2) 파라미터 표시 + 수정 (border container) ──
+    # ── 1) 파라미터 표시 + 수정 (border container) ──
     with st.container(border=True):
         _p1, _p2, _p3, _p4, _p5 = st.columns(5)
         _p1.metric("첫매수비율", f"{fbr*100:.0f}%")
@@ -817,6 +794,62 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                 _save_iuo_config(cfg)
                 st.success(f"✅ {acct_key} 파라미터가 저장되었습니다!")
                 st.rerun()
+
+    # ── 2) 계좌 관리 (이름 변경 / 삭제) ──
+    _mgr1, _mgr2, _ = st.columns([1, 1, 4])
+    if _mgr1.button("✏️ 이름 변경", key=f"iuo_rename_btn{sfx}", type="secondary"):
+        st.session_state[f"iuo_renaming{sfx}"] = True
+    if _mgr2.button("🗑️ 계좌 삭제", key=f"iuo_del_acct{sfx}", type="secondary"):
+        st.session_state[f"iuo_confirm_del{sfx}"] = True
+
+    # ── 이름 변경 ──
+    if st.session_state.get(f"iuo_renaming{sfx}", False):
+        _rn1, _rn2, _rn3, _ = st.columns([2, 1, 1, 3])
+        _new_nm = _rn1.text_input("새 계좌 이름", value=acct_key, key=f"iuo_new_name{sfx}")
+        if _rn2.button("✅ 변경", key=f"iuo_rename_ok{sfx}", type="primary"):
+            _nm = _new_nm.strip()
+            accounts = cfg.get("accounts", {})
+            if not _nm:
+                st.warning("계좌 이름을 입력하세요.")
+            elif _nm == acct_key:
+                st.session_state[f"iuo_renaming{sfx}"] = False
+                st.rerun()
+            elif _nm in accounts:
+                st.warning(f"'{_nm}' 계좌가 이미 존재합니다.")
+            else:
+                new_accounts = {}
+                for k, v in accounts.items():
+                    new_accounts[_nm if k == acct_key else k] = v
+                cfg["accounts"] = new_accounts
+                _save_iuo_config(cfg)
+                old_hp = _get_iuo_history_path(acct_ticker, acct_key)
+                new_hp = _get_iuo_history_path(acct_ticker, _nm)
+                if os.path.exists(old_hp):
+                    os.rename(old_hp, new_hp)
+                st.session_state.pop(f"iuo_renaming{sfx}", None)
+                st.session_state.pop(f"iuo_os_result{sfx}", None)
+                st.success(f"✅ '{acct_key}' → '{_nm}' 변경 완료!")
+                st.rerun()
+        if _rn3.button("❌ 취소", key=f"iuo_rename_cancel{sfx}"):
+            st.session_state[f"iuo_renaming{sfx}"] = False
+            st.rerun()
+
+    # ── 계좌 삭제 확인 ──
+    if st.session_state.get(f"iuo_confirm_del{sfx}", False):
+        st.warning(f"⚠️ **{acct_key}** 계좌를 삭제하시겠습니까? 저장된 설정 및 매매 히스토리가 모두 삭제됩니다.")
+        dc1, dc2, _ = st.columns([1, 1, 4])
+        if dc1.button("✅ 삭제", key=f"iuo_confirm_yes{sfx}", type="primary"):
+            del cfg["accounts"][acct_key]
+            _save_iuo_config(cfg)
+            hist_path = _get_iuo_history_path(acct_ticker, acct_key)
+            if os.path.exists(hist_path):
+                os.remove(hist_path)
+            st.session_state.pop(f"iuo_confirm_del{sfx}", None)
+            st.success(f"'{acct_key}' 계좌가 삭제되었습니다.")
+            st.rerun()
+        if dc2.button("❌ 취소", key=f"iuo_confirm_no{sfx}"):
+            st.session_state[f"iuo_confirm_del{sfx}"] = False
+            st.rerun()
 
     # ── 3) 시작일 / 자본금 ──
     mc1, mc2 = st.columns(2)
