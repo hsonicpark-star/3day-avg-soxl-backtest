@@ -701,13 +701,10 @@ def render_ordersheet_tab(params: dict):
         st.info("등록된 계좌가 없습니다. 위에서 계좌를 추가하세요.")
         return
 
-    if len(acct_keys) == 1:
-        _render_iuo_account(acct_keys[0], accounts[acct_keys[0]], cfg, params, 0)
-    else:
-        tabs = st.tabs([f"📊 {k}" for k in acct_keys])
-        for i, (tab, key) in enumerate(zip(tabs, acct_keys)):
-            with tab:
-                _render_iuo_account(key, accounts[key], cfg, params, i)
+    tabs = st.tabs([f"📊 {k}" for k in acct_keys])
+    for i, (tab, key) in enumerate(zip(tabs, acct_keys)):
+        with tab:
+            _render_iuo_account(key, accounts[key], cfg, params, i)
 
 
 def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict, idx: int):
