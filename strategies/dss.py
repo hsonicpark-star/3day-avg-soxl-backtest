@@ -320,9 +320,9 @@ def render_sidebar():
     """DSS 사이드바 렌더링. params dict 반환."""
     st.sidebar.markdown("### 🔄 공통 설정")
     col1, col2, col3 = st.sidebar.columns(3)
-    pcr = col1.number_input("이익복리율(%)", min_value=0, max_value=100, value=80, step=1, key="dss_pcr")
-    lcr = col2.number_input("손실복리율(%)", min_value=0, max_value=100, value=30, step=1, key="dss_lcr")
-    renewal_period = col3.number_input("갱신주기", min_value=1, max_value=100, value=10, step=1, key="dss_renew")
+    pcr = col1.number_input("이익복리율\n(%)", min_value=0, max_value=100, value=80, step=1, key="dss_pcr")
+    lcr = col2.number_input("손실복리율\n(%)", min_value=0, max_value=100, value=30, step=1, key="dss_lcr")
+    renewal_period = col3.number_input("갱신주기\n(회)", min_value=1, max_value=100, value=10, step=1, key="dss_renew")
 
     st.sidebar.markdown("### 🔵 안전모드 (SF)")
     sc1, sc2, sc3, sc4 = st.sidebar.columns(4)
