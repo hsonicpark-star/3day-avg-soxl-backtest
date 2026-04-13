@@ -1234,10 +1234,48 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx,
     """개별 계좌 탭 렌더링."""
     sfx = f"a{idx}"
 
-    # ── 계좌 삭제 ──
-    _del_c, _ = st.columns([1, 5])
-    if _del_c.button(f"🗑️ {acct_name} 계좌 삭제", key=f"dss_{sfx}_del", type="secondary"):
+    # ── 계좌 관리 (이름변경 / 삭제) ──
+    _mgr1, _mgr2, _ = st.columns([1, 1, 4])
+    if _mgr1.button(f"✏️ 이름 변경", key=f"dss_{sfx}_rename_btn", type="secondary"):
+        st.session_state[f"dss_{sfx}_renaming"] = True
+    if _mgr2.button(f"🗑️ 계좌 삭제", key=f"dss_{sfx}_del", type="secondary"):
         st.session_state[f"dss_{sfx}_del_confirm"] = True
+
+    # ── 이름 변경 ──
+    if st.session_state.get(f"dss_{sfx}_renaming", False):
+        _rn1, _rn2, _rn3, _ = st.columns([2, 1, 1, 3])
+        _new_nm = _rn1.text_input("새 계좌 이름", value=acct_name, key=f"dss_{sfx}_new_name")
+        if _rn2.button("✅ 변경", key=f"dss_{sfx}_rename_ok", type="primary"):
+            _nm = _new_nm.strip()
+            accounts = cfg.get("accounts", {})
+            if not _nm:
+                st.warning("계좌 이름을 입력하세요.")
+            elif _nm == acct_name:
+                st.session_state[f"dss_{sfx}_renaming"] = False
+                st.rerun()
+            elif _nm in accounts:
+                st.warning(f"'{_nm}' 계좌가 이미 존재합니다.")
+            else:
+                # config에서 키 변경 (순서 유지)
+                new_accounts = {}
+                for k, v in accounts.items():
+                    new_accounts[_nm if k == acct_name else k] = v
+                cfg["accounts"] = new_accounts
+                _save_dss_config(cfg)
+                # 히스토리 파일 이름도 변경
+                _old_hp = _get_history_path(acct_name)
+                _new_hp = _get_history_path(_nm)
+                if os.path.exists(_old_hp):
+                    os.rename(_old_hp, _new_hp)
+                st.session_state.pop(f"dss_{sfx}_renaming", None)
+                st.session_state.pop(f"dss_{sfx}_result", None)
+                st.success(f"✅ '{acct_name}' → '{_nm}' 변경 완료!")
+                st.rerun()
+        if _rn3.button("❌ 취소", key=f"dss_{sfx}_rename_cancel"):
+            st.session_state[f"dss_{sfx}_renaming"] = False
+            st.rerun()
+
+    # ── 계좌 삭제 확인 ──
     if st.session_state.get(f"dss_{sfx}_del_confirm", False):
         st.warning(f"⚠️ **{acct_name}** 계좌를 삭제하시겠습니까? 저장된 설정 및 매매 히스토리가 모두 삭제됩니다.")
         _dc1, _dc2, _ = st.columns([1, 1, 4])
@@ -1246,7 +1284,6 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx,
             accounts.pop(acct_name, None)
             cfg["accounts"] = accounts
             _save_dss_config(cfg)
-            # 히스토리 파일 삭제
             _hp = _get_history_path(acct_name)
             if os.path.exists(_hp):
                 os.remove(_hp)
