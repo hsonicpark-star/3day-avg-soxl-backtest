@@ -114,15 +114,16 @@ def _send_telegram(token: str, chat_id: str, text: str) -> dict:
         return {"ok": False, "description": str(e)}
 
 
-def _build_dss_order_text(os_result: dict) -> str:
+def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
     """주문표 결과 dict를 텔레그램 메시지로 포맷팅."""
     _o = os_result
     mode_icon = "🟢" if _o["last_mode"] == "AG" else "🔵"
     mode_label = "공세" if _o["last_mode"] == "AG" else "안전"
-    next_td = next_trading_date()
+    _today_str = datetime.today().strftime('%Y-%m-%d')
+    _acct_label = f" [{acct_name}]" if acct_name else ""
     lines = [
-        f"<b>📋 DSS 동파법 — SOXL 주문표</b>",
-        f"📅 {next_td.strftime('%Y-%m-%d')}  {mode_icon} {mode_label}모드",
+        f"<b>📋 DSS 동파법 — SOXL 주문표{_acct_label}</b>",
+        f"📅 {_today_str}  {mode_icon} {mode_label}모드",
         f"",
         f"전일종가: <b>${_o['prev_close']:,.2f}</b>",
         f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
@@ -3550,17 +3551,33 @@ def render_settings_tab():
                 if not tg_chat_id or not tg_token:
                     st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
                 else:
-                    _tg_os = next((st.session_state[k] for k in st.session_state if k.startswith("dss_a") and k.endswith("_result") and st.session_state[k] is not None), None)
-                    if _tg_os is None:
+                    # 모든 계좌의 주문표 result 수집
+                    _tg_accounts = []
+                    _cfg_tg = _load_dss_config()
+                    _acct_names = list(_cfg_tg.get("accounts", {}).keys())
+                    for _ai, _aname in enumerate(_acct_names):
+                        _rkey = f"dss_a{_ai}_result"
+                        _res = st.session_state.get(_rkey)
+                        if _res is not None:
+                            _tg_accounts.append((_aname, _res))
+
+                    if not _tg_accounts:
                         st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
                     else:
-                        with st.spinner("발송 중..."):
-                            msg = _build_dss_order_text(_tg_os)
-                            result = _send_telegram(tg_token, tg_chat_id, msg)
-                        if result.get("ok"):
-                            st.success("✅ 발송 성공! 텔레그램을 확인하세요.")
+                        _ok_cnt = 0
+                        _fail_cnt = 0
+                        with st.spinner(f"발송 중... ({len(_tg_accounts)}개 계좌)"):
+                            for _aname, _ares in _tg_accounts:
+                                msg = _build_dss_order_text(_ares, _aname)
+                                result = _send_telegram(tg_token, tg_chat_id, msg)
+                                if result.get("ok"):
+                                    _ok_cnt += 1
+                                else:
+                                    _fail_cnt += 1
+                        if _fail_cnt == 0:
+                            st.success(f"✅ {_ok_cnt}개 계좌 발송 성공!")
                         else:
-                            st.error(f"❌ 발송 실패: {result.get('description', '알 수 없는 오류')}")
+                            st.warning(f"발송 결과: 성공 {_ok_cnt}개 / 실패 {_fail_cnt}개")
 
         with btn_tg2:
             if st.button("💾 저장하기", use_container_width=True, key="dss_tg_save", type="primary"):
