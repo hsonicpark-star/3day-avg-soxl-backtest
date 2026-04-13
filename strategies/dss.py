@@ -393,9 +393,13 @@ def render_backtest_tab(params):
     st.subheader("📊 DSS 동파법 백테스트")
 
     if st.button("▶ 백테스트 실행", type="primary", key="dss_bt_run"):
-        soxl = get_soxl_data()
-        qqq = get_qqq_data()
-        ms = get_mode_series(len(qqq))
+        try:
+            soxl = get_soxl_data()
+            qqq = get_qqq_data()
+            ms = get_mode_series(len(qqq))
+        except Exception as _e:
+            st.error(f"⚠️ 가격 데이터 로드 실패: {_e}")
+            return
         dss_p = _make_params(p)
 
         with st.spinner("백테스트 실행 중..."):
@@ -778,8 +782,12 @@ def render_optimization_tab(params):
 
         if st.button("▶ 그리드 탐색 실행", type="primary", key="dss_run_grid",
                      disabled=(n_total == 0)):
-            soxl = get_soxl_data()
-            mode_series = get_mode_series(len(get_qqq_data()))
+            try:
+                soxl = get_soxl_data()
+                mode_series = get_mode_series(len(get_qqq_data()))
+            except Exception as _e:
+                st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                return
 
             st.caption(f"💻 {_NUM_WORKERS}코어 병렬 처리")
             progress = st.progress(0.0, text="그리드 탐색 실행 중...")
@@ -811,8 +819,12 @@ def render_optimization_tab(params):
                 f"(그리드 전체 {n_total:,}개 중 무작위 선택)")
 
         if st.button("▶ 랜덤 탐색 실행", type="primary", key="dss_run_random"):
-            soxl = get_soxl_data()
-            mode_series = get_mode_series(len(get_qqq_data()))
+            try:
+                soxl = get_soxl_data()
+                mode_series = get_mode_series(len(get_qqq_data()))
+            except Exception as _e:
+                st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                return
 
             random.seed(42)
             combos = [
@@ -852,8 +864,12 @@ def render_optimization_tab(params):
             st.warning(f"조합이 {n_total:,}개로 많습니다. 범위를 줄이면 더 빠릅니다.")
 
         if st.button("▶ 워크포워드 실행", type="primary", key="dss_run_wfo"):
-            soxl = get_soxl_data()
-            mode_series = get_mode_series(len(get_qqq_data()))
+            try:
+                soxl = get_soxl_data()
+                mode_series = get_mode_series(len(get_qqq_data()))
+            except Exception as _e:
+                st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                return
 
             total_start = pd.Timestamp(_start_date).date()
             total_end   = pd.Timestamp(_end_date).date()
@@ -1005,8 +1021,12 @@ def render_optimization_tab(params):
                     f"그리드 탐색({n_total:,}개) 대비 적은 시도로 최적값에 근접합니다.")
 
             if st.button("▶ 베이지안 최적화 실행", type="primary", key="dss_run_bayes"):
-                soxl = get_soxl_data()
-                mode_series = get_mode_series(len(get_qqq_data()))
+                try:
+                    soxl = get_soxl_data()
+                    mode_series = get_mode_series(len(get_qqq_data()))
+                except Exception as _e:
+                    st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                    return
 
                 _optuna.logging.set_verbosity(_optuna.logging.WARNING)
                 progress = st.progress(0.0, text="베이지안 탐색 실행 중...")
@@ -1977,10 +1997,14 @@ def render_db_tab(params=None):
     st.caption("백테스트 결과를 원본 DB 시트 형식으로 표시합니다. 하루하루 한 줄씩 늘어나는 기록입니다.")
 
     if st.button("DB 생성", type="primary", key="dss_run_db"):
-        soxl = get_soxl_data()
-        qqq = get_qqq_data()
-        mode_series_df = get_mode_series(len(qqq))
-        weekly_rsi_df = build_weekly_rsi_series(qqq)
+        try:
+            soxl = get_soxl_data()
+            qqq = get_qqq_data()
+            mode_series_df = get_mode_series(len(qqq))
+            weekly_rsi_df = build_weekly_rsi_series(qqq)
+        except Exception as _e:
+            st.error(f"⚠️ 데이터 로드 실패: {_e}")
+            return
 
         dss_p = _make_params(p)
         result = run_backtest(
@@ -2447,9 +2471,13 @@ RSI   = RS / (1 + RS) × 100
 
     if st.button("▶ 성과 분석 실행", type="primary", key="dss_run_intro_perf"):
         with st.spinner("데이터 로드 및 분석 중..."):
-            soxl_intro = get_soxl_data()
-            qqq_intro = get_qqq_data()
-            mode_series_intro = get_mode_series(len(qqq_intro))
+            try:
+                soxl_intro = get_soxl_data()
+                qqq_intro = get_qqq_data()
+                mode_series_intro = get_mode_series(len(qqq_intro))
+            except Exception as _e:
+                st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                return
 
             params_intro = DSSParams(
                 sf_divisions=p["sf_div"], sf_max_hold=p["sf_hold"],
@@ -3068,8 +3096,12 @@ RSI   = RS / (1 + RS) × 100
             _heat = np.zeros((_n_sens, _n_sens))
             if st.button("▶ 민감도 분석 실행", key="dss_run_sensitivity"):
                 with st.spinner("민감도 분석 중... (25회 시뮬레이션)"):
-                    soxl_s = get_soxl_data()
-                    ms_s = get_mode_series(len(get_qqq_data()))
+                    try:
+                        soxl_s = get_soxl_data()
+                        ms_s = get_mode_series(len(get_qqq_data()))
+                    except Exception as _e:
+                        st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                        return
                     for _bi, _bv in enumerate(_b_range):
                         for _si, _sv in enumerate(_s_range):
                             _p_s = DSSParams(
@@ -3131,8 +3163,12 @@ RSI   = RS / (1 + RS) × 100
             if st.button("▶ 무작위 100구간 분석 시작", key="dss_mc_run"):
                 st.session_state["dss_mc_result"] = None
                 with st.spinner("분석 중..."):
-                    soxl_mc = get_soxl_data()
-                    qqq_mc = get_qqq_data()
+                    try:
+                        soxl_mc = get_soxl_data()
+                        qqq_mc = get_qqq_data()
+                    except Exception as _e:
+                        st.error(f"⚠️ 데이터 로드 실패: {_e}")
+                        return
                     ms_mc = get_mode_series(len(qqq_mc))
                     _mc_closes = soxl_mc['Close'].dropna()
                     _mc_idx = _mc_closes.index
