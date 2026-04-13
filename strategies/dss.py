@@ -40,6 +40,7 @@ if _root_dir not in sys.path:
 from dss_engine import (
     load_price_data, get_weekly_closes, calc_weekly_rsi,
     build_weekly_rsi_series, build_mode_series, determine_mode,
+    get_week_mode_map,
     run_backtest, run_backtest_fast, DSSParams
 )
 
@@ -159,12 +160,15 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict) -> i
 
 # ── 일별 매매 히스토리 (B방식: 과거 불변, 새 날짜만 누적) ──
 
-def _get_history_path() -> str:
-    return os.path.join(_DSS_CONFIG_DIR, "history_SOXL.csv")
+def _get_history_path(acct_name: str = "") -> str:
+    if not acct_name or acct_name == "기본계좌":
+        return os.path.join(_DSS_CONFIG_DIR, "history_SOXL.csv")
+    safe = acct_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+    return os.path.join(_DSS_CONFIG_DIR, f"history_SOXL_{safe}.csv")
 
 
-def _load_dss_history() -> pd.DataFrame:
-    path = _get_history_path()
+def _load_dss_history(acct_name: str = "") -> pd.DataFrame:
+    path = _get_history_path(acct_name)
     if os.path.exists(path):
         try:
             return pd.read_csv(path, encoding="utf-8-sig")
@@ -173,7 +177,7 @@ def _load_dss_history() -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _save_dss_history(bt_df: pd.DataFrame):
+def _save_dss_history(bt_df: pd.DataFrame, acct_name: str = ""):
     if bt_df is None or bt_df.empty:
         return
     rows = []
@@ -236,7 +240,7 @@ def _save_dss_history(bt_df: pd.DataFrame):
     else:
         df_merged = df_new
     os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
-    df_merged.to_csv(_get_history_path(), index=False, encoding="utf-8-sig")
+    df_merged.to_csv(_get_history_path(acct_name), index=False, encoding="utf-8-sig")
 
 
 # ──────────────────────────────────────────────
@@ -1070,15 +1074,639 @@ def render_optimization_tab(params):
 
 
 # ══════════════════════════════════════════════
+# ══════════════════════════════════════════════
 # 탭 3: 주문표 & 계좌관리
 # ══════════════════════════════════════════════
+
+
+def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq):
+    """백테스트 결과 DataFrame → 주문표 표시용 result dict."""
+    last = bt_df.iloc[-1]
+    prev_close = float(last['종가'])
+    last_date = pd.Timestamp(last['날짜'])
+    last_mode = last['모드']
+
+    n_pos = int(last['보유포지션수'])
+    total_asset = float(last['총자산'])
+    cash = float(last['예수금'])
+    capital = float(last['투자금'])
+    holding_value = float(last['평가금'])
+    eval_pnl = float(last['평가손익'])
+    cum_realized = float(last['누적실현'])
+    sell_count = int(last['누적매도'])
+
+    if last_mode == "AG":
+        cur_divisions = os_params.ag_divisions
+        cur_buy_pct = os_params.ag_buy_pct
+        cur_sell_pct = os_params.ag_sell_pct
+        cur_max_hold = os_params.ag_max_hold
+    else:
+        cur_divisions = os_params.sf_divisions
+        cur_buy_pct = os_params.sf_buy_pct
+        cur_sell_pct = os_params.sf_sell_pct
+        cur_max_hold = os_params.sf_max_hold
+
+    open_positions = []
+    _all_sold = set()
+    for _, row in bt_df.iterrows():
+        if row['매도내역'] is not None:
+            for sr in row['매도내역']:
+                _all_sold.add((pd.Timestamp(sr['buy_date']), sr['buy_price'], sr['qty']))
+    for _, row in bt_df.iterrows():
+        if row['매수체결'] is not None and row['수량'] > 0:
+            bk = (pd.Timestamp(row['날짜']), float(row['매수체결']), int(row['수량']))
+            if bk not in _all_sold:
+                open_positions.append({
+                    'buy_date': pd.Timestamp(row['날짜']),
+                    'buy_price': float(row['매수체결']),
+                    'qty': int(row['수량']),
+                    'sell_target': float(row['매도목표가']) if row['매도목표가'] is not None else None,
+                    'stop_date': pd.Timestamp(row['손절예정일']) if row['손절예정일'] is not None else None,
+                    'mode': row['모드'],
+                })
+
+    next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
+    seed_per_trade = capital / cur_divisions
+    buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
+
+    weekly_rsi_df = build_weekly_rsi_series(qqq)
+    latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
+    prev_rsi_row = weekly_rsi_df.iloc[-2] if len(weekly_rsi_df) > 1 else None
+
+    return {
+        "bt_df": bt_df,
+        "prev_close": prev_close,
+        "last_date": last_date,
+        "last_mode": last_mode,
+        "n_pos": n_pos,
+        "total_asset": total_asset,
+        "cash": cash,
+        "capital": capital,
+        "holding_value": holding_value,
+        "eval_pnl": eval_pnl,
+        "cum_realized": cum_realized,
+        "sell_count": sell_count,
+        "open_positions": open_positions,
+        "next_buy_order": next_buy_order,
+        "seed_per_trade": seed_per_trade,
+        "buy_qty_est": buy_qty_est,
+        "cur_divisions": cur_divisions,
+        "cur_buy_pct": cur_buy_pct,
+        "cur_sell_pct": cur_sell_pct,
+        "cur_max_hold": cur_max_hold,
+        "latest_rsi": float(latest_rsi_row['rsi']) if latest_rsi_row is not None else None,
+        "prev_rsi": float(prev_rsi_row['rsi']) if prev_rsi_row is not None else None,
+        "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
+        "os_capital": float(os_capital),
+    }
+
+
+def _build_os_result_fallback(os_params, os_capital):
+    """백테스트 결과 없을 때 (신규 계좌/오늘 시작) → 최신 시장 데이터로 주문표 생성."""
+    soxl = get_soxl_data()
+    qqq = get_qqq_data()
+    mode_series_df = get_mode_series(len(qqq))
+
+    prev_close = float(soxl.iloc[-1]['Close'])
+    last_date = soxl.index[-1]
+
+    mode_map = get_week_mode_map(mode_series_df, soxl.index)
+    last_mode = mode_map.get(last_date, "AG")
+
+    if last_mode == "AG":
+        cur_divisions = os_params.ag_divisions
+        cur_buy_pct = os_params.ag_buy_pct
+        cur_sell_pct = os_params.ag_sell_pct
+        cur_max_hold = os_params.ag_max_hold
+    else:
+        cur_divisions = os_params.sf_divisions
+        cur_buy_pct = os_params.sf_buy_pct
+        cur_sell_pct = os_params.sf_sell_pct
+        cur_max_hold = os_params.sf_max_hold
+
+    capital = float(os_capital)
+    next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
+    seed_per_trade = capital / cur_divisions
+    buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
+
+    weekly_rsi_df = build_weekly_rsi_series(qqq)
+    latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
+    prev_rsi_row = weekly_rsi_df.iloc[-2] if len(weekly_rsi_df) > 1 else None
+
+    return {
+        "bt_df": pd.DataFrame(),
+        "prev_close": prev_close,
+        "last_date": last_date,
+        "last_mode": last_mode,
+        "n_pos": 0,
+        "total_asset": capital,
+        "cash": capital,
+        "capital": capital,
+        "holding_value": 0,
+        "eval_pnl": 0,
+        "cum_realized": 0,
+        "sell_count": 0,
+        "open_positions": [],
+        "next_buy_order": next_buy_order,
+        "seed_per_trade": seed_per_trade,
+        "buy_qty_est": buy_qty_est,
+        "cur_divisions": cur_divisions,
+        "cur_buy_pct": cur_buy_pct,
+        "cur_sell_pct": cur_sell_pct,
+        "cur_max_hold": cur_max_hold,
+        "latest_rsi": float(latest_rsi_row['rsi']) if latest_rsi_row is not None else None,
+        "prev_rsi": float(prev_rsi_row['rsi']) if prev_rsi_row is not None else None,
+        "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
+        "os_capital": capital,
+    }
+
+
+def _render_dss_account(acct_name, acct_data, cfg, p, idx,
+                        cur_sf_div, cur_sf_hold, cur_sf_buy, cur_sf_sell,
+                        cur_ag_div, cur_ag_hold, cur_ag_buy, cur_ag_sell,
+                        cur_pcr, cur_lcr, cur_renew, cur_fee):
+    """개별 계좌 탭 렌더링."""
+    sfx = f"a{idx}"
+
+    # ── 계좌 삭제 ──
+    _del_c, _ = st.columns([1, 5])
+    if _del_c.button(f"🗑️ {acct_name} 계좌 삭제", key=f"dss_{sfx}_del", type="secondary"):
+        st.session_state[f"dss_{sfx}_del_confirm"] = True
+    if st.session_state.get(f"dss_{sfx}_del_confirm", False):
+        st.warning(f"⚠️ **{acct_name}** 계좌를 삭제하시겠습니까? 저장된 설정 및 매매 히스토리가 모두 삭제됩니다.")
+        _dc1, _dc2, _ = st.columns([1, 1, 4])
+        if _dc1.button("✅ 삭제", key=f"dss_{sfx}_del_ok", type="primary"):
+            accounts = cfg.get("accounts", {})
+            accounts.pop(acct_name, None)
+            cfg["accounts"] = accounts
+            _save_dss_config(cfg)
+            # 히스토리 파일 삭제
+            _hp = _get_history_path(acct_name)
+            if os.path.exists(_hp):
+                os.remove(_hp)
+            st.session_state.pop(f"dss_{sfx}_del_confirm", None)
+            st.session_state.pop(f"dss_{sfx}_result", None)
+            st.rerun()
+        if _dc2.button("❌ 취소", key=f"dss_{sfx}_del_cancel"):
+            st.session_state[f"dss_{sfx}_del_confirm"] = False
+            st.rerun()
+
+    # ── 시작일 / 시작 자본 ──
+    _os_default_start = acct_data.get("os_start", "2024-01-01")
+    _os_default_capital = acct_data.get("os_capital", 10000.0)
+    try:
+        _os_start_val = datetime.strptime(str(_os_default_start), "%Y-%m-%d").date()
+    except Exception:
+        _os_start_val = datetime(2024, 1, 1).date()
+    try:
+        _os_capital_val = float(_os_default_capital)
+    except Exception:
+        _os_capital_val = 10000.0
+
+    _oc1, _oc2, _oc3 = st.columns([2, 2, 1])
+    os_start = _oc1.date_input("시작일", value=_os_start_val,
+                                min_value=datetime(2010, 1, 1).date(),
+                                max_value=datetime.today().date(),
+                                key=f"dss_{sfx}_start")
+    os_capital = _oc2.number_input("시작 자본 ($)", value=_os_capital_val,
+                                    step=1000.0, key=f"dss_{sfx}_capital")
+    _oc3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if _oc3.button("💾 계좌 저장", key=f"dss_{sfx}_save_acct", use_container_width=True):
+        acct_data["os_start"] = str(os_start)
+        acct_data["os_capital"] = float(os_capital)
+        cfg["accounts"][acct_name] = acct_data
+        _save_dss_config(cfg)
+        st.success(f"✅ {acct_name} 저장 완료 (시작일: {os_start}, 자본: ${os_capital:,.0f})")
+        st.rerun()
+
+    # ── 자본 조정 (증액/감액) ──
+    with st.expander("💰 자본 조정 (증액 / 감액)"):
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요.")
+        _adj_history = acct_data.get("capital_adj_history", [])
+        if not isinstance(_adj_history, list):
+            _adj_history = []
+
+        _adj_c1, _adj_c2 = st.columns([2, 1])
+        _adj_amount = _adj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
+                                            help="증액: 양수 · 감액: 음수",
+                                            key=f"dss_{sfx}_adj_amount")
+        _adj_c1.caption(
+            f"적용 후 자본금: **${_os_capital_val + _adj_amount:,.0f}** "
+            f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
+            f"${abs(_adj_amount):,.0f})"
+        )
+        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
+                                        key=f"dss_{sfx}_adj_memo")
+        if _adj_c2.button("💰 적용", use_container_width=True,
+                          key=f"dss_{sfx}_apply_adj", disabled=(_adj_amount == 0)):
+            _new_capital = _os_capital_val + _adj_amount
+            if _new_capital <= 0:
+                st.error("자본금은 0보다 커야 합니다.")
+            else:
+                _adj_history.append({
+                    "날짜": datetime.today().strftime("%Y-%m-%d"),
+                    "조정금액": float(_adj_amount),
+                    "누적자본금": float(_new_capital),
+                    "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
+                })
+                acct_data["os_capital"] = _new_capital
+                acct_data["capital_adj_history"] = _adj_history
+                cfg["accounts"][acct_name] = acct_data
+                _save_dss_config(cfg)
+                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다.")
+                st.rerun()
+
+        if _adj_history:
+            st.markdown("---")
+            st.markdown("**📋 자본 조정 이력**")
+            _df_adj = pd.DataFrame(_adj_history)
+            _df_adj_show = _df_adj.copy()
+            _df_adj_show["조정금액"] = _df_adj["조정금액"].apply(
+                lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}")
+            _df_adj_show["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(_df_adj_show[["날짜", "조정금액", "누적자본금", "메모"]],
+                         use_container_width=True, hide_index=True)
+        else:
+            st.info("아직 자본 조정 이력이 없습니다.")
+
+        # 전체 초기화
+        st.markdown("---")
+        st.markdown("**🔄 전체 초기화**")
+        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다.")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        _reset_start = _rc1.date_input("새 시작일", value=datetime.today().date(),
+                                        key=f"dss_{sfx}_reset_start")
+        _reset_capital = _rc2.number_input("새 시작 자본 ($)", value=_os_capital_val,
+                                            step=1000.0, key=f"dss_{sfx}_reset_capital")
+        if _rc3.button("🔄 초기화", use_container_width=True,
+                       key=f"dss_{sfx}_do_reset", type="secondary"):
+            st.session_state[f"dss_{sfx}_reset_confirmed"] = True
+        if st.session_state.get(f"dss_{sfx}_reset_confirmed", False):
+            st.warning(f"⚠️ **정말 초기화하시겠습니까?**  \n"
+                       f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
+            _conf1, _conf2 = st.columns(2)
+            if _conf1.button("✅ 확인 (초기화)", type="primary", key=f"dss_{sfx}_confirm_reset"):
+                acct_data["os_start"] = str(_reset_start)
+                acct_data["os_capital"] = float(_reset_capital)
+                acct_data["capital_adj_history"] = []
+                cfg["accounts"][acct_name] = acct_data
+                _save_dss_config(cfg)
+                st.session_state[f"dss_{sfx}_reset_confirmed"] = False
+                st.session_state.pop(f"dss_{sfx}_result", None)
+                st.success("✅ 초기화 완료!")
+                st.rerun()
+            if _conf2.button("❌ 취소", key=f"dss_{sfx}_cancel_reset"):
+                st.session_state[f"dss_{sfx}_reset_confirmed"] = False
+                st.rerun()
+
+    # ── 주문표 로드 버튼 ──
+    _ss_key = f"dss_{sfx}_result"
+    _os_btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
+    if st.button(_os_btn_label, type="primary", key=f"dss_{sfx}_run_os"):
+        acct_data["os_start"] = str(os_start)
+        acct_data["os_capital"] = float(os_capital)
+        cfg["accounts"][acct_name] = acct_data
+        _save_dss_config(cfg)
+
+        soxl = get_soxl_data()
+        qqq = get_qqq_data()
+        mode_series = get_mode_series(len(qqq))
+        os_params = DSSParams(
+            sf_divisions=cur_sf_div, sf_max_hold=cur_sf_hold,
+            sf_buy_pct=cur_sf_buy / 100, sf_sell_pct=cur_sf_sell / 100,
+            ag_divisions=cur_ag_div, ag_max_hold=cur_ag_hold,
+            ag_buy_pct=cur_ag_buy / 100, ag_sell_pct=cur_ag_sell / 100,
+            initial_capital=float(os_capital),
+            fee_rate=cur_fee / 100,
+            renewal_period=cur_renew,
+            pcr=cur_pcr / 100, lcr=cur_lcr / 100,
+        )
+
+        today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
+        with st.spinner("포트폴리오 시뮬레이션 중..."):
+            bt_df = run_backtest(
+                os_params, soxl, mode_series,
+                str(os_start), today_str,
+            )
+
+        if bt_df is not None and not bt_df.empty:
+            _save_dss_history(bt_df, acct_name)
+            st.session_state[_ss_key] = _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq)
+        else:
+            # 시작일이 최근이어서 백테스트 결과 없음 → 최신 시장 데이터로 폴백
+            st.session_state[_ss_key] = _build_os_result_fallback(os_params, os_capital)
+            st.info("ℹ️ 시작일이 최근이어서 매매 내역은 없지만, 현재 시장 데이터 기반으로 주문표를 생성했습니다.")
+
+    # ── 결과 렌더링 ──
+    _os = st.session_state.get(_ss_key)
+    if _os is not None:
+        _mode_icon = "🟢" if _os["last_mode"] == "AG" else "🔵"
+        _mode_label = "공세모드 (AG)" if _os["last_mode"] == "AG" else "안전모드 (SF)"
+        _mode_bg = "#E8F5E9" if _os["last_mode"] == "AG" else "#E3F2FD"
+        _mode_fg = "#2E7D32" if _os["last_mode"] == "AG" else "#1565C0"
+
+        _last_date_str = _os['last_date'].strftime('%Y-%m-%d') if hasattr(_os['last_date'], 'strftime') else str(_os['last_date'])[:10]
+        st.markdown(f"<div style='font-size:0.82em;color:#888;margin-bottom:4px'>"
+                    f"데이터 기준: <b>{_last_date_str}</b></div>",
+                    unsafe_allow_html=True)
+
+        # ── 모드 & 현황 카드 ──
+        _rsi_val = f"{_os['latest_rsi']:.2f}" if _os['latest_rsi'] else "-"
+        _rsi_prev = f"{_os['prev_rsi']:.2f}" if _os['prev_rsi'] else "-"
+        _rsi_delta_color = "#2E7D32" if _os['latest_rsi'] and _os['prev_rsi'] and _os['latest_rsi'] > _os['prev_rsi'] else "#C62828"
+        st.markdown(f"""
+        <div style="display:flex;gap:10px;margin-bottom:12px">
+          <div style="flex:1.2;background:{_mode_bg};border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">현재 모드</div>
+            <div style="font-size:1.15em;font-weight:700;color:{_mode_fg}">{_mode_icon} {_mode_label}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">QQQ 주간 RSI</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_rsi_val}</div>
+            <div style="font-size:0.68em;color:{_rsi_delta_color}">전주 {_rsi_prev}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">분할수 / 보유</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">{_os['n_pos']} / {_os['cur_divisions']}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">매수 / 매도 조건</div>
+            <div style="font-size:1.15em;font-weight:700;color:#333">+{_os['cur_buy_pct']*100:.1f}% / +{_os['cur_sell_pct']*100:.1f}%</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── 포트폴리오 요약 카드 ──
+        _os_init_cap = _os.get("os_capital", float(p["initial_capital"]))
+        _ret_pct = (_os['total_asset'] / _os_init_cap - 1) * 100 if _os_init_cap > 0 else 0
+        _ret_color = "#2E7D32" if _ret_pct >= 0 else "#C62828"
+        _eval_color = "#2E7D32" if _os['eval_pnl'] >= 0 else "#C62828"
+        _real_color = "#2E7D32" if _os['cum_realized'] >= 0 else "#C62828"
+        st.markdown(f"""
+        <div style="display:flex;gap:10px;margin-bottom:8px">
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
+            <div style="font-size:1.1em;font-weight:700;color:#333">${_os_init_cap:,.0f}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
+            <div style="font-size:1.1em;font-weight:700;color:#333">${_os['total_asset']:,.0f}</div>
+            <div style="font-size:0.68em;color:{_ret_color};font-weight:600">{_ret_pct:+.1f}%</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">평가손익</div>
+            <div style="font-size:1.1em;font-weight:700;color:{_eval_color}">${_os['eval_pnl']:+,.0f}</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">누적실현손익</div>
+            <div style="font-size:1.1em;font-weight:700;color:{_real_color}">${_os['cum_realized']:+,.0f}</div>
+            <div style="font-size:0.68em;color:#888">매도 {_os['sell_count']}회</div>
+          </div>
+          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+            <div style="font-size:0.72em;color:#888;margin-bottom:2px">예수금</div>
+            <div style="font-size:1.1em;font-weight:700;color:#333">${_os['cash']:,.0f}</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── 오늘의 LOC 주문 ──
+        st.divider()
+        _next_td = next_trading_date()
+        _next_td_str = _next_td.strftime('%Y-%m-%d')
+        st.subheader(f"📑 오늘의 LOC 주문  ({_next_td_str})")
+        st.markdown(
+            f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
+            f"전일종가 = <b>${_os['prev_close']:,.2f}</b>&ensp;·&ensp;"
+            f"매수주문가 = 전일종가 × (1 + {_os['cur_buy_pct']*100:.1f}%) = "
+            f"<b>${_os['next_buy_order']:,.2f}</b>&ensp;·&ensp;"
+            f"1회시드 = <b>${_os['seed_per_trade']:,.0f}</b></div>",
+            unsafe_allow_html=True,
+        )
+
+        today_orders = []
+        for i, pos in enumerate(_os['open_positions']):
+            if pos['sell_target'] is not None:
+                today_orders.append({
+                    "구분": "매도", "시드": f"티어{i+1}",
+                    "LOC 기준가": f"${pos['sell_target']:,.2f}",
+                    "수량": f"{pos['qty']:,}주",
+                    "예상금액": f"${pos['qty'] * pos['sell_target']:,.2f}",
+                    "전일종가대비": f"{(pos['sell_target']/_os['prev_close']-1)*100:+.2f}%",
+                    "비고": (f"매수가 ${pos['buy_price']:.2f} → "
+                             f"목표 ${pos['sell_target']:.2f} "
+                             f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
+                })
+
+        _can_buy = _os['n_pos'] < _os['cur_divisions']
+        if _can_buy:
+            today_orders.append({
+                "구분": "매수", "시드": f"티어{_os['n_pos']+1}",
+                "LOC 기준가": f"${_os['next_buy_order']:,.2f}",
+                "수량": f"{_os['buy_qty_est']:,}주",
+                "예상금액": f"${_os['buy_qty_est'] * _os['next_buy_order']:,.2f}",
+                "전일종가대비": f"{(_os['next_buy_order']/_os['prev_close']-1)*100:+.2f}%",
+                "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
+                         f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
+            })
+        else:
+            st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중이므로 매수 주문 없음")
+
+        if today_orders:
+            def _style_order_row(row):
+                s = [""] * len(row)
+                if "구분" in row.index:
+                    ix = list(row.index).index("구분")
+                    if row["구분"] == "매도":
+                        s[ix] = "color: #1565C0; font-weight: bold"
+                    elif row["구분"] == "매수":
+                        s[ix] = "color: #C62828; font-weight: bold"
+                return s
+            st.dataframe(
+                pd.DataFrame(today_orders).style.apply(_style_order_row, axis=1),
+                use_container_width=True, hide_index=True,
+                height=38 + 35 * len(today_orders),
+            )
+
+        # ── 현재 보유 현황 ──
+        st.divider()
+        st.subheader("📦 현재 보유 시드")
+
+        if _os['open_positions']:
+            pos_rows = []
+            _trading_days_all = get_soxl_data().index
+            for i, pos in enumerate(_os['open_positions']):
+                buy_d = pos['buy_date']
+                buy_d_str = buy_d.strftime('%Y-%m-%d') if hasattr(buy_d, 'strftime') else str(buy_d)
+                stop_d = pos['stop_date']
+                stop_d_str = stop_d.strftime('%Y-%m-%d') if stop_d is not None and hasattr(stop_d, 'strftime') else str(stop_d) if stop_d else "-"
+                _held_days = len(_trading_days_all[
+                    (_trading_days_all >= buy_d) & (_trading_days_all <= _os['last_date'])])
+                _remain_days = len(_trading_days_all[
+                    (_trading_days_all > _os['last_date']) & (_trading_days_all <= stop_d)
+                ]) if stop_d is not None else None
+                pnl_pct = (_os['prev_close'] / pos['buy_price'] - 1) * 100 if pos['buy_price'] > 0 else 0
+                pnl_amt = (pos['qty'] * _os['prev_close']) - (pos['qty'] * pos['buy_price'])
+                pos_rows.append({
+                    "시드": f"티어{i+1}", "모드": pos['mode'],
+                    "매수일": buy_d_str, "매수가": f"${pos['buy_price']:.2f}",
+                    "수량": f"{pos['qty']:,}주", "매수금액": f"${pos['buy_price']*pos['qty']:,.2f}",
+                    "매도목표가": f"${pos['sell_target']:.2f}" if pos['sell_target'] else "-",
+                    "손절예정일": stop_d_str,
+                    "보유일": f"{_held_days}일",
+                    "잔여일": f"{_remain_days}일" if _remain_days is not None else "-",
+                    "평가손익": f"${pnl_amt:+,.0f} ({pnl_pct:+.1f}%)",
+                })
+
+            def _style_pnl_pos(val):
+                if isinstance(val, str):
+                    if val.startswith("$+") or val.startswith("$0"):
+                        return "color: #1565C0; font-weight: bold"
+                    elif val.startswith("$-"):
+                        return "color: #C62828; font-weight: bold"
+                return ""
+            df_pos = pd.DataFrame(pos_rows)
+            st.dataframe(df_pos.style.map(_style_pnl_pos, subset=["평가손익"]),
+                         use_container_width=True, hide_index=True,
+                         height=38 + 35 * len(df_pos))
+
+            _total_holding_qty = sum(pos['qty'] for pos in _os['open_positions'])
+            _avg_buy_price = sum(pos['buy_price'] * pos['qty'] for pos in _os['open_positions']) / _total_holding_qty if _total_holding_qty > 0 else 0
+            hc1, hc2, hc3, hc4 = st.columns(4)
+            hc1.metric("총 보유주수", f"{_total_holding_qty:,}주")
+            hc2.metric("평균매수가", f"${_avg_buy_price:.2f}")
+            hc3.metric("현재가 (종가)", f"${_os['prev_close']:,.2f}")
+            hc4.metric("평가금액", f"${_os['holding_value']:,.0f}",
+                       delta=f"{(_os['prev_close']/_avg_buy_price-1)*100:+.2f}%" if _avg_buy_price > 0 else "")
+        else:
+            st.info("현재 보유 시드 없음 (전량 현금)")
+            st.metric("보유현금", f"${_os['cash']:,.0f}")
+
+        # ── 최근 매도 기록 ──
+        st.divider()
+        _bt_df = _os.get('bt_df')
+        if _bt_df is not None and not _bt_df.empty:
+            with st.expander("📊 최근 매도 기록 (최근 20건)"):
+                _sell_records = []
+                for _, row in _bt_df.iterrows():
+                    if row['매도내역'] is not None:
+                        for sr in row['매도내역']:
+                            _sell_records.append({
+                                "매수일": pd.Timestamp(sr['buy_date']).strftime('%Y-%m-%d'),
+                                "매도일": pd.Timestamp(sr['sell_date']).strftime('%Y-%m-%d'),
+                                "모드": sr['mode'],
+                                "매수가": f"${sr['buy_price']:.2f}",
+                                "매도가": f"${sr['sell_price']:.2f}",
+                                "수량": f"{sr['qty']:,}주",
+                                "매도목표": f"${sr['sell_target']:.2f}",
+                                "손절일": pd.Timestamp(sr['stop_date']).strftime('%Y-%m-%d'),
+                                "손익": f"${sr['pnl']:+,.2f}",
+                                "결과": "✅ 익절" if sr['pnl'] >= 0 else "❌ 손절",
+                            })
+                if _sell_records:
+                    _df_sells = pd.DataFrame(_sell_records)
+                    _df_sells_show = _df_sells.tail(20).iloc[::-1].reset_index(drop=True)
+
+                    def _style_sell_result(val):
+                        if "익절" in str(val): return "color: #1565C0; font-weight: bold"
+                        if "손절" in str(val): return "color: #C62828; font-weight: bold"
+                        return ""
+                    st.dataframe(
+                        _df_sells_show.style.map(_style_sell_result, subset=["결과"]),
+                        use_container_width=True, hide_index=True,
+                        height=min(38 + 35 * len(_df_sells_show), 600))
+
+                    _total_sells = len(_sell_records)
+                    _win_sells = sum(1 for s in _sell_records if "익절" in s["결과"])
+                    _loss_sells = _total_sells - _win_sells
+                    sc1, sc2, sc3 = st.columns(3)
+                    sc1.metric("총 매도", f"{_total_sells}회")
+                    sc2.metric("익절", f"{_win_sells}회 ({_win_sells/_total_sells*100:.0f}%)" if _total_sells else "0회")
+                    sc3.metric("손절", f"{_loss_sells}회 ({_loss_sells/_total_sells*100:.0f}%)" if _total_sells else "0회")
+                else:
+                    st.info("매도 기록이 없습니다.")
+
+        # ── 일별 매매 상세표 ──
+        st.divider()
+        st.subheader("📋 일별 매매 상세표")
+
+        _df_daily = _load_dss_history(acct_name)
+        if not _df_daily.empty:
+            _buy_count = _df_daily["매매"].astype(str).str.startswith("BUY").sum()
+            _sell_count = _df_daily["매매"].astype(str).str.startswith("SELL").sum()
+            _total_trades = _buy_count + _sell_count
+            _first_date = _df_daily["날짜"].iloc[0] if len(_df_daily) > 0 else "-"
+            _last_date_h = _df_daily["날짜"].iloc[-1] if len(_df_daily) > 0 else "-"
+            st.markdown(
+                f"기록 {_first_date} ~ {_last_date_h} | "
+                f"총 **{_total_trades}건** (매수 {_buy_count}회 · 매도 {_sell_count}회)"
+            )
+            st.info("📌 이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다.")
+
+            _df_show = _df_daily.iloc[::-1].reset_index(drop=True)
+
+            def _style_daily_row(row):
+                action = str(row.get("매매", ""))
+                if action.startswith("BUY"):
+                    return ["background-color: #FFF0F0"] * len(row)
+                if action.startswith("SELL"):
+                    return ["background-color: #F0FFF4"] * len(row)
+                return [""] * len(row)
+
+            def _style_action(val):
+                s = str(val)
+                if s.startswith("BUY"):
+                    return "color: #C62828; font-weight: bold"
+                if s.startswith("SELL"):
+                    return "color: #1565C0; font-weight: bold"
+                return "color: #999"
+
+            def _style_pnl(val):
+                s = str(val)
+                if s.startswith("+"):
+                    return "color: #1565C0; font-weight: bold"
+                if s.startswith("-") and s != "-":
+                    return "color: #C62828; font-weight: bold"
+                return "color: #999"
+
+            st.dataframe(
+                _df_show.style
+                    .apply(_style_daily_row, axis=1)
+                    .map(_style_action, subset=["매매"])
+                    .map(_style_pnl, subset=["실현손익($)", "실현손익률(%)"]),
+                hide_index=True, use_container_width=True,
+                height=min(38 + 35 * len(_df_show), 600),
+            )
+
+            # 다운로드 버튼
+            _dl1, _dl2, _ = st.columns([1, 1, 3])
+            _today_dl = pd.Timestamp.today().strftime("%Y%m%d")
+
+            _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            _dl1.download_button(
+                "📥 CSV 다운로드", data=_csv_data,
+                file_name=f"DSS_{acct_name}_{_today_dl}.csv",
+                mime="text/csv", key=f"dss_{sfx}_dl_csv", use_container_width=True,
+            )
+
+            _buf = _io.BytesIO()
+            with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
+                _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
+            _dl2.download_button(
+                "📥 엑셀 다운로드", data=_buf.getvalue(),
+                file_name=f"DSS_{acct_name}_{_today_dl}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dss_{sfx}_dl_xlsx", use_container_width=True,
+            )
+        else:
+            st.info("아직 저장된 매매 기록이 없습니다. '주문표 로드' 버튼을 클릭하면 기록이 시작됩니다.")
+
 
 def render_ordersheet_tab(params):
     """주문표 & 계좌관리 탭."""
     p = params
     _today_str_title = datetime.today().strftime("%Y-%m-%d")
     st.subheader(f"📋 오늘의 주문표  ({_today_str_title})")
-    st.caption("포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
+    st.caption("종목별 포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
 
     # ── 설정 로드 ──
     _cfg = _load_dss_config()
@@ -1208,536 +1836,74 @@ def render_ordersheet_tab(params):
                 _save_dss_config(_cfg)
                 for _k in _edit_defaults:
                     st.session_state.pop(f"dss_os_edit_{_k}", None)
-                st.session_state.pop("dss_os_result", None)
+                # 모든 계좌의 결과 캐시 클리어
+                for _sk in list(st.session_state.keys()):
+                    if _sk.startswith("dss_a") and _sk.endswith("_result"):
+                        st.session_state.pop(_sk, None)
                 st.success("✅ 파라미터가 저장되었습니다!")
                 st.rerun()
 
-    # ── 시작일 / 시작 자본 ──
-    _os_default_start = _cfg.get("os_start", "2024-01-01")
-    _os_default_capital = _cfg.get("os_capital", 10000.0)
-    try:
-        _os_start_val = datetime.strptime(str(_os_default_start), "%Y-%m-%d").date()
-    except Exception:
-        _os_start_val = datetime(2024, 1, 1).date()
-    try:
-        _os_capital_val = float(_os_default_capital)
-    except Exception:
-        _os_capital_val = 10000.0
+    # ══════════════════════════════════════════════
+    # 계좌 관리
+    # ══════════════════════════════════════════════
+    _accounts = _cfg.get("accounts", {})
 
-    _oc1, _oc2, _oc3 = st.columns([2, 2, 1])
-    os_start = _oc1.date_input("시작일", value=_os_start_val,
-                                min_value=datetime(2010, 1, 1).date(),
-                                max_value=datetime.today().date(),
-                                key="dss_os_start_input")
-    os_capital = _oc2.number_input("시작 자본 ($)", value=_os_capital_val,
-                                    step=1000.0, key="dss_os_capital_input")
-    _oc3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    if _oc3.button("💾 계좌 저장", key="dss_os_save_account", use_container_width=True):
-        _cfg["os_start"] = str(os_start)
-        _cfg["os_capital"] = float(os_capital)
-        _save_dss_config(_cfg)
-        st.success(f"✅ 계좌 정보가 저장되었습니다. (시작일: {os_start}, 자본금: ${os_capital:,.0f})")
-        st.rerun()
-
-    # ── 자본 조정 (증액/감액) ──
-    with st.expander("💰 자본 조정 (증액 / 감액)"):
-        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요.")
-        _adj_history = _cfg.get("capital_adj_history", [])
-        if not isinstance(_adj_history, list):
-            _adj_history = []
-
-        _adj_c1, _adj_c2 = st.columns([2, 1])
-        _adj_amount = _adj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
-                                            help="증액: 양수 · 감액: 음수",
-                                            key="dss_os_adj_amount")
-        _adj_c1.caption(
-            f"적용 후 자본금: **${_os_capital_val + _adj_amount:,.0f}** "
-            f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
-            f"${abs(_adj_amount):,.0f})"
-        )
-        _adj_memo = _adj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
-                                        key="dss_os_adj_memo")
-        if _adj_c2.button("💰 적용", use_container_width=True,
-                          key="dss_os_apply_adj", disabled=(_adj_amount == 0)):
-            _new_capital = _os_capital_val + _adj_amount
-            if _new_capital <= 0:
-                st.error("자본금은 0보다 커야 합니다.")
-            else:
-                _adj_history.append({
-                    "날짜": datetime.today().strftime("%Y-%m-%d"),
-                    "조정금액": float(_adj_amount),
-                    "누적자본금": float(_new_capital),
-                    "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
-                })
-                _cfg["os_capital"] = _new_capital
-                _cfg["capital_adj_history"] = _adj_history
-                _save_dss_config(_cfg)
-                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다.")
-                st.rerun()
-
-        if _adj_history:
-            st.markdown("---")
-            st.markdown("**📋 자본 조정 이력**")
-            _df_adj = pd.DataFrame(_adj_history)
-            _df_adj_show = _df_adj.copy()
-            _df_adj_show["조정금액"] = _df_adj["조정금액"].apply(
-                lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}")
-            _df_adj_show["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
-            st.dataframe(_df_adj_show[["날짜", "조정금액", "누적자본금", "메모"]],
-                         use_container_width=True, hide_index=True)
-        else:
-            st.info("아직 자본 조정 이력이 없습니다.")
-
-        # 전체 초기화
-        st.markdown("---")
-        st.markdown("**🔄 전체 초기화**")
-        st.caption("시작일·자본금·조정 이력을 모두 초기화합니다.")
-        _rc1, _rc2, _rc3 = st.columns(3)
-        _reset_start = _rc1.date_input("새 시작일", value=datetime.today().date(),
-                                        key="dss_os_reset_start")
-        _reset_capital = _rc2.number_input("새 시작 자본 ($)", value=_os_capital_val,
-                                            step=1000.0, key="dss_os_reset_capital")
-        if _rc3.button("🔄 초기화", use_container_width=True,
-                       key="dss_os_do_reset", type="secondary"):
-            st.session_state["dss_os_reset_confirmed"] = True
-        if st.session_state.get("dss_os_reset_confirmed", False):
-            st.warning(f"⚠️ **정말 초기화하시겠습니까?**  \n"
-                       f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
-            _conf1, _conf2 = st.columns(2)
-            if _conf1.button("✅ 확인 (초기화)", type="primary", key="dss_os_confirm_reset"):
-                _cfg["os_start"] = str(_reset_start)
-                _cfg["os_capital"] = float(_reset_capital)
-                _cfg["capital_adj_history"] = []
-                _save_dss_config(_cfg)
-                st.session_state["dss_os_reset_confirmed"] = False
-                st.session_state.pop("dss_os_result", None)
-                st.success("✅ 초기화 완료!")
-                st.rerun()
-            if _conf2.button("❌ 취소", key="dss_os_cancel_reset"):
-                st.session_state["dss_os_reset_confirmed"] = False
-                st.rerun()
-
-    # ── 주문표 로드 버튼 ──
-    _os_btn_label = "🔄 새로고침" if st.session_state.get("dss_os_result") else "📋 주문표 로드"
-    if st.button(_os_btn_label, type="primary", key="dss_run_ordersheet"):
-        _cfg["os_start"] = str(os_start)
-        _cfg["os_capital"] = float(os_capital)
+    # ── 레거시 마이그레이션: accounts 없으면 기존 config에서 생성 ──
+    if not _accounts:
+        _legacy_start = _cfg.get("os_start", "2024-01-01")
+        _legacy_capital = _cfg.get("os_capital", 10000.0)
+        _legacy_adj = _cfg.get("capital_adj_history", [])
+        _accounts = {"기본계좌": {
+            "os_start": str(_legacy_start),
+            "os_capital": float(_legacy_capital),
+            "capital_adj_history": _legacy_adj if isinstance(_legacy_adj, list) else [],
+        }}
+        _cfg["accounts"] = _accounts
         _save_dss_config(_cfg)
 
-        soxl = get_soxl_data()
-        qqq = get_qqq_data()
-        mode_series = get_mode_series(len(qqq))
-        os_params = DSSParams(
-            sf_divisions=_cur_sf_div, sf_max_hold=_cur_sf_hold,
-            sf_buy_pct=_cur_sf_buy / 100, sf_sell_pct=_cur_sf_sell / 100,
-            ag_divisions=_cur_ag_div, ag_max_hold=_cur_ag_hold,
-            ag_buy_pct=_cur_ag_buy / 100, ag_sell_pct=_cur_ag_sell / 100,
-            initial_capital=float(os_capital),
-            fee_rate=_cur_fee / 100,
-            renewal_period=_cur_renew,
-            pcr=_cur_pcr / 100, lcr=_cur_lcr / 100,
-        )
-
-        today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
-        with st.spinner("포트폴리오 시뮬레이션 중..."):
-            bt_df = run_backtest(
-                os_params, soxl, mode_series,
-                str(os_start), today_str,
-            )
-
-        if bt_df is None or bt_df.empty:
-            _days_diff = (pd.Timestamp.today().date() - os_start).days
-            if _days_diff < 5:
-                st.warning(
-                    f"⚠️ 시작일({os_start})이 너무 최근입니다. "
-                    f"최소 1주일 이상의 기간이 필요합니다.\n\n"
-                    f"💡 시작일을 조정한 후 **💾 계좌 저장** 버튼으로 저장하세요."
-                )
+    # ── 계좌 추가 ──
+    with st.expander("➕ 계좌 추가"):
+        _ac1, _ac2, _ac3 = st.columns([2, 1, 1])
+        _new_name = _ac1.text_input("계좌 이름", placeholder="예: 메인, ISA, 추가계좌",
+                                     key="dss_new_acct_name")
+        _new_start = _ac2.date_input("시작일", value=datetime.today().date(),
+                                      key="dss_new_acct_start")
+        _new_capital = _ac3.number_input("시작 자본 ($)", value=100000.0, step=1000.0,
+                                          key="dss_new_acct_capital")
+        if st.button("✅ 계좌 등록", type="primary", key="dss_add_account_btn",
+                     use_container_width=True):
+            _nm = _new_name.strip()
+            if not _nm:
+                st.warning("계좌 이름을 입력하세요.")
+            elif _nm in _accounts:
+                st.warning(f"'{_nm}' 계좌가 이미 존재합니다.")
             else:
-                st.warning("시뮬레이션 결과가 없습니다. 시작일 또는 데이터 범위를 확인하세요.")
-        else:
-            _save_dss_history(bt_df)
+                _accounts[_nm] = {
+                    "os_start": str(_new_start),
+                    "os_capital": float(_new_capital),
+                    "capital_adj_history": [],
+                }
+                _cfg["accounts"] = _accounts
+                _save_dss_config(_cfg)
+                st.success(f"✅ '{_nm}' 계좌가 등록되었습니다.")
+                st.rerun()
 
-            last = bt_df.iloc[-1]
-            prev_close = float(last['종가'])
-            last_date = pd.Timestamp(last['날짜'])
-            last_mode = last['모드']
+    # ── 계좌 탭 ──
+    _acct_names = list(_accounts.keys())
+    if not _acct_names:
+        st.info("등록된 계좌가 없습니다. 위에서 계좌를 추가하세요.")
+        return
 
-            n_pos = int(last['보유포지션수'])
-            total_asset = float(last['총자산'])
-            cash = float(last['예수금'])
-            capital = float(last['투자금'])
-            holding_value = float(last['평가금'])
-            eval_pnl = float(last['평가손익'])
-            cum_realized = float(last['누적실현'])
-            sell_count = int(last['누적매도'])
+    _acct_tabs = st.tabs([f"📊 {n}" for n in _acct_names])
 
-            if last_mode == "AG":
-                cur_divisions = os_params.ag_divisions
-                cur_buy_pct = os_params.ag_buy_pct
-                cur_sell_pct = os_params.ag_sell_pct
-                cur_max_hold = os_params.ag_max_hold
-            else:
-                cur_divisions = os_params.sf_divisions
-                cur_buy_pct = os_params.sf_buy_pct
-                cur_sell_pct = os_params.sf_sell_pct
-                cur_max_hold = os_params.sf_max_hold
-
-            open_positions = []
-            _all_sold_dates = set()
-            for _, row in bt_df.iterrows():
-                if row['매도내역'] is not None:
-                    for sr in row['매도내역']:
-                        _all_sold_dates.add((pd.Timestamp(sr['buy_date']), sr['buy_price'], sr['qty']))
-            for _, row in bt_df.iterrows():
-                if row['매수체결'] is not None and row['수량'] > 0:
-                    buy_key = (pd.Timestamp(row['날짜']), float(row['매수체결']), int(row['수량']))
-                    if buy_key not in _all_sold_dates:
-                        open_positions.append({
-                            'buy_date': pd.Timestamp(row['날짜']),
-                            'buy_price': float(row['매수체결']),
-                            'qty': int(row['수량']),
-                            'sell_target': float(row['매도목표가']) if row['매도목표가'] is not None else None,
-                            'stop_date': pd.Timestamp(row['손절예정일']) if row['손절예정일'] is not None else None,
-                            'mode': row['모드'],
-                        })
-
-            next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
-            seed_per_trade = capital / cur_divisions
-            buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
-
-            weekly_rsi_df = build_weekly_rsi_series(qqq)
-            latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
-            prev_rsi_row = weekly_rsi_df.iloc[-2] if len(weekly_rsi_df) > 1 else None
-
-            st.session_state["dss_os_result"] = {
-                "bt_df": bt_df,
-                "prev_close": prev_close,
-                "last_date": last_date,
-                "last_mode": last_mode,
-                "n_pos": n_pos,
-                "total_asset": total_asset,
-                "cash": cash,
-                "capital": capital,
-                "holding_value": holding_value,
-                "eval_pnl": eval_pnl,
-                "cum_realized": cum_realized,
-                "sell_count": sell_count,
-                "open_positions": open_positions,
-                "next_buy_order": next_buy_order,
-                "seed_per_trade": seed_per_trade,
-                "buy_qty_est": buy_qty_est,
-                "cur_divisions": cur_divisions,
-                "cur_buy_pct": cur_buy_pct,
-                "cur_sell_pct": cur_sell_pct,
-                "cur_max_hold": cur_max_hold,
-                "latest_rsi": float(latest_rsi_row['rsi']) if latest_rsi_row is not None else None,
-                "prev_rsi": float(prev_rsi_row['rsi']) if prev_rsi_row is not None else None,
-                "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
-                "os_capital": float(os_capital),
-            }
-
-    # ── 결과 렌더링 ──
-    _os = st.session_state.get("dss_os_result")
-    if _os is not None:
-        _mode_icon = "🟢" if _os["last_mode"] == "AG" else "🔵"
-        _mode_label = "공세모드 (AG)" if _os["last_mode"] == "AG" else "안전모드 (SF)"
-        _mode_bg = "#E8F5E9" if _os["last_mode"] == "AG" else "#E3F2FD"
-        _mode_fg = "#2E7D32" if _os["last_mode"] == "AG" else "#1565C0"
-
-        st.markdown(f"<div style='font-size:0.82em;color:#888;margin-bottom:4px'>"
-                    f"데이터 기준: <b>{_os['last_date'].strftime('%Y-%m-%d')}</b></div>",
-                    unsafe_allow_html=True)
-
-        # ── 모드 & 현황 카드 ──
-        _rsi_val = f"{_os['latest_rsi']:.2f}" if _os['latest_rsi'] else "-"
-        _rsi_prev = f"{_os['prev_rsi']:.2f}" if _os['prev_rsi'] else "-"
-        _rsi_delta_color = "#2E7D32" if _os['latest_rsi'] and _os['prev_rsi'] and _os['latest_rsi'] > _os['prev_rsi'] else "#C62828"
-        st.markdown(f"""
-        <div style="display:flex;gap:10px;margin-bottom:12px">
-          <div style="flex:1.2;background:{_mode_bg};border-radius:10px;padding:14px 18px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">현재 모드</div>
-            <div style="font-size:1.15em;font-weight:700;color:{_mode_fg}">{_mode_icon} {_mode_label}</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">QQQ 주간 RSI</div>
-            <div style="font-size:1.15em;font-weight:700;color:#333">{_rsi_val}</div>
-            <div style="font-size:0.68em;color:{_rsi_delta_color}">전주 {_rsi_prev}</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">분할수 / 보유</div>
-            <div style="font-size:1.15em;font-weight:700;color:#333">{_os['n_pos']} / {_os['cur_divisions']}</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">매수 / 매도 조건</div>
-            <div style="font-size:1.15em;font-weight:700;color:#333">+{_os['cur_buy_pct']*100:.1f}% / +{_os['cur_sell_pct']*100:.1f}%</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # ── 포트폴리오 요약 카드 ──
-        _os_init_cap = _os.get("os_capital", float(p["initial_capital"]))
-        _ret_pct = (_os['total_asset'] / _os_init_cap - 1) * 100
-        _ret_color = "#2E7D32" if _ret_pct >= 0 else "#C62828"
-        _eval_color = "#2E7D32" if _os['eval_pnl'] >= 0 else "#C62828"
-        _real_color = "#2E7D32" if _os['cum_realized'] >= 0 else "#C62828"
-        st.markdown(f"""
-        <div style="display:flex;gap:10px;margin-bottom:8px">
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
-            <div style="font-size:1.1em;font-weight:700;color:#333">${_os_init_cap:,.0f}</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
-            <div style="font-size:1.1em;font-weight:700;color:#333">${_os['total_asset']:,.0f}</div>
-            <div style="font-size:0.68em;color:{_ret_color};font-weight:600">{_ret_pct:+.1f}%</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">평가손익</div>
-            <div style="font-size:1.1em;font-weight:700;color:{_eval_color}">${_os['eval_pnl']:+,.0f}</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">누적실현손익</div>
-            <div style="font-size:1.1em;font-weight:700;color:{_real_color}">${_os['cum_realized']:+,.0f}</div>
-            <div style="font-size:0.68em;color:#888">매도 {_os['sell_count']}회</div>
-          </div>
-          <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
-            <div style="font-size:0.72em;color:#888;margin-bottom:2px">예수금</div>
-            <div style="font-size:1.1em;font-weight:700;color:#333">${_os['cash']:,.0f}</div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # ── 오늘의 LOC 주문 ──
-        st.divider()
-        _next_td = next_trading_date()
-        _next_td_str = _next_td.strftime('%Y-%m-%d')
-        st.subheader(f"📑 오늘의 LOC 주문  ({_next_td_str})")
-        st.markdown(
-            f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
-            f"전일종가 = <b>${_os['prev_close']:,.2f}</b>&ensp;·&ensp;"
-            f"매수주문가 = 전일종가 × (1 + {_os['cur_buy_pct']*100:.1f}%) = "
-            f"<b>${_os['next_buy_order']:,.2f}</b>&ensp;·&ensp;"
-            f"1회시드 = <b>${_os['seed_per_trade']:,.0f}</b></div>",
-            unsafe_allow_html=True,
-        )
-
-        today_orders = []
-        for i, pos in enumerate(_os['open_positions']):
-            if pos['sell_target'] is not None:
-                today_orders.append({
-                    "구분": "매도", "시드": f"티어{i+1}",
-                    "LOC 기준가": f"${pos['sell_target']:,.2f}",
-                    "수량": f"{pos['qty']:,}주",
-                    "예상금액": f"${pos['qty'] * pos['sell_target']:,.2f}",
-                    "전일종가대비": f"{(pos['sell_target']/_os['prev_close']-1)*100:+.2f}%",
-                    "비고": (f"매수가 ${pos['buy_price']:.2f} → "
-                             f"목표 ${pos['sell_target']:.2f} "
-                             f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
-                })
-
-        _can_buy = _os['n_pos'] < _os['cur_divisions']
-        if _can_buy:
-            today_orders.append({
-                "구분": "매수", "시드": f"티어{_os['n_pos']+1}",
-                "LOC 기준가": f"${_os['next_buy_order']:,.2f}",
-                "수량": f"{_os['buy_qty_est']:,}주",
-                "예상금액": f"${_os['buy_qty_est'] * _os['next_buy_order']:,.2f}",
-                "전일종가대비": f"{(_os['next_buy_order']/_os['prev_close']-1)*100:+.2f}%",
-                "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
-                         f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
-            })
-        else:
-            st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중이므로 매수 주문 없음")
-
-        if today_orders:
-            def _style_order_row(row):
-                s = [""] * len(row)
-                if "구분" in row.index:
-                    idx = list(row.index).index("구분")
-                    if row["구분"] == "매도":
-                        s[idx] = "color: #1565C0; font-weight: bold"
-                    elif row["구분"] == "매수":
-                        s[idx] = "color: #C62828; font-weight: bold"
-                return s
-            st.dataframe(
-                pd.DataFrame(today_orders).style.apply(_style_order_row, axis=1),
-                use_container_width=True, hide_index=True,
-                height=38 + 35 * len(today_orders),
+    for _ai, (_aname, _atab) in enumerate(zip(_acct_names, _acct_tabs)):
+        with _atab:
+            _render_dss_account(
+                _aname, _accounts[_aname], _cfg, p, _ai,
+                _cur_sf_div, _cur_sf_hold, _cur_sf_buy, _cur_sf_sell,
+                _cur_ag_div, _cur_ag_hold, _cur_ag_buy, _cur_ag_sell,
+                _cur_pcr, _cur_lcr, _cur_renew, _cur_fee,
             )
-
-        # ── 현재 보유 현황 ──
-        st.divider()
-        st.subheader("📦 현재 보유 시드")
-
-        if _os['open_positions']:
-            pos_rows = []
-            _trading_days_all = get_soxl_data().index
-            for i, pos in enumerate(_os['open_positions']):
-                buy_d = pos['buy_date']
-                buy_d_str = buy_d.strftime('%Y-%m-%d') if hasattr(buy_d, 'strftime') else str(buy_d)
-                stop_d = pos['stop_date']
-                stop_d_str = stop_d.strftime('%Y-%m-%d') if stop_d is not None and hasattr(stop_d, 'strftime') else str(stop_d) if stop_d else "-"
-                _held_days = len(_trading_days_all[
-                    (_trading_days_all >= buy_d) & (_trading_days_all <= _os['last_date'])])
-                _remain_days = len(_trading_days_all[
-                    (_trading_days_all > _os['last_date']) & (_trading_days_all <= stop_d)
-                ]) if stop_d is not None else None
-                pnl_pct = (_os['prev_close'] / pos['buy_price'] - 1) * 100 if pos['buy_price'] > 0 else 0
-                pnl_amt = (pos['qty'] * _os['prev_close']) - (pos['qty'] * pos['buy_price'])
-                pos_rows.append({
-                    "시드": f"티어{i+1}", "모드": pos['mode'],
-                    "매수일": buy_d_str, "매수가": f"${pos['buy_price']:.2f}",
-                    "수량": f"{pos['qty']:,}주", "매수금액": f"${pos['buy_price']*pos['qty']:,.2f}",
-                    "매도목표가": f"${pos['sell_target']:.2f}" if pos['sell_target'] else "-",
-                    "손절예정일": stop_d_str,
-                    "보유일": f"{_held_days}일",
-                    "잔여일": f"{_remain_days}일" if _remain_days is not None else "-",
-                    "평가손익": f"${pnl_amt:+,.0f} ({pnl_pct:+.1f}%)",
-                })
-
-            def _style_pnl_pos(val):
-                if isinstance(val, str):
-                    if val.startswith("$+") or val.startswith("$0"):
-                        return "color: #1565C0; font-weight: bold"
-                    elif val.startswith("$-"):
-                        return "color: #C62828; font-weight: bold"
-                return ""
-            df_pos = pd.DataFrame(pos_rows)
-            st.dataframe(df_pos.style.map(_style_pnl_pos, subset=["평가손익"]),
-                         use_container_width=True, hide_index=True,
-                         height=38 + 35 * len(df_pos))
-
-            _total_holding_qty = sum(pos['qty'] for pos in _os['open_positions'])
-            _avg_buy_price = sum(pos['buy_price'] * pos['qty'] for pos in _os['open_positions']) / _total_holding_qty if _total_holding_qty > 0 else 0
-            hc1, hc2, hc3, hc4 = st.columns(4)
-            hc1.metric("총 보유주수", f"{_total_holding_qty:,}주")
-            hc2.metric("평균매수가", f"${_avg_buy_price:.2f}")
-            hc3.metric("현재가 (종가)", f"${_os['prev_close']:,.2f}")
-            hc4.metric("평가금액", f"${_os['holding_value']:,.0f}",
-                       delta=f"{(_os['prev_close']/_avg_buy_price-1)*100:+.2f}%" if _avg_buy_price > 0 else "")
-        else:
-            st.info("현재 보유 시드 없음 (전량 현금)")
-            st.metric("보유현금", f"${_os['cash']:,.0f}")
-
-        # ── 최근 매도 기록 ──
-        st.divider()
-        with st.expander("📊 최근 매도 기록 (최근 20건)"):
-            _bt_df = _os['bt_df']
-            _sell_records = []
-            for _, row in _bt_df.iterrows():
-                if row['매도내역'] is not None:
-                    for sr in row['매도내역']:
-                        _sell_records.append({
-                            "매수일": pd.Timestamp(sr['buy_date']).strftime('%Y-%m-%d'),
-                            "매도일": pd.Timestamp(sr['sell_date']).strftime('%Y-%m-%d'),
-                            "모드": sr['mode'],
-                            "매수가": f"${sr['buy_price']:.2f}",
-                            "매도가": f"${sr['sell_price']:.2f}",
-                            "수량": f"{sr['qty']:,}주",
-                            "매도목표": f"${sr['sell_target']:.2f}",
-                            "손절일": pd.Timestamp(sr['stop_date']).strftime('%Y-%m-%d'),
-                            "손익": f"${sr['pnl']:+,.2f}",
-                            "결과": "✅ 익절" if sr['pnl'] >= 0 else "❌ 손절",
-                        })
-            if _sell_records:
-                _df_sells = pd.DataFrame(_sell_records)
-                _df_sells_show = _df_sells.tail(20).iloc[::-1].reset_index(drop=True)
-
-                def _style_sell_result(val):
-                    if "익절" in str(val): return "color: #1565C0; font-weight: bold"
-                    if "손절" in str(val): return "color: #C62828; font-weight: bold"
-                    return ""
-                st.dataframe(
-                    _df_sells_show.style.map(_style_sell_result, subset=["결과"]),
-                    use_container_width=True, hide_index=True,
-                    height=min(38 + 35 * len(_df_sells_show), 600))
-
-                _total_sells = len(_sell_records)
-                _win_sells = sum(1 for s in _sell_records if "익절" in s["결과"])
-                _loss_sells = _total_sells - _win_sells
-                sc1, sc2, sc3 = st.columns(3)
-                sc1.metric("총 매도", f"{_total_sells}회")
-                sc2.metric("익절", f"{_win_sells}회 ({_win_sells/_total_sells*100:.0f}%)" if _total_sells else "0회")
-                sc3.metric("손절", f"{_loss_sells}회 ({_loss_sells/_total_sells*100:.0f}%)" if _total_sells else "0회")
-            else:
-                st.info("매도 기록이 없습니다.")
-
-        # ── 일별 매매 상세표 ──
-        st.divider()
-        st.subheader("📋 일별 매매 상세표")
-
-        _df_daily = _load_dss_history()
-        if not _df_daily.empty:
-            _buy_count = _df_daily["매매"].astype(str).str.startswith("BUY").sum()
-            _sell_count = _df_daily["매매"].astype(str).str.startswith("SELL").sum()
-            _total_trades = _buy_count + _sell_count
-            _first_date = _df_daily["날짜"].iloc[0] if len(_df_daily) > 0 else "-"
-            _last_date_h = _df_daily["날짜"].iloc[-1] if len(_df_daily) > 0 else "-"
-            st.markdown(
-                f"기록 {_first_date} ~ {_last_date_h} | "
-                f"총 **{_total_trades}건** (매수 {_buy_count}회 · 매도 {_sell_count}회)"
-            )
-            st.info("📌 이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다.")
-
-            _df_show = _df_daily.iloc[::-1].reset_index(drop=True)
-
-            def _style_daily_row(row):
-                action = str(row.get("매매", ""))
-                if action.startswith("BUY"):
-                    return ["background-color: #FFF0F0"] * len(row)
-                if action.startswith("SELL"):
-                    return ["background-color: #F0FFF4"] * len(row)
-                return [""] * len(row)
-
-            def _style_action(val):
-                s = str(val)
-                if s.startswith("BUY"):
-                    return "color: #C62828; font-weight: bold"
-                if s.startswith("SELL"):
-                    return "color: #1565C0; font-weight: bold"
-                return "color: #999"
-
-            def _style_pnl(val):
-                s = str(val)
-                if s.startswith("+"):
-                    return "color: #1565C0; font-weight: bold"
-                if s.startswith("-") and s != "-":
-                    return "color: #C62828; font-weight: bold"
-                return "color: #999"
-
-            st.dataframe(
-                _df_show.style
-                    .apply(_style_daily_row, axis=1)
-                    .map(_style_action, subset=["매매"])
-                    .map(_style_pnl, subset=["실현손익($)", "실현손익률(%)"]),
-                hide_index=True, use_container_width=True,
-                height=min(38 + 35 * len(_df_show), 600),
-            )
-
-            # 다운로드 버튼
-            _dl1, _dl2, _ = st.columns([1, 1, 3])
-            _today_dl = pd.Timestamp.today().strftime("%Y%m%d")
-
-            _csv_data = _df_daily.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-            _dl1.download_button(
-                "📥 CSV 다운로드", data=_csv_data,
-                file_name=f"DSS_SOXL_history_{_today_dl}.csv",
-                mime="text/csv", key="dss_dl_csv_hist", use_container_width=True,
-            )
-
-            _buf = _io.BytesIO()
-            with pd.ExcelWriter(_buf, engine="openpyxl") as _writer:
-                _df_daily.to_excel(_writer, index=False, sheet_name="일별매매상세")
-            _dl2.download_button(
-                "📥 엑셀 다운로드", data=_buf.getvalue(),
-                file_name=f"DSS_SOXL_history_{_today_dl}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dss_dl_xlsx_hist", use_container_width=True,
-            )
-        else:
-            st.info("아직 저장된 매매 기록이 없습니다. '주문표 로드' 버튼을 클릭하면 기록이 시작됩니다.")
-
 
 # ══════════════════════════════════════════════
 # 탭 5: DB — xlsx DB 시트 재현 (하루씩 누적 기록)
@@ -3258,7 +3424,7 @@ def render_settings_tab():
                 if not tg_chat_id or not tg_token:
                     st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
                 else:
-                    _tg_os = st.session_state.get("dss_os_result")
+                    _tg_os = next((st.session_state[k] for k in st.session_state if k.startswith("dss_a") and k.endswith("_result") and st.session_state[k] is not None), None)
                     if _tg_os is None:
                         st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
                     else:
@@ -3400,7 +3566,7 @@ def render_settings_tab():
                 if not gs_url:
                     st.warning("스프레드시트 URL을 먼저 입력해주세요.")
                 else:
-                    _gs_os = st.session_state.get("dss_os_result")
+                    _gs_os = next((st.session_state[k] for k in st.session_state if k.startswith("dss_a") and k.endswith("_result") and st.session_state[k] is not None), None)
                     if _gs_os is None:
                         st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
                     else:
