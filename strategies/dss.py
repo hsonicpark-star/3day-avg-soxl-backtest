@@ -1224,13 +1224,20 @@ def render_ordersheet_tab(params):
     except Exception:
         _os_capital_val = 10000.0
 
-    _oc1, _oc2 = st.columns(2)
+    _oc1, _oc2, _oc3 = st.columns([2, 2, 1])
     os_start = _oc1.date_input("시작일", value=_os_start_val,
                                 min_value=datetime(2010, 1, 1).date(),
                                 max_value=datetime.today().date(),
                                 key="dss_os_start_input")
     os_capital = _oc2.number_input("시작 자본 ($)", value=_os_capital_val,
                                     step=1000.0, key="dss_os_capital_input")
+    _oc3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if _oc3.button("💾 계좌 저장", key="dss_os_save_account", use_container_width=True):
+        _cfg["os_start"] = str(os_start)
+        _cfg["os_capital"] = float(os_capital)
+        _save_dss_config(_cfg)
+        st.success(f"✅ 계좌 정보가 저장되었습니다. (시작일: {os_start}, 자본금: ${os_capital:,.0f})")
+        st.rerun()
 
     # ── 자본 조정 (증액/감액) ──
     with st.expander("💰 자본 조정 (증액 / 감액)"):
@@ -1339,7 +1346,15 @@ def render_ordersheet_tab(params):
             )
 
         if bt_df is None or bt_df.empty:
-            st.warning("시뮬레이션 결과가 없습니다. 시작일을 확인하세요.")
+            _days_diff = (pd.Timestamp.today().date() - os_start).days
+            if _days_diff < 5:
+                st.warning(
+                    f"⚠️ 시작일({os_start})이 너무 최근입니다. "
+                    f"최소 1주일 이상의 기간이 필요합니다.\n\n"
+                    f"💡 시작일을 조정한 후 **💾 계좌 저장** 버튼으로 저장하세요."
+                )
+            else:
+                st.warning("시뮬레이션 결과가 없습니다. 시작일 또는 데이터 범위를 확인하세요.")
         else:
             _save_dss_history(bt_df)
 
