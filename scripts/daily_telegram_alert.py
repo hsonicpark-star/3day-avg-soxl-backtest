@@ -7,6 +7,8 @@ Google Sheets users 탭의 모든 사용자에게
   1. 종가평균매매 (tg_chat_id / tg_token / ticker_settings)
   2. 표준편차매매  (sd_tg_chat_id / sd_tg_token / sd_ticker_settings)
   3. DSS 동파법   (dss_config 내 tg_chat_id / tg_token + 계좌별 발송)
+  4. Sigma매매법  (sigma_tg_chat_id / sigma_tg_token / sigma_ticker_settings)
+  5. IUO 매매법   (iuo_config 내 tg_chat_id / tg_token + 계좌별 발송)
 """
 
 import os, sys, json, math, requests
@@ -550,6 +552,241 @@ def parse_dss_config(user: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+# Sigma매매법 관련
+# ══════════════════════════════════════════════════════════════
+
+SIGMA_DEFAULT_PERIOD   = 252
+SIGMA_DEFAULT_CAPITAL  = 100000.0
+SIGMA_DEFAULT_DIVISIONS = 20
+
+def calc_sigma_order(ticker: str, sigma_period: int = 252) -> dict | None:
+    """Sigma매매법 오늘의 주문 데이터 계산."""
+    buf_days = sigma_period + 90
+    start = (datetime.today() - timedelta(days=int(buf_days * 1.5))).strftime("%Y-%m-%d")
+    df = fetch_prices(ticker, start)
+    if df is None or df.empty or len(df) < sigma_period + 2:
+        return None
+
+    closes = df["Close"].values.astype(float)
+    prev_close = float(closes[-1])
+
+    # σ, μ 계산 (전일까지의 period 기간)
+    end_idx = len(closes) - 1
+    start_idx = max(0, end_idx - sigma_period + 1)
+    window = closes[start_idx:end_idx + 1]
+    if len(window) < max(10, sigma_period // 4):
+        return None
+    returns = np.diff(window) / window[:-1]
+    if len(returns) < 2:
+        return None
+    mu = float(np.mean(returns))
+    sigma = float(np.std(returns, ddof=0))
+    rolling_max = float(np.max(window))
+
+    buy_loc_1 = prev_close * (1 + mu - 1 * sigma)
+    buy_loc_2 = prev_close * (1 + mu - 2 * sigma)
+    buy_loc_3 = prev_close * (1 + mu - 3 * sigma)
+
+    return {
+        "ticker": ticker, "prev_close": prev_close,
+        "mu_pct": mu * 100, "sigma_pct": sigma * 100,
+        "rolling_max": rolling_max,
+        "buy_loc_1": buy_loc_1, "buy_loc_2": buy_loc_2, "buy_loc_3": buy_loc_3,
+        "sigma_period": sigma_period,
+        "as_of": df.index[-1].strftime("%Y-%m-%d"),
+    }
+
+
+def build_sigma_message(od: dict, capital: float, divisions: int) -> str:
+    """Sigma매매법 텔레그램 메시지 생성."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    amount_per_trade = capital / max(divisions, 1)
+    qty1 = math.floor(amount_per_trade / od["buy_loc_1"]) if od["buy_loc_1"] > 0 else 0
+
+    lines = [
+        f"📐 <b>Sigma매매 주문표</b> ({od['ticker']})",
+        f"📅 {today}  |  기준: {od['as_of']}",
+        f"전일종가: <b>${od['prev_close']:.2f}</b>",
+        f"μ: {od['mu_pct']:+.4f}%  |  σ: {od['sigma_pct']:.4f}%",
+        f"━━━━━━━━━━━━━━━",
+        f"🔴 <b>매수 LOC (1σ 기준)</b>",
+        f"  <b>${od['buy_loc_1']:.2f}</b>  {qty1}주  (≈${qty1 * od['buy_loc_1']:,.0f})",
+        f"  2σ: ${od['buy_loc_2']:.2f}  |  3σ: ${od['buy_loc_3']:.2f}",
+        f"ℹ️ σ 계산 기간: {od['sigma_period']}거래일",
+    ]
+    return "\n".join(lines)
+
+
+def parse_sigma_ticker_settings(user: dict) -> dict:
+    """users 행에서 sigma_ticker_settings JSON 파싱."""
+    raw = str(user.get("sigma_ticker_settings", "")).strip()
+    if raw:
+        try:
+            ts = json.loads(raw)
+            if isinstance(ts, dict) and ts:
+                return ts
+        except Exception:
+            pass
+    return {}
+
+
+# ══════════════════════════════════════════════════════════════
+# IUO 매매법 관련
+# ══════════════════════════════════════════════════════════════
+
+IUO_DEFAULT_PARAMS = {
+    "first_buy_ratio": 33, "buy0_pct": 0.0, "buy1_pct": -1.8, "buy2_pct": -10.0,
+    "sell_pct": 4.3, "moc_days": 18, "max_add_buys": 7, "divisions": 8,
+    "fee_rate": 0.0,
+}
+
+def calc_iuo_order(acct_data: dict) -> dict | None:
+    """IUO 계좌 1개의 주문표 데이터 계산."""
+    try:
+        from iuo_engine import IUOParams, run_backtest
+    except ImportError as e:
+        print(f"    ⚠️ iuo_engine import 실패: {e}")
+        return None
+
+    ap = acct_data.get("params", {})
+    ticker    = str(acct_data.get("ticker", "SOXL"))
+    os_start  = str(acct_data.get("os_start", "2024-01-01"))
+    os_capital = float(acct_data.get("os_capital", 10000))
+
+    fbr = ap.get("first_buy_ratio", IUO_DEFAULT_PARAMS["first_buy_ratio"]) / 100
+    b0  = ap.get("buy0_pct",  IUO_DEFAULT_PARAMS["buy0_pct"]) / 100
+    b1  = ap.get("buy1_pct",  IUO_DEFAULT_PARAMS["buy1_pct"]) / 100
+    b2  = ap.get("buy2_pct",  IUO_DEFAULT_PARAMS["buy2_pct"]) / 100
+    sp  = ap.get("sell_pct",  IUO_DEFAULT_PARAMS["sell_pct"]) / 100
+    moc = ap.get("moc_days",  IUO_DEFAULT_PARAMS["moc_days"])
+    max_add = ap.get("max_add_buys", IUO_DEFAULT_PARAMS["max_add_buys"])
+    div = ap.get("divisions", IUO_DEFAULT_PARAMS["divisions"])
+    fee = ap.get("fee_rate",  IUO_DEFAULT_PARAMS["fee_rate"]) / 100
+
+    try:
+        price_df = fetch_prices(ticker, "2009-01-01")
+    except Exception as e:
+        print(f"    ⚠️ {ticker} 데이터 로드 실패: {e}")
+        return None
+    if price_df.empty:
+        return None
+
+    params = IUOParams(
+        initial_capital=os_capital,
+        first_buy_ratio=fbr, buy0_pct=b0, buy1_pct=b1, buy2_pct=b2,
+        sell_pct=sp, moc_days=moc, max_additional_buys=max_add,
+        divisions=div, fee_rate=fee,
+    )
+
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    result = run_backtest(params, price_df, None, os_start, today_str)
+    if not result or not result.get("daily_log"):
+        return None
+
+    last_row = result["daily_log"][-1]
+    last_close = float(last_row["종가"])
+    cur_shares = int(last_row["보유수량"])
+    avg_cost   = float(last_row["평단가"])
+    last_buy_close = float(last_row.get("마지막매수종가", 0))
+    add_count  = int(last_row.get("추가매수횟수", 0))
+    cycle_day  = int(last_row.get("진행일", 0))
+    cash       = float(last_row["예수금"])
+    total_asset = float(last_row["총자산"])
+    cum_realized = float(last_row["누적실현손익"])
+    cycle_base = float(last_row.get("매수기준액", os_capital))
+
+    buy0_loc = round(last_close * (1 + b0), 2)
+    buy1_loc = round(last_close * (1 + b1), 2)
+    buy2_loc = round(last_close * (1 + b2), 2)
+    sell_loc = round(last_buy_close * (1 + sp), 2) if last_buy_close > 0 else None
+
+    remaining = max_add - add_count
+
+    return {
+        "ticker": ticker, "last_close": last_close,
+        "cur_shares": cur_shares, "avg_cost": avg_cost,
+        "last_buy_close": last_buy_close, "add_count": add_count,
+        "cycle_day": cycle_day, "remaining": remaining,
+        "cash": cash, "total_asset": total_asset,
+        "cum_realized": cum_realized, "cycle_base": cycle_base,
+        "buy0_loc": buy0_loc, "buy1_loc": buy1_loc, "buy2_loc": buy2_loc,
+        "sell_loc": sell_loc,
+        "fbr": fbr, "b0": b0, "b1": b1, "b2": b2, "sp": sp,
+        "moc_days": moc, "max_add": max_add, "div": div,
+        "sell_count": result["metrics"]["총매도횟수"],
+    }
+
+
+def build_iuo_message(o: dict, acct_name: str = "") -> str:
+    """IUO 주문표 텔레그램 메시지 생성."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    _acct = f" [{acct_name}]" if acct_name else ""
+
+    lines = [
+        f"<b>📊 IUO 매매법 — {o['ticker']} 주문표{_acct}</b>",
+        f"📅 {today}",
+        f"전일종가: <b>${o['last_close']:,.2f}</b>",
+        f"총자산: <b>${o['total_asset']:,.0f}</b>  (현금 ${o['cash']:,.0f})",
+        f"━━━━━━━━━━━━━━━",
+    ]
+
+    if o["cur_shares"] == 0:
+        # 첫매수
+        first_amt = o["cycle_base"] * o["fbr"]
+        qty0 = math.floor(first_amt / o["buy0_loc"]) if o["buy0_loc"] > 0 else 0
+        lines.append(f"🟢 첫매수 LOC: <b>${o['buy0_loc']:,.2f}</b>  {qty0:,}주")
+        lines.append(f"   매수기준액 ${o['cycle_base']:,.0f} × {o['fbr']*100:.0f}%")
+    else:
+        # 매도
+        if o["sell_loc"]:
+            pnl = (o["sell_loc"] / o["avg_cost"] - 1) * 100 if o["avg_cost"] > 0 else 0
+            lines.append(
+                f"📈 매도 LOC: <b>${o['sell_loc']:,.2f}</b>  "
+                f"{o['cur_shares']:,}주 전량 ({pnl:+.1f}%)")
+            if o["cycle_day"] >= o["moc_days"]:
+                lines.append(f"⚠️ 시간청산 도래 ({o['cycle_day']}일) — MOC 매도 대비")
+        # 추가매수
+        if o["remaining"] > 0:
+            buy_amt = (o["cycle_base"] - o["cash"]) / o["div"] if o["div"] > 0 else 0
+            if buy_amt <= 0:
+                buy_amt = o["cycle_base"] / o["div"] if o["div"] > 0 else 0
+            qty1 = math.floor(buy_amt / o["buy1_loc"]) if o["buy1_loc"] > 0 else 0
+            qty2 = math.floor(buy_amt / o["buy2_loc"]) if o["buy2_loc"] > 0 else 0
+            lines.append(
+                f"🔴 추가매수1 LOC: <b>${o['buy1_loc']:,.2f}</b>  "
+                f"{qty1:,}주 ({o['b1']*100:+.1f}%)")
+            if o["remaining"] >= 2:
+                lines.append(
+                    f"🔴 추가매수2 LOC: <b>${o['buy2_loc']:,.2f}</b>  "
+                    f"{qty2:,}주 ({o['b2']*100:+.1f}%)")
+            lines.append(f"   잔여 {o['remaining']}회 │ 진행일 {o['cycle_day']}일")
+        else:
+            lines.append(f"⚠️ 추가매수 한도 도달 ({o['max_add']}회)")
+
+    if o["cur_shares"] > 0:
+        eval_pnl = (o["last_close"] / o["avg_cost"] - 1) * 100 if o["avg_cost"] > 0 else 0
+        lines.append(f"━━━━━━━━━━━━━━━")
+        lines.append(
+            f"📦 보유: {o['cur_shares']:,}주  |  평단 ${o['avg_cost']:.2f}  "
+            f"({eval_pnl:+.1f}%)")
+
+    return "\n".join(lines)
+
+
+def parse_iuo_config(user: dict) -> dict:
+    """users 행에서 iuo_config JSON 파싱."""
+    raw = str(user.get("iuo_config", "")).strip()
+    if raw:
+        try:
+            cfg = json.loads(raw)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
+    return {}
+
+
+# ══════════════════════════════════════════════════════════════
 # 공통: 텔레그램 발송
 # ══════════════════════════════════════════════════════════════
 
@@ -704,6 +941,75 @@ def main():
                     fail_count += 1
         else:
             print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
+            skip_count += 1
+
+        # ── 4. Sigma매매법 발송 ──────────────────────────────────
+        sg_chat_id  = str(user.get("sigma_tg_chat_id", "")).strip()
+        sg_token    = str(user.get("sigma_tg_token",   "")).strip()
+        sg_settings = parse_sigma_ticker_settings(user)
+
+        if sg_chat_id and sg_token and sg_settings:
+            print(f"  👤 {username} [Sigma]: {list(sg_settings.keys())} 처리 중...")
+            for tk, cfg in sg_settings.items():
+                sigma_period = int(float(cfg.get("sigma_period", SIGMA_DEFAULT_PERIOD)))
+                capital      = float(cfg.get("os_capital",   SIGMA_DEFAULT_CAPITAL))
+                divisions    = int(float(cfg.get("divisions",    SIGMA_DEFAULT_DIVISIONS)))
+
+                try:
+                    od = calc_sigma_order(tk, sigma_period)
+                except Exception as e:
+                    print(f"    ❌ [Sigma/{tk}] 계산 오류 → {e}")
+                    fail_count += 1
+                    continue
+
+                if not od:
+                    print(f"    ❌ [Sigma/{tk}] 데이터 부족")
+                    fail_count += 1
+                    continue
+
+                msg = build_sigma_message(od, capital, divisions)
+                ok, resp = send_telegram(sg_chat_id, sg_token, msg, parse_mode="HTML")
+                if ok:
+                    print(f"    ✅ [Sigma/{tk}] 발송 성공")
+                    ok_count += 1
+                else:
+                    print(f"    ❌ [Sigma/{tk}] 발송 실패 → {resp}")
+                    fail_count += 1
+        else:
+            print(f"  ⏭️  {username} [Sigma]: 미설정 → 건너뜀")
+            skip_count += 1
+
+        # ── 5. IUO 매매법 발송 ──────────────────────────────────
+        iuo_cfg = parse_iuo_config(user)
+        iuo_chat_id  = str(iuo_cfg.get("tg_chat_id", "")).strip()
+        iuo_token    = str(iuo_cfg.get("tg_token",   "")).strip()
+        iuo_accounts = iuo_cfg.get("accounts", {})
+
+        if iuo_chat_id and iuo_token and iuo_accounts:
+            print(f"  👤 {username} [IUO]: {list(iuo_accounts.keys())} 처리 중...")
+            for acct_name, acct_data in iuo_accounts.items():
+                try:
+                    iuo_result = calc_iuo_order(acct_data)
+                except Exception as e:
+                    print(f"    ❌ [IUO/{acct_name}] 계산 오류 → {e}")
+                    fail_count += 1
+                    continue
+
+                if not iuo_result:
+                    print(f"    ❌ [IUO/{acct_name}] 데이터 부족")
+                    fail_count += 1
+                    continue
+
+                msg = build_iuo_message(iuo_result, acct_name)
+                ok, resp = send_telegram(iuo_chat_id, iuo_token, msg, parse_mode="HTML")
+                if ok:
+                    print(f"    ✅ [IUO/{acct_name}] 발송 성공")
+                    ok_count += 1
+                else:
+                    print(f"    ❌ [IUO/{acct_name}] 발송 실패 → {resp}")
+                    fail_count += 1
+        else:
+            print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
             skip_count += 1
 
     print(f"\n🏁 완료: 성공 {ok_count}건 / 건너뜀 {skip_count}명 / 실패 {fail_count}건")
