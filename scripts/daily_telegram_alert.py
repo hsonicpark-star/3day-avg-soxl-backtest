@@ -6,15 +6,19 @@ Google Sheets users 탭의 모든 사용자에게
 전략별 발송:
   1. 종가평균매매 (tg_chat_id / tg_token / ticker_settings)
   2. 표준편차매매  (sd_tg_chat_id / sd_tg_token / sd_ticker_settings)
+  3. DSS 동파법   (dss_config 내 tg_chat_id / tg_token + 계좌별 발송)
 """
 
-import os, json, math, requests
+import os, sys, json, math, requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+
+# dss_engine.py를 import할 수 있도록 경로 추가
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── 기본값 (ticker_settings에 값 없을 때 fallback) ────────────
 DEFAULT_A_BUY      = -0.005
@@ -310,6 +314,242 @@ def parse_sd_ticker_settings(user: dict) -> dict:
     return {}
 
 # ══════════════════════════════════════════════════════════════
+# DSS 동파법 관련
+# ══════════════════════════════════════════════════════════════
+
+DSS_DEFAULT_PARAMS = {
+    "sf_div": 7, "sf_hold": 36, "sf_buy": 4.91, "sf_sell": 0.9,
+    "ag_div": 7, "ag_hold": 8, "ag_buy": 2.77, "ag_sell": 3.06,
+    "pcr": 70, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+}
+
+def calc_dss_order(acct_data: dict) -> dict | None:
+    """DSS 계좌 1개의 주문표 데이터 계산."""
+    try:
+        from dss_engine import (DSSParams, run_backtest, build_weekly_rsi_series,
+                                build_mode_series, get_week_mode_map)
+    except ImportError as e:
+        print(f"    ⚠️ dss_engine import 실패: {e}")
+        return None
+
+    # 파라미터 로드
+    ap = acct_data.get("params", {})
+    sf_div  = ap.get("sf_div",  DSS_DEFAULT_PARAMS["sf_div"])
+    sf_hold = ap.get("sf_hold", DSS_DEFAULT_PARAMS["sf_hold"])
+    sf_buy  = ap.get("sf_buy",  DSS_DEFAULT_PARAMS["sf_buy"])
+    sf_sell = ap.get("sf_sell", DSS_DEFAULT_PARAMS["sf_sell"])
+    ag_div  = ap.get("ag_div",  DSS_DEFAULT_PARAMS["ag_div"])
+    ag_hold = ap.get("ag_hold", DSS_DEFAULT_PARAMS["ag_hold"])
+    ag_buy  = ap.get("ag_buy",  DSS_DEFAULT_PARAMS["ag_buy"])
+    ag_sell = ap.get("ag_sell", DSS_DEFAULT_PARAMS["ag_sell"])
+    pcr     = ap.get("pcr",     DSS_DEFAULT_PARAMS["pcr"])
+    lcr     = ap.get("lcr",     DSS_DEFAULT_PARAMS["lcr"])
+    renew   = ap.get("renewal_period", DSS_DEFAULT_PARAMS["renewal_period"])
+    fee     = ap.get("fee_rate", DSS_DEFAULT_PARAMS["fee_rate"])
+
+    os_start  = str(acct_data.get("os_start", "2024-01-01"))
+    os_capital = float(acct_data.get("os_capital", 100000))
+
+    # 데이터 로드
+    try:
+        soxl = fetch_prices("SOXL", "2009-06-01")
+        qqq  = fetch_prices("QQQ",  "2009-01-01")
+    except Exception as e:
+        print(f"    ⚠️ 데이터 로드 실패: {e}")
+        return None
+
+    if soxl.empty or qqq.empty:
+        return None
+
+    # RSI/모드 계산
+    weekly_rsi_df = build_weekly_rsi_series(qqq)
+    mode_series_df = build_mode_series(weekly_rsi_df)
+
+    # 백테스트
+    dss_params = DSSParams(
+        sf_divisions=sf_div, sf_max_hold=sf_hold,
+        sf_buy_pct=sf_buy / 100, sf_sell_pct=sf_sell / 100,
+        ag_divisions=ag_div, ag_max_hold=ag_hold,
+        ag_buy_pct=ag_buy / 100, ag_sell_pct=ag_sell / 100,
+        initial_capital=os_capital,
+        fee_rate=fee / 100, renewal_period=renew,
+        pcr=pcr / 100, lcr=lcr / 100,
+    )
+
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    bt_df = run_backtest(dss_params, soxl, mode_series_df, os_start, today_str)
+
+    # 최신 데이터
+    prev_close = float(soxl.iloc[-1]['Close'])
+    last_date = soxl.index[-1]
+    mode_map = get_week_mode_map(mode_series_df, soxl.index)
+    last_mode = mode_map.get(last_date, "AG")
+
+    if last_mode == "AG":
+        cur_div = ag_div; cur_buy_pct = ag_buy / 100; cur_sell_pct = ag_sell / 100; cur_hold = ag_hold
+    else:
+        cur_div = sf_div; cur_buy_pct = sf_buy / 100; cur_sell_pct = sf_sell / 100; cur_hold = sf_hold
+
+    # RSI 정보
+    latest_rsi = float(weekly_rsi_df.iloc[-1]['rsi']) if len(weekly_rsi_df) > 0 else None
+    prev_rsi = float(weekly_rsi_df.iloc[-2]['rsi']) if len(weekly_rsi_df) > 1 else None
+
+    # 백테스트에서 포지션 추출
+    open_positions = []
+    n_pos = 0
+    cash = os_capital
+    total_asset = os_capital
+    cum_realized = 0
+    sell_count = 0
+    holding_value = 0
+
+    if bt_df is not None and not bt_df.empty:
+        last_row = bt_df.iloc[-1]
+        cash = float(last_row['예수금'])
+        total_asset = float(last_row['총자산'])
+        cum_realized = float(last_row['누적실현'])
+        sell_count = int(last_row['누적매도'])
+
+        # 미체결 포지션 수집
+        _all_sold = set()
+        for _, row in bt_df.iterrows():
+            if row['매도내역'] is not None:
+                for sr in row['매도내역']:
+                    _all_sold.add((pd.Timestamp(sr['buy_date']), sr['buy_price'], sr['qty']))
+
+        for _, row in bt_df.iterrows():
+            if row['매수체결'] and row['수량'] > 0:
+                key = (pd.Timestamp(row['날짜']), float(row['매수체결']), int(row['수량']))
+                if key not in _all_sold:
+                    open_positions.append({
+                        'buy_date': pd.Timestamp(row['날짜']),
+                        'buy_price': float(row['매수체결']),
+                        'qty': int(row['수량']),
+                        'sell_target': float(row['매도목표가']) if row['매도목표가'] is not None else None,
+                        'stop_date': pd.Timestamp(row['손절예정일']) if row['손절예정일'] is not None else None,
+                        'mode': row['모드'],
+                    })
+
+        n_pos = len(open_positions)
+        holding_value = sum(p['qty'] * prev_close for p in open_positions)
+
+    next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
+    seed_per_trade = os_capital / cur_div if cur_div > 0 else os_capital
+    buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
+
+    return {
+        "prev_close": prev_close, "last_date": last_date, "last_mode": last_mode,
+        "n_pos": n_pos, "total_asset": total_asset, "cash": cash,
+        "holding_value": holding_value, "cum_realized": cum_realized,
+        "sell_count": sell_count, "open_positions": open_positions,
+        "next_buy_order": next_buy_order, "seed_per_trade": seed_per_trade,
+        "buy_qty_est": buy_qty_est, "cur_divisions": cur_div,
+        "cur_buy_pct": cur_buy_pct, "cur_sell_pct": cur_sell_pct,
+        "cur_max_hold": cur_hold, "os_capital": os_capital,
+        "latest_rsi": latest_rsi, "prev_rsi": prev_rsi,
+    }
+
+
+def build_dss_message(os_result: dict, acct_name: str = "") -> str:
+    """DSS 주문표 텔레그램 메시지 생성."""
+    _o = os_result
+    mode_icon = "🟢" if _o["last_mode"] == "AG" else "🔵"
+    mode_label = "공세" if _o["last_mode"] == "AG" else "안전"
+    _today_str = datetime.today().strftime('%Y-%m-%d')
+    _acct_label = f" [{acct_name}]" if acct_name else ""
+
+    lines = [
+        f"<b>📋 DSS 동파법 — SOXL 주문표{_acct_label}</b>",
+        f"📅 {_today_str}  {mode_icon} {mode_label}모드",
+        f"",
+        f"전일종가: <b>${_o['prev_close']:,.2f}</b>",
+        f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
+        f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
+    ]
+
+    _today_ts = pd.Timestamp(datetime.today().date())
+    _tdays = pd.DatetimeIndex([])
+    try:
+        _soxl = fetch_prices("SOXL", "2024-01-01")
+        _tdays = _soxl.index
+    except Exception:
+        pass
+
+    # 포지션 데이터 수집
+    _pos_data = []
+    for i, pos in enumerate(_o['open_positions']):
+        if pos['sell_target'] is None:
+            continue
+        _stop = pos.get('stop_date')
+        _is_stop = False
+        _remain = None
+        _rdate = ""
+        if _stop is not None:
+            _stop_ts = pd.Timestamp(_stop)
+            _is_stop = (_stop_ts <= _today_ts)
+            if not _is_stop and len(_tdays) > 0:
+                _future = _tdays[(_tdays > _today_ts) & (_tdays <= _stop_ts)]
+                _remain = len(_future)
+                _before = _tdays[_tdays < _stop_ts]
+                if len(_before) > 0:
+                    _rdate = _before[-1].strftime('%m/%d').replace('/0', '/').lstrip('0')
+        _pos_data.append((pos, i, _is_stop, _remain, _rdate))
+
+    _reserve_tiers = {i + 1 for pos, i, _is_stop, _, _ in _pos_data if not _is_stop}
+
+    # 오늘의 주문
+    lines.append(f"")
+    lines.append(f"── 오늘의 주문 ──")
+    for pos, i, _is_stop, _remain, _rdate in _pos_data:
+        _tier = i + 1
+        _star = "★" if _tier in _reserve_tiers else ""
+        if _is_stop:
+            lines.append(f"🔴 MOC매도 티어{_tier}: 시장가 × {pos['qty']}주 (손절일)")
+        else:
+            pnl_pct = (pos['sell_target'] / pos['buy_price'] - 1) * 100
+            lines.append(
+                f"📈 LOC매도 {_star}티어{_tier}: ${pos['sell_target']:,.2f} "
+                f"× {pos['qty']}주 ({pnl_pct:+.1f}%)")
+    if _o['n_pos'] < _o['cur_divisions']:
+        lines.append(
+            f"📉 LOC매수 티어{_o['n_pos']+1}: ${_o['next_buy_order']:,.2f} "
+            f"× {_o['buy_qty_est']}주")
+    else:
+        lines.append(f"⚠️ 전 슬롯 사용 중 — 매수 없음")
+
+    # 예약 현황
+    _reserve_lines = []
+    for pos, i, _is_stop, _remain, _rdate in _pos_data:
+        if _is_stop:
+            continue
+        _tier = i + 1
+        _deadline = f"예약~{_rdate} (잔여 {_remain}일)" if _remain is not None and _rdate else ""
+        _reserve_lines.append(f" ★티어{_tier}: ${pos['sell_target']:,.2f} {_deadline}")
+    if _reserve_lines:
+        lines.append(f"")
+        lines.append(f"── 예약 현황 ──")
+        lines.extend(_reserve_lines)
+
+    if _o.get('latest_rsi'):
+        lines.append(f"")
+        lines.append(f"QQQ RSI: {_o['latest_rsi']:.1f}")
+    return "\n".join(lines)
+
+
+def parse_dss_config(user: dict) -> dict:
+    """users 행에서 dss_config JSON 파싱."""
+    raw = str(user.get("dss_config", "")).strip()
+    if raw:
+        try:
+            cfg = json.loads(raw)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
+    return {}
+
+
+# ══════════════════════════════════════════════════════════════
 # 공통: 텔레그램 발송
 # ══════════════════════════════════════════════════════════════
 
@@ -431,6 +671,39 @@ def main():
                     fail_count += 1
         else:
             print(f"  ⏭️  {username} [표준편차]: 미설정 → 건너뜀")
+            skip_count += 1
+
+        # ── 3. DSS 동파법 발송 ──────────────────────────────────
+        dss_cfg = parse_dss_config(user)
+        dss_chat_id = str(dss_cfg.get("tg_chat_id", "")).strip()
+        dss_token   = str(dss_cfg.get("tg_token",   "")).strip()
+        dss_accounts = dss_cfg.get("accounts", {})
+
+        if dss_chat_id and dss_token and dss_accounts:
+            print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
+            for acct_name, acct_data in dss_accounts.items():
+                try:
+                    os_result = calc_dss_order(acct_data)
+                except Exception as e:
+                    print(f"    ❌ [DSS/{acct_name}] 계산 오류 → {e}")
+                    fail_count += 1
+                    continue
+
+                if not os_result:
+                    print(f"    ❌ [DSS/{acct_name}] 데이터 부족")
+                    fail_count += 1
+                    continue
+
+                msg = build_dss_message(os_result, acct_name)
+                ok, resp = send_telegram(dss_chat_id, dss_token, msg, parse_mode="HTML")
+                if ok:
+                    print(f"    ✅ [DSS/{acct_name}] 발송 성공")
+                    ok_count += 1
+                else:
+                    print(f"    ❌ [DSS/{acct_name}] 발송 실패 → {resp}")
+                    fail_count += 1
+        else:
+            print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
             skip_count += 1
 
     print(f"\n🏁 완료: 성공 {ok_count}건 / 건너뜀 {skip_count}명 / 실패 {fail_count}건")
