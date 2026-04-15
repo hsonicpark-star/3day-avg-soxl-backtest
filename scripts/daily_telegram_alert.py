@@ -11,7 +11,7 @@ Google Sheets users 탭의 모든 사용자에게
   5. IUO 매매법   (iuo_config 내 tg_chat_id / tg_token + 계좌별 발송)
 """
 
-import os, sys, json, math, requests
+import os, sys, json, math, time, requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -52,10 +52,21 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(info, scopes=GS_SCOPES)
     return gspread.authorize(creds)
 
-def get_users(client, sheet_url: str) -> list:
-    sh = client.open_by_url(sheet_url)
-    ws = sh.worksheet("users")
-    return ws.get_all_records()
+def get_users(client, sheet_url: str, max_retries: int = 5) -> list:
+    """Google Sheets에서 사용자 목록 로드 (503 등 일시 오류 시 재시도)."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            sh = client.open_by_url(sheet_url)
+            ws = sh.worksheet("users")
+            return ws.get_all_records()
+        except gspread.exceptions.APIError as e:
+            status = e.response.status_code if hasattr(e, 'response') else 0
+            if status in (429, 500, 502, 503) and attempt < max_retries:
+                wait = 30 * attempt  # 30초, 60초, 90초, 120초
+                print(f"  ⚠️ GSheets API {status} 오류 — {wait}초 후 재시도 ({attempt}/{max_retries})")
+                time.sleep(wait)
+            else:
+                raise
 
 # ── 가격 데이터 ────────────────────────────────────────────────
 def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
