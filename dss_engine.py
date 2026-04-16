@@ -144,11 +144,19 @@ def get_trading_days(daily_data: pd.DataFrame) -> pd.DatetimeIndex:
 
 def workday_offset(start_date: pd.Timestamp, n_days: int,
                    trading_days: pd.DatetimeIndex) -> pd.Timestamp:
-    """start_date로부터 n_days 거래일 이후의 날짜 반환."""
+    """start_date로부터 n_days 거래일 이후의 날짜 반환.
+    데이터 범위를 넘어서면 영업일(bday) 달력으로 보정."""
     future = trading_days[trading_days > start_date]
     if len(future) >= n_days:
         return future[n_days - 1]
-    return future[-1] if len(future) > 0 else start_date
+    # 데이터 부족 시 영업일 달력으로 보정
+    covered = len(future)
+    remaining = n_days - covered
+    last_known = future[-1] if covered > 0 else start_date
+    extra = pd.bdate_range(last_known + pd.Timedelta(days=1), periods=remaining + 5)
+    if remaining <= len(extra):
+        return extra[remaining - 1]
+    return extra[-1] if len(extra) > 0 else last_known
 
 
 # ──────────────────────────────────────────────
