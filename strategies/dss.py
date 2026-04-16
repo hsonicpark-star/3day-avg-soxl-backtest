@@ -130,9 +130,11 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
     ]
 
-    # 거래일 인덱스 (예약매도 잔여일 계산)
+    # 거래일 인덱스 (예약매도 잔여일 계산) — 미래 영업일 보정 포함
     try:
-        _tdays = get_soxl_data().index
+        _raw_idx = get_soxl_data().index
+        _extra_bdays = pd.bdate_range(_raw_idx[-1] + pd.Timedelta(days=1), periods=60)
+        _tdays = _raw_idx.append(_extra_bdays)
     except Exception:
         _tdays = None
     _today_ts = pd.Timestamp(datetime.today().date())
@@ -1781,9 +1783,11 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             unsafe_allow_html=True,
         )
 
-        # 거래일 인덱스 (잔여일 계산용)
+        # 거래일 인덱스 (잔여일 계산용) — 미래 영업일 보정 포함
         try:
-            _trading_days_idx = get_soxl_data().index
+            _raw_idx = get_soxl_data().index
+            _extra_bdays = pd.bdate_range(_raw_idx[-1] + pd.Timedelta(days=1), periods=60)
+            _trading_days_idx = _raw_idx.append(_extra_bdays)
         except Exception:
             _trading_days_idx = None
         _today_ts = pd.Timestamp(datetime.today().date())

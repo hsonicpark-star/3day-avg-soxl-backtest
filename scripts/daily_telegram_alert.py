@@ -484,7 +484,9 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
     _tdays = pd.DatetimeIndex([])
     try:
         _soxl = fetch_prices("SOXL", "2024-01-01")
-        _tdays = _soxl.index
+        _raw_idx = _soxl.index
+        _extra_bdays = pd.bdate_range(_raw_idx[-1] + pd.Timedelta(days=1), periods=60)
+        _tdays = _raw_idx.append(_extra_bdays)
     except Exception:
         pass
 
