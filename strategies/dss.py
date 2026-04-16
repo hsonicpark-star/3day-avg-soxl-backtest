@@ -2642,7 +2642,7 @@ RSI   = RS / (1 + RS) × 100
       <div style="flex:1;background:#E3F2FD;border-radius:12px;padding:20px;border-left:4px solid #1565C0">
         <h4 style="color:#1565C0;margin:0 0 10px">🔵 안전모드 (SF)</h4>
         <ul style="font-size:0.9em;line-height:1.8;margin:0;padding-left:18px">
-          <li><b>매수조건 +3%</b> — 소폭 하락만으로도 매수 진입</li>
+          <li><b>매수조건 +3%</b> — 전일 종가 대비 3% 상승까지 매수 허용</li>
           <li><b>매도조건 +0.2%</b> — 아주 작은 이익에도 매도 (빠른 회전)</li>
           <li><b>보유기간 30일</b> — 충분한 회복 시간 부여</li>
           <li>하락장에서 <b>손실 최소화</b>에 초점</li>
@@ -2652,7 +2652,7 @@ RSI   = RS / (1 + RS) × 100
       <div style="flex:1;background:#E8F5E9;border-radius:12px;padding:20px;border-left:4px solid #2E7D32">
         <h4 style="color:#2E7D32;margin:0 0 10px">🟢 공세모드 (AG)</h4>
         <ul style="font-size:0.9em;line-height:1.8;margin:0;padding-left:18px">
-          <li><b>매수조건 +5%</b> — 큰 폭 하락 시에만 매수</li>
+          <li><b>매수조건 +5%</b> — 전일 종가 대비 5% 상승까지 매수 허용</li>
           <li><b>매도조건 +2.5%</b> — 충분한 이익 확보 후 매도</li>
           <li><b>보유기간 7일</b> — 빠른 손절로 리스크 관리</li>
           <li>상승장에서 <b>수익 극대화</b>에 초점</li>
