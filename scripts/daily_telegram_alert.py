@@ -902,6 +902,44 @@ def build_dss_order_rows(os_result: dict) -> list:
     return rows
 
 
+def build_no_order_row(strategy_label: str) -> list:
+    """오늘 주문 0건일 때 작성하는 sentinel 행.
+    자동매매 프로그램은 L4의 "NO_ORDER" 키워드로 "오늘 주문 없음"을 판단.
+    """
+    today = datetime.today().strftime("%Y-%m-%d")
+    return [["NO_ORDER", today, strategy_label, "오늘 주문 없음"]]
+
+
+def build_error_row(strategy_label: str, reason: str) -> list:
+    """계산 실패(데이터 로드 실패 등) 시 작성하는 sentinel 행.
+    자동매매 프로그램은 L4의 "ERROR" 키워드로 "주문 실행 보류"를 판단.
+    """
+    today = datetime.today().strftime("%Y-%m-%d")
+    reason_short = (reason or "계산 실패")[:60]
+    return [["ERROR", today, strategy_label, reason_short]]
+
+
+def write_gsheet_with_status(client, gs_url: str, gs_sheet: str,
+                              normal_rows: list, strategy_label: str,
+                              status: str = "OK", error_reason: str = "") -> bool:
+    """주문표 또는 상태 sentinel 행 작성 (구글시트 L4부터 덮어쓰기).
+
+    status:
+      - "OK"       : normal_rows가 있으면 그대로 기록, 없으면 NO_ORDER sentinel
+      - "NO_ORDER" : 주문 0건 명시 → NO_ORDER sentinel 행 작성
+      - "ERROR"    : 계산 실패 → ERROR sentinel 행 작성 (error_reason 포함)
+    """
+    if not gs_url or not gs_sheet:
+        return False
+    if status == "ERROR":
+        rows = build_error_row(strategy_label, error_reason)
+    elif status == "NO_ORDER" or not normal_rows:
+        rows = build_no_order_row(strategy_label)
+    else:
+        rows = normal_rows
+    return write_orders_to_gsheet(client, gs_url, gs_sheet, rows, label=strategy_label)
+
+
 def build_iuo_order_rows(o: dict) -> list:
     """IUO 매매법 주문 rows 생성 (신규 — 첫매수 / 추가매수 / 매도 LOC 4열 포맷)."""
     rows = []
@@ -967,22 +1005,33 @@ def main():
                 divisions  = int(float(cfg.get("divisions", DEFAULT_DIVISIONS)))
                 capital    = float(cfg.get("os_capital", DEFAULT_CAPITAL))
                 os_start   = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
+                _gs_sheet  = str(cfg.get("gs_sheet", tk)).strip() or tk
+                _label     = f"종가평균/{tk}"
 
                 try:
                     df = fetch_prices(tk, os_start)
                 except Exception as e:
                     print(f"    ❌ [{tk}] 데이터 로드 실패 → {e}")
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                  _label, status="ERROR", error_reason=f"데이터 로드 실패: {e}")
                     continue
 
                 if df.empty or len(df) < 2:
                     print(f"    ❌ [{tk}] 데이터 부족")
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                  _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
                 res = calc_today_order(df, a_buy, a_sell, sell_ratio, divisions, capital)
                 if not res:
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                  _label, status="ERROR", error_reason="시뮬레이션 실패")
                     continue
 
                 msg = build_avg_message(res, tk)
@@ -995,12 +1044,11 @@ def main():
                     fail_count += 1
 
                 # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                _gs_sheet = str(cfg.get("gs_sheet", tk)).strip() or tk
+                # 주문 0건이면 NO_ORDER sentinel 자동 작성
                 if shared_gs_url:
                     _rows = build_avg_order_rows(res)
-                    if _rows:
-                        write_orders_to_gsheet(client, shared_gs_url, _gs_sheet,
-                                                _rows, label=f"종가평균/{tk}")
+                    write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
+                                              _label, status="OK")
         else:
             print(f"  ⏭️  {username} [종가평균]: 미설정 → 건너뜀")
             skip_count += 1
@@ -1021,6 +1069,8 @@ def main():
                 renewal      = int(float(cfg.get("renewal",      SD_DEFAULT_RENEWAL)))
                 capital      = float(cfg.get("os_capital",   SD_DEFAULT_CAPITAL))
                 os_start     = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
+                _gs_sheet    = str(cfg.get("gs_sheet", tk)).strip() or tk
+                _label       = f"표준편차/{tk}"
 
                 try:
                     r = calc_sd_today_order(
@@ -1034,11 +1084,17 @@ def main():
                 except Exception as e:
                     print(f"    ❌ [표준편차/{tk}] 계산 오류 → {e}")
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
                     continue
 
                 if not r:
                     print(f"    ❌ [표준편차/{tk}] 데이터 부족")
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                  _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
                 msg = build_sd_message(r)
@@ -1051,12 +1107,11 @@ def main():
                     fail_count += 1
 
                 # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                _gs_sheet = str(cfg.get("gs_sheet", tk)).strip() or tk
+                # 주문 0건이면 NO_ORDER sentinel 자동 작성
                 if shared_gs_url:
                     _rows = build_sd_order_rows(r)
-                    if _rows:
-                        write_orders_to_gsheet(client, shared_gs_url, _gs_sheet,
-                                                _rows, label=f"표준편차/{tk}")
+                    write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
+                                              _label, status="OK")
         else:
             print(f"  ⏭️  {username} [표준편차]: 미설정 → 건너뜀")
             skip_count += 1
@@ -1072,16 +1127,25 @@ def main():
         if dss_chat_id and dss_token and dss_accounts:
             print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
             for acct_name, acct_data in dss_accounts.items():
+                _gs_sheet_dss = str(acct_data.get("gs_sheet", dss_gs_sheet)).strip() or dss_gs_sheet
+                _label = f"DSS/{acct_name}"
+
                 try:
                     os_result = calc_dss_order(acct_data)
                 except Exception as e:
                     print(f"    ❌ [DSS/{acct_name}] 계산 오류 → {e}")
                     fail_count += 1
+                    if dss_gs_url and _gs_sheet_dss:
+                        write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
+                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
                     continue
 
                 if not os_result:
                     print(f"    ❌ [DSS/{acct_name}] 데이터 부족")
                     fail_count += 1
+                    if dss_gs_url and _gs_sheet_dss:
+                        write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
+                                                  _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
                 msg = build_dss_message(os_result, acct_name)
@@ -1094,14 +1158,11 @@ def main():
                     fail_count += 1
 
                 # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # DSS는 계좌별 gs_sheet 없이 단일 gs_sheet 공유 (웹앱 UI와 동일)
-                # 계좌별로 분리하려면 acct_data.get("gs_sheet") fallback 허용
-                _gs_sheet_dss = str(acct_data.get("gs_sheet", dss_gs_sheet)).strip() or dss_gs_sheet
+                # 주문 0건(전 슬롯 보유 + 매도목표 없음)이면 NO_ORDER sentinel 자동 작성
                 if dss_gs_url and _gs_sheet_dss:
                     _rows = build_dss_order_rows(os_result)
-                    if _rows:
-                        write_orders_to_gsheet(client, dss_gs_url, _gs_sheet_dss,
-                                                _rows, label=f"DSS/{acct_name}")
+                    write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, _rows,
+                                              _label, status="OK")
         else:
             print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
             skip_count += 1
@@ -1117,17 +1178,25 @@ def main():
                 sigma_period = int(float(cfg.get("sigma_period", SIGMA_DEFAULT_PERIOD)))
                 capital      = float(cfg.get("os_capital",   SIGMA_DEFAULT_CAPITAL))
                 divisions    = int(float(cfg.get("divisions",    SIGMA_DEFAULT_DIVISIONS)))
+                _gs_sheet_sg = str(cfg.get("gs_sheet", f"sigma_{tk}")).strip() or f"sigma_{tk}"
+                _label       = f"Sigma/{tk}"
 
                 try:
                     od = calc_sigma_order(tk, sigma_period)
                 except Exception as e:
                     print(f"    ❌ [Sigma/{tk}] 계산 오류 → {e}")
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
+                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
                     continue
 
                 if not od:
                     print(f"    ❌ [Sigma/{tk}] 데이터 부족")
                     fail_count += 1
+                    if shared_gs_url:
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
+                                                  _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
                 msg = build_sigma_message(od, capital, divisions)
@@ -1140,15 +1209,13 @@ def main():
                     fail_count += 1
 
                 # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # Sigma는 종가평균/표준편차와 gs_url 공유 (user-level)
-                _gs_sheet_sg = str(cfg.get("gs_sheet", f"sigma_{tk}")).strip() or f"sigma_{tk}"
+                # Sigma는 1σ/2σ/3σ 참고 포함 항상 3행 → NO_ORDER 거의 없음
                 if shared_gs_url:
                     amount_per_trade = capital / max(divisions, 1)
                     qty1 = math.floor(amount_per_trade / od["buy_loc_1"]) if od["buy_loc_1"] > 0 else 0
                     _rows = build_sigma_order_rows(od, qty1)
-                    if _rows:
-                        write_orders_to_gsheet(client, shared_gs_url, _gs_sheet_sg,
-                                                _rows, label=f"Sigma/{tk}")
+                    write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, _rows,
+                                              _label, status="OK")
         else:
             print(f"  ⏭️  {username} [Sigma]: 미설정 → 건너뜀")
             skip_count += 1
@@ -1163,16 +1230,31 @@ def main():
         if iuo_chat_id and iuo_token and iuo_accounts:
             print(f"  👤 {username} [IUO]: {list(iuo_accounts.keys())} 처리 중...")
             for acct_name, acct_data in iuo_accounts.items():
+                # IUO 시트명: iuo_config["gs_sheet_{ticker}"] 플랫 키 우선 → acct 내 → 기본
+                _iuo_tk_hint = str(acct_data.get("ticker", "")).strip()
+                _gs_sheet_iuo = str(
+                    iuo_cfg.get(f"gs_sheet_{_iuo_tk_hint}", "")
+                    or acct_data.get("gs_sheet", "")
+                    or f"iuo_{acct_name}"
+                ).strip()
+                _label = f"IUO/{acct_name}"
+
                 try:
                     iuo_result = calc_iuo_order(acct_data)
                 except Exception as e:
                     print(f"    ❌ [IUO/{acct_name}] 계산 오류 → {e}")
                     fail_count += 1
+                    if iuo_gs_url and _gs_sheet_iuo:
+                        write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
+                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
                     continue
 
                 if not iuo_result:
                     print(f"    ❌ [IUO/{acct_name}] 데이터 부족")
                     fail_count += 1
+                    if iuo_gs_url and _gs_sheet_iuo:
+                        write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
+                                                  _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
                 msg = build_iuo_message(iuo_result, acct_name)
@@ -1185,18 +1267,17 @@ def main():
                     fail_count += 1
 
                 # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # IUO는 iuo_config["gs_sheet_{ticker}"] 플랫 키 구조
-                _iuo_tk = iuo_result.get("ticker", "")
-                _gs_sheet_iuo = str(
-                    iuo_cfg.get(f"gs_sheet_{_iuo_tk}")
-                    or acct_data.get("gs_sheet", "")
-                    or f"iuo_{acct_name}"
+                # iuo_result가 확정되면 ticker 기반 시트명 재계산 (acct_data보다 우선)
+                _iuo_tk = iuo_result.get("ticker", _iuo_tk_hint)
+                _gs_sheet_iuo_final = str(
+                    iuo_cfg.get(f"gs_sheet_{_iuo_tk}", "")
+                    or _gs_sheet_iuo
                 ).strip()
-                if iuo_gs_url and _gs_sheet_iuo:
+                # 주문 0건이면 NO_ORDER sentinel 자동 작성
+                if iuo_gs_url and _gs_sheet_iuo_final:
                     _rows = build_iuo_order_rows(iuo_result)
-                    if _rows:
-                        write_orders_to_gsheet(client, iuo_gs_url, _gs_sheet_iuo,
-                                                _rows, label=f"IUO/{acct_name}")
+                    write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo_final, _rows,
+                                              _label, status="OK")
         else:
             print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
             skip_count += 1
