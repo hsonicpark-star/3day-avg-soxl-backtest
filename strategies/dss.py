@@ -1699,21 +1699,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     # ── 주문표 로드 버튼 ──
     _ss_key = f"dss_{sfx}_result"
     _os_btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
-    _load_col1, _load_col2 = st.columns([3, 1])
-    _load_clicked = _load_col1.button(_os_btn_label, type="primary",
-                                       key=f"dss_{sfx}_run_os",
-                                       use_container_width=True)
-    _force_reload = _load_col2.button("🗑️ 캐시 초기화",
-                                       key=f"dss_{sfx}_clear_cache",
-                                       help="가격 데이터 캐시를 지우고 다시 불러옵니다.",
-                                       use_container_width=True)
-    if _force_reload:
-        clear_dss_data_cache()
-        st.session_state.pop(_ss_key, None)
-        st.success("✅ 캐시 초기화 완료. '주문표 로드' 다시 눌러주세요.")
-        st.rerun()
-
-    if _load_clicked:
+    if st.button(_os_btn_label, type="primary", key=f"dss_{sfx}_run_os"):
         acct_data["os_start"] = str(os_start)
         acct_data["os_capital"] = float(os_capital)
         cfg["accounts"][acct_name] = acct_data
