@@ -426,19 +426,28 @@ def next_trading_date(d=None):
 # 데이터 캐싱
 # ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner="SOXL 데이터 로딩...", ttl=3600)
+@st.cache_data(show_spinner="SOXL 데이터 로딩...", ttl=300)
 def get_soxl_data():
     df = load_price_data("SOXL", "2009-06-01", "2026-12-31")
     if df is None or df.empty:
         raise RuntimeError("SOXL 데이터 로드 실패 (yfinance)")
     return df
 
-@st.cache_data(show_spinner="QQQ 데이터 로딩...", ttl=3600)
+@st.cache_data(show_spinner="QQQ 데이터 로딩...", ttl=300)
 def get_qqq_data():
     df = load_price_data("QQQ", "2009-01-01", "2026-12-31")
     if df is None or df.empty:
         raise RuntimeError("QQQ 데이터 로드 실패 (yfinance)")
     return df
+
+def clear_dss_data_cache():
+    """DSS 가격 데이터 캐시 강제 초기화 (yfinance intraday 오염 복구용)."""
+    try:
+        get_soxl_data.clear()
+        get_qqq_data.clear()
+        get_mode_series.clear()
+    except Exception:
+        pass
 
 @st.cache_data(show_spinner="주간 RSI 계산 중...")
 def get_mode_series(_qqq_hash):
@@ -1690,11 +1699,28 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     # ── 주문표 로드 버튼 ──
     _ss_key = f"dss_{sfx}_result"
     _os_btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
-    if st.button(_os_btn_label, type="primary", key=f"dss_{sfx}_run_os"):
+    _load_col1, _load_col2 = st.columns([3, 1])
+    _load_clicked = _load_col1.button(_os_btn_label, type="primary",
+                                       key=f"dss_{sfx}_run_os",
+                                       use_container_width=True)
+    _force_reload = _load_col2.button("🗑️ 캐시 초기화",
+                                       key=f"dss_{sfx}_clear_cache",
+                                       help="가격 데이터 캐시를 지우고 다시 불러옵니다.",
+                                       use_container_width=True)
+    if _force_reload:
+        clear_dss_data_cache()
+        st.session_state.pop(_ss_key, None)
+        st.success("✅ 캐시 초기화 완료. '주문표 로드' 다시 눌러주세요.")
+        st.rerun()
+
+    if _load_clicked:
         acct_data["os_start"] = str(os_start)
         acct_data["os_capital"] = float(os_capital)
         cfg["accounts"][acct_name] = acct_data
         _save_dss_config(cfg)
+
+        # 매번 로드 시 가격 데이터 캐시 갱신 (intraday 오염 방지)
+        clear_dss_data_cache()
 
         try:
             soxl = get_soxl_data()
