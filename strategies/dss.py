@@ -3898,13 +3898,33 @@ def render_settings_tab():
             placeholder="https://docs.google.com/spreadsheets/d/...",
             key="dss_gs_url",
         )
-        gs_sheet_name = st.text_input(
-            "SOXL 시트(탭) 이름",
-            value=_cfg_s.get("gs_sheet", "SOXL"),
-            placeholder="예: SOXL",
-            key="dss_gs_sheet",
-        )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
+
+        # ── 계좌별 워크시트 매핑 ──────────────────────────────
+        _accounts_s = _cfg_s.get("accounts", {})
+        _acct_names_s = list(_accounts_s.keys())
+
+        # 레거시 gs_sheet 단일 필드 → gs_sheets 딕셔너리로 마이그레이션
+        _gs_sheets = dict(_cfg_s.get("gs_sheets", {}))
+        _legacy_sheet = _cfg_s.get("gs_sheet")
+        if _legacy_sheet and not _gs_sheets and _acct_names_s:
+            _gs_sheets[_acct_names_s[0]] = _legacy_sheet
+
+        st.markdown("##### 📋 계좌별 워크시트 매핑")
+        if not _acct_names_s:
+            st.info("등록된 계좌가 없습니다. 주문표 탭에서 먼저 계좌를 추가하세요.")
+            _gs_sheet_inputs = {}
+        else:
+            st.caption("각 계좌의 주문표를 전송할 워크시트(탭) 이름을 지정합니다. 없으면 자동 생성됩니다.")
+            _gs_sheet_inputs = {}
+            for _an in _acct_names_s:
+                _default_sheet = _gs_sheets.get(_an, _an)
+                _gs_sheet_inputs[_an] = st.text_input(
+                    f"📊 {_an}",
+                    value=_default_sheet,
+                    placeholder=f"예: {_an}_SOXL",
+                    key=f"dss_gs_sheet_{_an}",
+                )
 
         btn_gs1, btn_gs2, btn_gs3 = st.columns(3)
         with btn_gs1:
@@ -3925,19 +3945,37 @@ def render_settings_tab():
             if st.button("📊 주문 시트 전송", use_container_width=True, key="dss_gs_send", type="primary"):
                 if not gs_url:
                     st.warning("스프레드시트 URL을 먼저 입력해주세요.")
+                elif not _gs_sheet_inputs:
+                    st.warning("⚠️ 등록된 계좌가 없습니다.")
                 else:
-                    _gs_os = next((st.session_state[k] for k in st.session_state if k.startswith("dss_a") and k.endswith("_result") and st.session_state[k] is not None), None)
-                    if _gs_os is None:
-                        st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행해주세요.")
-                    else:
-                        with st.spinner(f"SOXL → '{gs_sheet_name}' 전송 중..."):
+                    _sent = 0
+                    _skipped = 0
+                    _failed = []
+                    with st.spinner("계좌별 주문표 전송 중..."):
+                        for _ai_s, _an_s in enumerate(_acct_names_s):
+                            _sheet_s = _gs_sheet_inputs.get(_an_s, "").strip()
+                            if not _sheet_s:
+                                _skipped += 1
+                                continue
+                            _rkey_s = f"dss_a{_ai_s}_result"
+                            _gs_os = st.session_state.get(_rkey_s)
+                            if _gs_os is None:
+                                _skipped += 1
+                                continue
                             try:
-                                n = _write_dss_orders_to_sheet(gs_url, gs_sheet_name, _gs_os)
-                                st.success(f"✅ SOXL → '{gs_sheet_name}' 탭 L4에 {n}건 전송 완료!")
+                                n = _write_dss_orders_to_sheet(gs_url, _sheet_s, _gs_os)
+                                st.success(f"✅ [{_an_s}] → '{_sheet_s}' 탭 L4에 {n}건 전송 완료")
+                                _sent += 1
                             except FileNotFoundError as e:
-                                st.error(f"❌ {e}")
+                                st.error(f"❌ [{_an_s}]: {e}")
+                                _failed.append(_an_s)
                             except Exception as e:
-                                st.error(f"❌ 전송 실패: {e}")
+                                st.error(f"❌ [{_an_s}] 전송 실패: {e}")
+                                _failed.append(_an_s)
+                    if _sent == 0 and _skipped > 0 and not _failed:
+                        st.warning("⚠️ 주문표 탭에서 계좌별 '주문표 로드'를 먼저 실행해주세요.")
+                    elif _skipped > 0:
+                        st.caption(f"ℹ️ 주문표가 없거나 시트명이 비어 있어 {_skipped}개 계좌는 건너뜀")
 
         with btn_gs3:
             if st.button("💾 저장하기 ", use_container_width=True, key="dss_gs_save", type="primary"):
@@ -3945,9 +3983,13 @@ def render_settings_tab():
                     st.warning("스프레드시트 URL을 입력해주세요.")
                 else:
                     _cfg_s["gs_url"] = gs_url
-                    _cfg_s["gs_sheet"] = gs_sheet_name
+                    _cfg_s["gs_sheets"] = {
+                        _an: _sh.strip() for _an, _sh in _gs_sheet_inputs.items() if _sh.strip()
+                    }
+                    # 레거시 필드 정리
+                    _cfg_s.pop("gs_sheet", None)
                     _save_dss_config(_cfg_s)
-                    st.success(f"✅ URL 및 시트 이름 저장 완료!")
+                    st.success(f"✅ URL 및 계좌별 시트 매핑 {len(_cfg_s['gs_sheets'])}건 저장 완료!")
 
     st.write("")
 
