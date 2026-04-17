@@ -219,7 +219,8 @@ def _get_gspread_client():
 
 def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
                                template_sheet: str = "") -> int:
-    """주문표 결과를 구글시트에 기록. 시트가 없으면 template을 복제해서 생성."""
+    """주문표 결과를 구글시트에 기록 (L:구분, M:거래방법, N:가격, O:수량).
+    시트가 없으면 template을 복제해서 생성."""
     gc = _get_gspread_client()
     sh = gc.open_by_url(gs_url)
     try:
@@ -236,14 +237,27 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
             ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
     ws.batch_clear(["L4:O13"])
     _o = os_result
+    today_ts = pd.Timestamp(datetime.today().date())
     rows = []
+    # ── 매도 주문 (보유 포지션별) ──
     for pos in _o['open_positions']:
-        if pos['sell_target'] is not None:
-            rows.append(["매도", f"${pos['sell_target']:,.2f}", f"{pos['qty']}주",
-                         f"목표 {(pos['sell_target']/pos['buy_price']-1)*100:+.1f}%"])
+        if pos['sell_target'] is None:
+            continue
+        _stop = pos.get('stop_date')
+        _is_moc = False
+        if _stop is not None:
+            _stop_ts = pd.Timestamp(_stop)
+            _is_moc = (_stop_ts <= today_ts)
+        if _is_moc:
+            # MOC 매도 (손절일 도래) — 가격은 시장가이므로 비워둠
+            rows.append(["매도", "MOC", "", int(pos['qty'])])
+        else:
+            rows.append(["매도", "LOC", round(float(pos['sell_target']), 2),
+                         int(pos['qty'])])
+    # ── 매수 주문 ──
     if _o['n_pos'] < _o['cur_divisions']:
-        rows.append(["매수", f"${_o['next_buy_order']:,.2f}", f"{_o['buy_qty_est']}주",
-                     f"시드 ${_o['seed_per_trade']:,.0f}"])
+        rows.append(["매수", "LOC", round(float(_o['next_buy_order']), 2),
+                     int(_o['buy_qty_est'])])
     if rows:
         ws.update(range_name="L4", values=rows)
     return len(rows)
