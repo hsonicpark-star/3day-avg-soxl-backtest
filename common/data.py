@@ -81,6 +81,28 @@ def _easter_date(year: int) -> date:
     return date(year, month, day + 1)
 
 
+def filter_incomplete_today(df: pd.DataFrame) -> pd.DataFrame:
+    """미국 장이 아직 종료되지 않은 당일 intraday 데이터 제거.
+
+    yfinance는 장 중에도 '오늘' 행의 Close에 현재가를 채워서 반환한다.
+    이를 진짜 종가처럼 쓰면 백테스트가 미래를 당겨 쓰는 격이 되므로,
+    16:30 ET(종가 확정 + 안전버퍼) 이전에는 US-오늘 날짜의 행을 제거.
+    """
+    if df is None or df.empty:
+        return df
+    try:
+        # 뉴욕 기준 현재시각 (pandas가 IANA zoneinfo 사용)
+        now_est = pd.Timestamp.now(tz="America/New_York")
+        market_close_buffer = now_est.replace(hour=16, minute=30,
+                                              second=0, microsecond=0)
+        if now_est < market_close_buffer:
+            us_today = pd.Timestamp(now_est.date())
+            return df[df.index.normalize() < us_today]
+    except Exception:
+        pass
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     start = pd.to_datetime(start_str).date()
@@ -109,7 +131,7 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
         )
         df = _to_close_df(raw)
         if not df.empty:
-            return df
+            return filter_incomplete_today(df)
     except Exception:
         pass
 
@@ -125,7 +147,7 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
             df2 = raw2[["Close"]].copy()
             df2.index = pd.to_datetime(df2.index).tz_localize(None)
             df2["Close"] = pd.to_numeric(df2["Close"], errors="coerce")
-            return df2.dropna()
+            return filter_incomplete_today(df2.dropna())
     except Exception:
         pass
 

@@ -69,6 +69,22 @@ def get_users(client, sheet_url: str, max_retries: int = 5) -> list:
                 raise
 
 # ── 가격 데이터 ────────────────────────────────────────────────
+def _filter_incomplete_today(df: pd.DataFrame) -> pd.DataFrame:
+    """미국 장이 아직 종료되지 않은 당일 intraday 데이터 제거."""
+    if df is None or df.empty:
+        return df
+    try:
+        now_est = pd.Timestamp.now(tz="America/New_York")
+        market_close_buffer = now_est.replace(hour=16, minute=30,
+                                              second=0, microsecond=0)
+        if now_est < market_close_buffer:
+            us_today = pd.Timestamp(now_est.date())
+            return df[df.index.normalize() < us_today]
+    except Exception:
+        pass
+    return df
+
+
 def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
     end = datetime.today() + timedelta(days=1)
     df = yf.download(ticker, start=start_date,
@@ -77,7 +93,7 @@ def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
     df = df[["Close"]].dropna()
     df["Close"] = df["Close"].astype(float)
-    return df
+    return _filter_incomplete_today(df)
 
 # ══════════════════════════════════════════════════════════════
 # 종가평균매매 관련
