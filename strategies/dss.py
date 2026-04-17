@@ -223,14 +223,23 @@ def _get_gspread_client():
     )
 
 
-def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict) -> int:
-    """주문표 결과를 구글시트에 기록."""
+def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
+                               template_sheet: str = "") -> int:
+    """주문표 결과를 구글시트에 기록. 시트가 없으면 template을 복제해서 생성."""
     gc = _get_gspread_client()
     sh = gc.open_by_url(gs_url)
     try:
         ws = sh.worksheet(gs_sheet)
     except Exception:
-        ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
+        # 템플릿이 지정되어 있으면 복제
+        if template_sheet:
+            try:
+                tpl_ws = sh.worksheet(template_sheet)
+                ws = tpl_ws.duplicate(new_sheet_name=gs_sheet)
+            except Exception:
+                ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
+        else:
+            ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
     ws.batch_clear(["L4:O13"])
     _o = os_result
     rows = []
@@ -3900,6 +3909,14 @@ def render_settings_tab():
         )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
+        gs_template = st.text_input(
+            "📄 템플릿 워크시트 이름 (선택)",
+            value=_cfg_s.get("gs_template", ""),
+            placeholder="예: DSS-pjh",
+            key="dss_gs_template",
+            help="계좌 시트가 없을 때 이 템플릿을 복제해서 자동 생성합니다. 비워두면 빈 시트 생성.",
+        )
+
         # ── 계좌별 워크시트 매핑 ──────────────────────────────
         _accounts_s = _cfg_s.get("accounts", {})
         _acct_names_s = list(_accounts_s.keys())
@@ -3963,7 +3980,7 @@ def render_settings_tab():
                                 _skipped += 1
                                 continue
                             try:
-                                n = _write_dss_orders_to_sheet(gs_url, _sheet_s, _gs_os)
+                                n = _write_dss_orders_to_sheet(gs_url, _sheet_s, _gs_os, gs_template)
                                 st.success(f"✅ [{_an_s}] → '{_sheet_s}' 탭 L4에 {n}건 전송 완료")
                                 _sent += 1
                             except FileNotFoundError as e:
@@ -3983,13 +4000,14 @@ def render_settings_tab():
                     st.warning("스프레드시트 URL을 입력해주세요.")
                 else:
                     _cfg_s["gs_url"] = gs_url
+                    _cfg_s["gs_template"] = gs_template.strip()
                     _cfg_s["gs_sheets"] = {
                         _an: _sh.strip() for _an, _sh in _gs_sheet_inputs.items() if _sh.strip()
                     }
                     # 레거시 필드 정리
                     _cfg_s.pop("gs_sheet", None)
                     _save_dss_config(_cfg_s)
-                    st.success(f"✅ URL 및 계좌별 시트 매핑 {len(_cfg_s['gs_sheets'])}건 저장 완료!")
+                    st.success(f"✅ URL / 템플릿 / 계좌별 시트 매핑 {len(_cfg_s['gs_sheets'])}건 저장 완료!")
 
     st.write("")
 
