@@ -212,15 +212,9 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
 # ── 구글시트 연동 ──
 
 def _get_gspread_client():
-    """gspread 클라이언트 반환 (service_account.json 기반)."""
-    import gspread
-    sa_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "service_account.json")
-    if os.path.exists(sa_path):
-        return gspread.service_account(filename=sa_path)
-    raise FileNotFoundError(
-        "service_account.json 파일이 없습니다. "
-        "02.종가평균매매 폴더에서 복사하거나 GCP 서비스 계정 키를 생성하세요."
-    )
+    """Streamlit Cloud(st.secrets) 또는 로컬(service_account.json)로 gspread 인증."""
+    from common.config import _get_gspread_client as _common_gs_client
+    return _common_gs_client()
 
 
 def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
