@@ -820,7 +820,12 @@ def send_telegram(chat_id: str, token: str, text: str,
 
 def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
                             rows: list, label: str = "") -> bool:
-    """주문표 rows를 구글시트 지정 탭의 L4부터 기록 (L4:O13 clear 후 덮어쓰기).
+    """주문표 rows를 구글시트 지정 탭의 L4부터 기록 (완전 덮어쓰기).
+
+    동작 순서:
+      1. L4:O30 범위를 batch_clear로 모두 비움 (27행 방어 마진)
+      2. L4부터 새 rows만 작성 (나머지는 빈 상태 유지)
+    → 이전 발송 기록은 완전히 사라지고, 오늘 발송분만 남음
 
     Parameters
     ----------
@@ -843,9 +848,11 @@ def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
         except gspread.exceptions.WorksheetNotFound:
             print(f"      ⚠️ [{label}] 시트 탭 '{gs_sheet}' 없음 — 건너뜀")
             return False
-        ws.batch_clear(["L4:O13"])
+        # ① 먼저 넓은 범위를 clear → 이전 기록 완전 제거 (최대 전략 8행 대비 27행 여유)
+        ws.batch_clear(["L4:O30"])
+        # ② 그 다음 L4부터 새 rows만 작성 → 오늘 발송분만 표시됨
         ws.update(range_name="L4", values=rows)
-        print(f"      📊 [{label}] GSheet '{gs_sheet}' L4에 {len(rows)}건 기록")
+        print(f"      📊 [{label}] GSheet '{gs_sheet}' L4에 {len(rows)}건 기록 (이전 기록 clear 완료)")
         return True
     except Exception as e:
         print(f"      ⚠️ [{label}] GSheet 기록 실패: {e}")
