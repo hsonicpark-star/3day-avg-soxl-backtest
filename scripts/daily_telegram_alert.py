@@ -811,6 +811,119 @@ def send_telegram(chat_id: str, token: str, text: str,
     }, timeout=10)
     return resp.ok, resp.text
 
+
+# ══════════════════════════════════════════════════════════════
+# 공통: 구글시트에 주문표 기록 (덮어쓰기 방식)
+# L4:O13 영역을 clear하고 새 주문표를 L4부터 작성
+# 자동매매 프로그램이 이 시트를 읽어 주문 실행
+# ══════════════════════════════════════════════════════════════
+
+def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
+                            rows: list, label: str = "") -> bool:
+    """주문표 rows를 구글시트 지정 탭의 L4부터 기록 (L4:O13 clear 후 덮어쓰기).
+
+    Parameters
+    ----------
+    client    : gspread 클라이언트
+    gs_url    : 스프레드시트 URL
+    gs_sheet  : 탭(워크시트) 이름
+    rows      : 2D 리스트 [[셀1, 셀2, 셀3, 셀4], ...]
+    label     : 로그용 라벨 (예: "종가평균/SOXL")
+
+    Returns
+    -------
+    bool : 성공 여부 (실패해도 텔레그램 발송에 영향 없음 — 로그만 출력)
+    """
+    if not gs_url or not gs_sheet or not rows:
+        return False
+    try:
+        sh = client.open_by_url(gs_url)
+        try:
+            ws = sh.worksheet(gs_sheet)
+        except gspread.exceptions.WorksheetNotFound:
+            print(f"      ⚠️ [{label}] 시트 탭 '{gs_sheet}' 없음 — 건너뜀")
+            return False
+        ws.batch_clear(["L4:O13"])
+        ws.update(range_name="L4", values=rows)
+        print(f"      📊 [{label}] GSheet '{gs_sheet}' L4에 {len(rows)}건 기록")
+        return True
+    except Exception as e:
+        print(f"      ⚠️ [{label}] GSheet 기록 실패: {e}")
+        return False
+
+
+def build_avg_order_rows(res: dict) -> list:
+    """종가평균매매 주문 rows 생성 (웹앱 _write_orders_to_sheet와 동일 포맷)."""
+    rows = []
+    if res.get("buy_qty", 0) > 0:
+        rows.append(["매수", "LOC", round(res["tb"], 2), int(res["buy_qty"])])
+    if res.get("shares", 0) > 0 and res.get("sell_qty", 0) > 0:
+        rows.append(["매도", "LOC", round(res["ts"], 2), int(res["sell_qty"])])
+    return rows
+
+
+def build_sd_order_rows(r: dict) -> list:
+    """표준편차매매 주문 rows 생성 (웹앱 stdev.py line 2862-2866과 동일 포맷)."""
+    rows = [["매수", "LOC", round(r["next_buy_loc"], 2), int(r["est_buy_qty"])]]
+    if r["holdings"] > 0:
+        rows.append(["매도", "LOC", round(r["next_sell_loc"], 2), int(r["est_sell_qty"])])
+    return rows
+
+
+def build_sigma_order_rows(od: dict, qty: int) -> list:
+    """Sigma매매법 주문 rows 생성 (웹앱 sigma.py line 1856-1861과 동일 포맷)."""
+    return [
+        ["1σ 매수 LOC", round(od["buy_loc_1"], 4), int(qty),
+         f"μ:{od['mu_pct']:+.4f}% σ:{od['sigma_pct']:.4f}%"],
+        ["2σ 참고", round(od["buy_loc_2"], 4), "", ""],
+        ["3σ 참고", round(od["buy_loc_3"], 4), "", ""],
+    ]
+
+
+def build_dss_order_rows(os_result: dict) -> list:
+    """DSS 동파법 주문 rows 생성 (웹앱 _write_dss_orders_to_sheet와 동일 포맷)."""
+    _o = os_result
+    rows = []
+    for pos in _o.get("open_positions", []):
+        if pos.get("sell_target") is not None:
+            pnl_pct = (pos["sell_target"] / pos["buy_price"] - 1) * 100 if pos.get("buy_price") else 0
+            rows.append(["매도", f"${pos['sell_target']:,.2f}", f"{pos['qty']}주",
+                         f"목표 {pnl_pct:+.1f}%"])
+    if _o["n_pos"] < _o["cur_divisions"]:
+        rows.append(["매수", f"${_o['next_buy_order']:,.2f}", f"{_o['buy_qty_est']}주",
+                     f"시드 ${_o['seed_per_trade']:,.0f}"])
+    return rows
+
+
+def build_iuo_order_rows(o: dict) -> list:
+    """IUO 매매법 주문 rows 생성 (신규 — 첫매수 / 추가매수 / 매도 LOC 4열 포맷)."""
+    rows = []
+    if o["cur_shares"] == 0:
+        # 첫매수
+        first_amt = o["cycle_base"] * o["fbr"]
+        qty0 = math.floor(first_amt / o["buy0_loc"]) if o["buy0_loc"] > 0 else 0
+        rows.append(["첫매수 LOC", round(o["buy0_loc"], 2), int(qty0),
+                     f"기준액 ${o['cycle_base']:,.0f}×{o['fbr']*100:.0f}%"])
+    else:
+        # 매도 LOC
+        if o.get("sell_loc"):
+            pnl = (o["sell_loc"] / o["avg_cost"] - 1) * 100 if o["avg_cost"] > 0 else 0
+            rows.append(["매도 LOC", round(o["sell_loc"], 2), int(o["cur_shares"]),
+                         f"{pnl:+.1f}% / 진행{o['cycle_day']}일"])
+        # 추가매수 LOC
+        if o["remaining"] > 0:
+            buy_amt = (o["cycle_base"] - o["cash"]) / o["div"] if o["div"] > 0 else 0
+            if buy_amt <= 0:
+                buy_amt = o["cycle_base"] / o["div"] if o["div"] > 0 else 0
+            qty1 = math.floor(buy_amt / o["buy1_loc"]) if o["buy1_loc"] > 0 else 0
+            rows.append(["추가매수1 LOC", round(o["buy1_loc"], 2), int(qty1),
+                         f"{o['b1']*100:+.1f}%"])
+            if o["remaining"] >= 2:
+                qty2 = math.floor(buy_amt / o["buy2_loc"]) if o["buy2_loc"] > 0 else 0
+                rows.append(["추가매수2 LOC", round(o["buy2_loc"], 2), int(qty2),
+                             f"{o['b2']*100:+.1f}%"])
+    return rows
+
 # ══════════════════════════════════════════════════════════════
 # 메인
 # ══════════════════════════════════════════════════════════════
@@ -830,6 +943,8 @@ def main():
 
     for user in users:
         username = user.get("username", "")
+        # 종가평균/표준편차/Sigma 공용 gs_url (사용자 레벨)
+        shared_gs_url = str(user.get("gs_url", "")).strip()
 
         # ── 1. 종가평균매매 발송 ──────────────────────────────
         avg_chat_id = str(user.get("tg_chat_id", "")).strip()
@@ -871,6 +986,14 @@ def main():
                 else:
                     print(f"    ❌ [종가평균/{tk}] 발송 실패 → {resp}")
                     fail_count += 1
+
+                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                _gs_sheet = str(cfg.get("gs_sheet", tk)).strip() or tk
+                if shared_gs_url:
+                    _rows = build_avg_order_rows(res)
+                    if _rows:
+                        write_orders_to_gsheet(client, shared_gs_url, _gs_sheet,
+                                                _rows, label=f"종가평균/{tk}")
         else:
             print(f"  ⏭️  {username} [종가평균]: 미설정 → 건너뜀")
             skip_count += 1
@@ -919,6 +1042,14 @@ def main():
                 else:
                     print(f"    ❌ [표준편차/{tk}] 발송 실패 → {resp}")
                     fail_count += 1
+
+                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                _gs_sheet = str(cfg.get("gs_sheet", tk)).strip() or tk
+                if shared_gs_url:
+                    _rows = build_sd_order_rows(r)
+                    if _rows:
+                        write_orders_to_gsheet(client, shared_gs_url, _gs_sheet,
+                                                _rows, label=f"표준편차/{tk}")
         else:
             print(f"  ⏭️  {username} [표준편차]: 미설정 → 건너뜀")
             skip_count += 1
@@ -928,6 +1059,8 @@ def main():
         dss_chat_id = str(dss_cfg.get("tg_chat_id", "")).strip()
         dss_token   = str(dss_cfg.get("tg_token",   "")).strip()
         dss_accounts = dss_cfg.get("accounts", {})
+        dss_gs_url  = str(dss_cfg.get("gs_url", "")).strip()
+        dss_gs_sheet = str(dss_cfg.get("gs_sheet", "")).strip()
 
         if dss_chat_id and dss_token and dss_accounts:
             print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
@@ -952,6 +1085,16 @@ def main():
                 else:
                     print(f"    ❌ [DSS/{acct_name}] 발송 실패 → {resp}")
                     fail_count += 1
+
+                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                # DSS는 계좌별 gs_sheet 없이 단일 gs_sheet 공유 (웹앱 UI와 동일)
+                # 계좌별로 분리하려면 acct_data.get("gs_sheet") fallback 허용
+                _gs_sheet_dss = str(acct_data.get("gs_sheet", dss_gs_sheet)).strip() or dss_gs_sheet
+                if dss_gs_url and _gs_sheet_dss:
+                    _rows = build_dss_order_rows(os_result)
+                    if _rows:
+                        write_orders_to_gsheet(client, dss_gs_url, _gs_sheet_dss,
+                                                _rows, label=f"DSS/{acct_name}")
         else:
             print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
             skip_count += 1
@@ -988,6 +1131,17 @@ def main():
                 else:
                     print(f"    ❌ [Sigma/{tk}] 발송 실패 → {resp}")
                     fail_count += 1
+
+                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                # Sigma는 종가평균/표준편차와 gs_url 공유 (user-level)
+                _gs_sheet_sg = str(cfg.get("gs_sheet", f"sigma_{tk}")).strip() or f"sigma_{tk}"
+                if shared_gs_url:
+                    amount_per_trade = capital / max(divisions, 1)
+                    qty1 = math.floor(amount_per_trade / od["buy_loc_1"]) if od["buy_loc_1"] > 0 else 0
+                    _rows = build_sigma_order_rows(od, qty1)
+                    if _rows:
+                        write_orders_to_gsheet(client, shared_gs_url, _gs_sheet_sg,
+                                                _rows, label=f"Sigma/{tk}")
         else:
             print(f"  ⏭️  {username} [Sigma]: 미설정 → 건너뜀")
             skip_count += 1
@@ -997,6 +1151,7 @@ def main():
         iuo_chat_id  = str(iuo_cfg.get("tg_chat_id", "")).strip()
         iuo_token    = str(iuo_cfg.get("tg_token",   "")).strip()
         iuo_accounts = iuo_cfg.get("accounts", {})
+        iuo_gs_url   = str(iuo_cfg.get("gs_url", "")).strip()
 
         if iuo_chat_id and iuo_token and iuo_accounts:
             print(f"  👤 {username} [IUO]: {list(iuo_accounts.keys())} 처리 중...")
@@ -1021,6 +1176,20 @@ def main():
                 else:
                     print(f"    ❌ [IUO/{acct_name}] 발송 실패 → {resp}")
                     fail_count += 1
+
+                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                # IUO는 iuo_config["gs_sheet_{ticker}"] 플랫 키 구조
+                _iuo_tk = iuo_result.get("ticker", "")
+                _gs_sheet_iuo = str(
+                    iuo_cfg.get(f"gs_sheet_{_iuo_tk}")
+                    or acct_data.get("gs_sheet", "")
+                    or f"iuo_{acct_name}"
+                ).strip()
+                if iuo_gs_url and _gs_sheet_iuo:
+                    _rows = build_iuo_order_rows(iuo_result)
+                    if _rows:
+                        write_orders_to_gsheet(client, iuo_gs_url, _gs_sheet_iuo,
+                                                _rows, label=f"IUO/{acct_name}")
         else:
             print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
             skip_count += 1
