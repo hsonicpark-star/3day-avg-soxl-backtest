@@ -335,11 +335,31 @@ def _save_dss_history(bt_df: pd.DataFrame, acct_name: str = ""):
             "총자산($)": f"${float(row['총자산']):,.2f}",
         })
     df_new = pd.DataFrame(rows)
-    df_existing = _load_dss_history()
+
+    # ── 오늘/미래 날짜(미국장 미마감)는 히스토리에서 제외 ──
+    _cutoff = None
+    try:
+        _now_est = pd.Timestamp.now(tz="America/New_York")
+        _market_close = _now_est.replace(hour=16, minute=30,
+                                          second=0, microsecond=0)
+        if _now_est < _market_close:
+            _cutoff = str(_now_est.date())  # 'YYYY-MM-DD' (US 오늘)
+            df_new = df_new[df_new["날짜"].astype(str) < _cutoff]
+    except Exception:
+        pass
+
+    df_existing_raw = _load_dss_history(acct_name)
+    df_existing = df_existing_raw.copy() if not df_existing_raw.empty else df_existing_raw
+    _cleaned = False
+    if not df_existing.empty and "날짜" in df_existing.columns and _cutoff:
+        _before = len(df_existing)
+        df_existing = df_existing[df_existing["날짜"].astype(str) < _cutoff]
+        _cleaned = (len(df_existing) < _before)
+
     if not df_existing.empty and "날짜" in df_existing.columns:
         existing_dates = set(df_existing["날짜"].astype(str))
         df_add = df_new[~df_new["날짜"].astype(str).isin(existing_dates)].copy()
-        if df_add.empty:
+        if df_add.empty and not _cleaned:
             return
         df_merged = pd.concat([df_existing, df_add], ignore_index=True)
     else:
