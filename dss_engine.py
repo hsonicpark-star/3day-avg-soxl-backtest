@@ -19,11 +19,22 @@ import yfinance as yf
 
 def load_price_data(ticker: str, start: str = "2009-01-01",
                     end: str = "2026-12-31") -> pd.DataFrame:
-    """yfinance에서 미조정(unadjusted) 종가 로드."""
+    """yfinance에서 미조정(unadjusted) 종가 로드.
+    미국장이 종료되지 않은 당일 intraday 데이터는 제외."""
     df = yf.download(ticker, start=start, end=end, auto_adjust=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)
+    # US 장 마감(16:30 ET) 이전이면 당일 intraday 데이터 제거
+    try:
+        now_est = pd.Timestamp.now(tz="America/New_York")
+        market_close_buffer = now_est.replace(hour=16, minute=30,
+                                              second=0, microsecond=0)
+        if now_est < market_close_buffer:
+            us_today = pd.Timestamp(now_est.date())
+            df = df[df.index.normalize() < us_today]
+    except Exception:
+        pass
     return df
 
 
