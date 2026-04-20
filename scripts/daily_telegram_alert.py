@@ -1138,12 +1138,21 @@ def main():
         dss_token   = str(dss_cfg.get("tg_token",   "")).strip()
         dss_accounts = dss_cfg.get("accounts", {})
         dss_gs_url  = str(dss_cfg.get("gs_url", "")).strip()
-        dss_gs_sheet = str(dss_cfg.get("gs_sheet", "")).strip()
+        # 계좌별 워크시트 매핑 (dss_config["gs_sheets"]) · 없으면 레거시 gs_sheet 필드 fallback
+        dss_gs_sheets = dss_cfg.get("gs_sheets", {}) or {}
+        if not isinstance(dss_gs_sheets, dict):
+            dss_gs_sheets = {}
+        dss_gs_sheet_legacy = str(dss_cfg.get("gs_sheet", "")).strip()
 
         if dss_chat_id and dss_token and dss_accounts:
             print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
             for acct_name, acct_data in dss_accounts.items():
-                _gs_sheet_dss = str(acct_data.get("gs_sheet", dss_gs_sheet)).strip() or dss_gs_sheet
+                # 계좌별 gs_sheets 매핑 우선 → 레거시 acct_data.gs_sheet → 레거시 dss_config.gs_sheet
+                _gs_sheet_dss = (
+                    str(dss_gs_sheets.get(acct_name, "")).strip()
+                    or str(acct_data.get("gs_sheet", "")).strip()
+                    or dss_gs_sheet_legacy
+                )
                 _label = f"DSS/{acct_name}"
 
                 try:
