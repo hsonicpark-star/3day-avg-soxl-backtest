@@ -908,16 +908,12 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
             _df_adj_edit = pd.DataFrame(_adj_history)
             _df_adj_edit["날짜"] = pd.to_datetime(_df_adj_edit["날짜"]).dt.date
             _df_adj_edit["조정금액"] = _df_adj_edit["조정금액"].astype(float)
-            _df_adj_edit["누적자본금"] = _df_adj_edit["누적자본금"].astype(float)
             _iuo_edited = st.data_editor(
-                _df_adj_edit[["날짜", "조정금액", "누적자본금", "메모"]],
+                _df_adj_edit[["날짜", "조정금액", "메모"]],
                 column_config={
                     "날짜": st.column_config.DateColumn("날짜", format="YYYY-MM-DD", required=True),
                     "조정금액": st.column_config.NumberColumn("조정금액 ($)",
                                                               format="$%.0f", required=True),
-                    "누적자본금": st.column_config.NumberColumn("누적자본금 ($)",
-                                                                format="$%.0f", disabled=True,
-                                                                help="저장 시 자동 재계산"),
                     "메모": st.column_config.TextColumn("메모"),
                 },
                 num_rows="dynamic",
@@ -925,27 +921,39 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                 hide_index=True,
                 key=f"iuo_adj_editor{sfx}",
             )
+            _preview_list = []
+            for _, _r in _iuo_edited.iterrows():
+                if pd.isna(_r.get("날짜")) or pd.isna(_r.get("조정금액")):
+                    continue
+                _preview_list.append({
+                    "날짜": pd.Timestamp(_r["날짜"]).strftime("%Y-%m-%d"),
+                    "조정금액": float(_r["조정금액"]),
+                    "누적자본금": 0.0,
+                    "메모": str(_r.get("메모") or ""),
+                })
+            _preview_list, _preview_cap = _recalc_adj_history(
+                _preview_list, os_capital)
+            if _preview_list:
+                _df_preview = pd.DataFrame(_preview_list)
+                _df_preview_show = _df_preview.copy()
+                _df_preview_show["조정금액"] = _df_preview["조정금액"].apply(
+                    lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}")
+                _df_preview_show["누적자본금"] = _df_preview["누적자본금"].apply(
+                    lambda x: f"${x:,.0f}")
+                st.caption(f"📊 **미리보기** (저장 후 반영됩니다) — 최종 자본금: **${_preview_cap:,.0f}**")
+                st.dataframe(_df_preview_show[["날짜", "조정금액", "누적자본금", "메모"]],
+                             use_container_width=True, hide_index=True)
+
             if st.button("💾 변경사항 저장", key=f"iuo_save_adj_edit{sfx}",
                          type="primary"):
-                _new_list = []
-                for _, _r in _iuo_edited.iterrows():
-                    if pd.isna(_r.get("날짜")) or pd.isna(_r.get("조정금액")):
-                        continue
-                    _new_list.append({
-                        "날짜": pd.Timestamp(_r["날짜"]).strftime("%Y-%m-%d"),
-                        "조정금액": float(_r["조정금액"]),
-                        "누적자본금": 0.0,
-                        "메모": str(_r.get("메모") or ""),
-                    })
-                _new_list, _new_cap = _recalc_adj_history(_new_list, os_capital)
-                if _new_cap <= 0:
-                    st.error(f"현재 자본금이 0 이하가 됩니다 (${_new_cap:,.0f}). 수정 불가.")
+                if _preview_cap <= 0:
+                    st.error(f"현재 자본금이 0 이하가 됩니다 (${_preview_cap:,.0f}). 수정 불가.")
                 else:
-                    acct_data["os_capital"] = _new_cap
-                    acct_data["capital_adj_history"] = json.dumps(_new_list, ensure_ascii=False)
+                    acct_data["os_capital"] = _preview_cap
+                    acct_data["capital_adj_history"] = json.dumps(_preview_list, ensure_ascii=False)
                     cfg["accounts"][acct_key] = acct_data
                     _save_iuo_config(cfg)
-                    st.success(f"✅ 이력 업데이트 완료. 현재 자본금: **${_new_cap:,.0f}**")
+                    st.success(f"✅ 이력 업데이트 완료. 현재 자본금: **${_preview_cap:,.0f}**")
                     st.rerun()
         else:
             st.info("아직 자본 조정 이력이 없습니다.")
