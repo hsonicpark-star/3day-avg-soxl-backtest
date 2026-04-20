@@ -617,21 +617,47 @@ def _load_iuo_history(ticker: str, acct_name: str = "") -> pd.DataFrame:
 
 
 def _save_iuo_history(ticker: str, daily_log: list, acct_name: str = ""):
-    """IUO 히스토리 CSV 저장 (B방식: 기존 날짜 보존, 새 날짜만 추가)."""
+    """IUO 히스토리 CSV 저장 (B방식: 기존 날짜 보존, 새 날짜만 추가).
+    Cloud: gs_url 설정된 경우 iuo_{계좌명}_매매기록 워크시트에도 동기화."""
     if not daily_log:
         return
     os.makedirs(_IUO_CONFIG_DIR, exist_ok=True)
     new_df = pd.DataFrame(daily_log)
+    new_df["날짜"] = new_df["날짜"].astype(str)
     path = _get_iuo_history_path(ticker, acct_name)
     if os.path.exists(path):
         old_df = pd.read_csv(path, encoding="utf-8-sig")
         old_dates = set(old_df["날짜"].astype(str))
-        append_df = new_df[~new_df["날짜"].astype(str).isin(old_dates)]
+        append_df = new_df[~new_df["날짜"].astype(str).isin(old_dates)].copy()
         if not append_df.empty:
             combined = pd.concat([old_df, append_df], ignore_index=True)
             combined.to_csv(path, index=False, encoding="utf-8-sig")
     else:
+        append_df = new_df.copy()
         new_df.to_csv(path, index=False, encoding="utf-8-sig")
+
+    # Cloud: Google Sheets 동기화
+    if _IS_CLOUD and st.session_state.get("logged_in") and not append_df.empty:
+        try:
+            cfg = _load_iuo_config()
+            gs_url = cfg.get("gs_url", "")
+            if gs_url:
+                import gspread as _gs
+                from common.config import _get_gspread_client
+                _safe_name = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
+                _ws_name = f"iuo_{_safe_name}_매매기록"
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                try:
+                    ws = sh.worksheet(_ws_name)
+                except _gs.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=_ws_name, rows=5000, cols=25)
+                    ws.append_row(append_df.columns.tolist())
+                rows_to_add = [[str(v) for v in row] for row in append_df.values.tolist()]
+                if rows_to_add:
+                    ws.append_rows(rows_to_add, value_input_option="RAW")
+        except Exception:
+            pass
 
 
 def render_ordersheet_tab(params: dict):

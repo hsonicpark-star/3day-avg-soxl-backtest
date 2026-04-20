@@ -367,9 +367,32 @@ def _save_dss_history(bt_df: pd.DataFrame, acct_name: str = ""):
             return
         df_merged = pd.concat([df_existing, df_add], ignore_index=True)
     else:
+        df_add = df_new.copy()
         df_merged = df_new
     os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
     df_merged.to_csv(_get_history_path(acct_name), index=False, encoding="utf-8-sig")
+
+    # ── Cloud: Google Sheets 매매기록 워크시트 동기화 ──
+    if _IS_CLOUD and st.session_state.get("logged_in") and not df_add.empty:
+        try:
+            _cfg = _load_dss_config()
+            _gs_url = _cfg.get("gs_url", "")
+            if _gs_url:
+                import gspread as _gs
+                _safe_name = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
+                _ws_name = f"dss_{_safe_name}_매매기록"
+                client = _get_gspread_client()
+                sh = client.open_by_url(_gs_url)
+                try:
+                    ws = sh.worksheet(_ws_name)
+                except _gs.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=_ws_name, rows=5000, cols=20)
+                    ws.append_row(df_add.columns.tolist())  # 헤더
+                rows_to_add = [[str(v) for v in row] for row in df_add.values.tolist()]
+                if rows_to_add:
+                    ws.append_rows(rows_to_add, value_input_option="RAW")
+        except Exception:
+            pass
 
 
 # ──────────────────────────────────────────────
