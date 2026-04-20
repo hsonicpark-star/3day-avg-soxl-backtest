@@ -82,22 +82,20 @@ def compute_bnh(price_df, start_date, end_date, initial_capital):
     return assets_bnh, sub.index
 
 
-def recalc_adj_history(adj_history, current_capital):
+def recalc_adj_history(adj_history, base_capital):
     """자본 조정 이력을 날짜순 정렬 + 누적자본금 재계산.
 
     Args:
         adj_history: [{"날짜": str, "조정금액": float, ...}, ...]
-        current_capital: 이력이 모두 반영된 현재 자본금
+        base_capital: 시작 자본 (모든 조정 이전의 base 금액, 변경되지 않음)
 
     Returns:
-        (정렬된 이력 list, 최종 자본금 float)
+        (정렬된 이력 list, base + sum(조정) 최종 자본금 float)
     """
     if not adj_history:
-        return [], float(current_capital)
-    total_adj = sum(float(item.get("조정금액", 0)) for item in adj_history)
-    initial = float(current_capital) - total_adj
+        return [], float(base_capital)
     sorted_history = sorted(adj_history, key=lambda x: str(x.get("날짜", "")))
-    cumulative = initial
+    cumulative = float(base_capital)
     for item in sorted_history:
         cumulative += float(item.get("조정금액", 0))
         item["누적자본금"] = float(cumulative)

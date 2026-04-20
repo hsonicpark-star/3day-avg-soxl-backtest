@@ -867,6 +867,9 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
             if not isinstance(_adj_history, list): _adj_history = []
         except: _adj_history = []
 
+        _cur_adj_sum = sum(float(it.get("조정금액", 0)) for it in _adj_history)
+        _cur_total = os_capital + _cur_adj_sum
+
         _adj_c1, _adj_c2 = st.columns([2, 1])
         _adj_date = _adj_c1.date_input("적용 날짜", value=datetime.today().date(),
                                         key=f"iuo_adj_date{sfx}",
@@ -875,7 +878,7 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                                             help="증액: 양수 · 감액: 음수",
                                             key=f"iuo_adj_input{sfx}")
         _adj_c1.caption(
-            f"적용 후 자본금: **${os_capital + _adj_amount:,.0f}** "
+            f"현재 자본금: **${_cur_total:,.0f}** → 적용 후: **${_cur_total + _adj_amount:,.0f}** "
             f"({'↑' if _adj_amount > 0 else '↓' if _adj_amount < 0 else '='} "
             f"${abs(_adj_amount):,.0f})"
         )
@@ -883,8 +886,7 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                                         key=f"iuo_adj_memo{sfx}")
         if _adj_c2.button("💰 적용", use_container_width=True,
                           key=f"iuo_adj_apply{sfx}", disabled=(_adj_amount == 0)):
-            _new_capital = os_capital + _adj_amount
-            if _new_capital <= 0:
+            if _cur_total + _adj_amount <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
             else:
                 _adj_history.append({
@@ -893,13 +895,13 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                     "누적자본금": 0.0,
                     "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
                 })
-                _adj_history, _new_capital = _recalc_adj_history(
-                    _adj_history, _new_capital)
-                acct_data["os_capital"] = _new_capital
+                _adj_history, _final_cap = _recalc_adj_history(
+                    _adj_history, os_capital)
+                # os_capital(시작 자본) 은 변경하지 않음 (base 유지)
                 acct_data["capital_adj_history"] = json.dumps(_adj_history, ensure_ascii=False)
                 cfg["accounts"][acct_key] = acct_data
                 _save_iuo_config(cfg)
-                st.success(f"✅ {_adj_date} 자본 조정 완료. 현재 자본금: **${_new_capital:,.0f}**")
+                st.success(f"✅ {_adj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
                 st.rerun()
 
         if _adj_history:
@@ -949,7 +951,7 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                 if _preview_cap <= 0:
                     st.error(f"현재 자본금이 0 이하가 됩니다 (${_preview_cap:,.0f}). 수정 불가.")
                 else:
-                    acct_data["os_capital"] = _preview_cap
+                    # os_capital(시작 자본) 은 변경하지 않음 (base 유지)
                     acct_data["capital_adj_history"] = json.dumps(_preview_list, ensure_ascii=False)
                     cfg["accounts"][acct_key] = acct_data
                     _save_iuo_config(cfg)

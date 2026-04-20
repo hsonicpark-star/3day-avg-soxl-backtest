@@ -1349,6 +1349,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             if not isinstance(_sd_adj_hist, list): _sd_adj_hist = []
         except: _sd_adj_hist = []
 
+        _cur_adj_sum = sum(float(it.get("조정금액", 0)) for it in _sd_adj_hist)
+        _cur_total = _def_cap + _cur_adj_sum
+
         _sadj_c1, _sadj_c2 = st.columns([2, 1])
         _sadj_date = _sadj_c1.date_input("적용 날짜", value=datetime.today().date(),
                                           key=f"sd_adj_date_{key_sfx}",
@@ -1357,7 +1360,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                                            help="증액: 양수 / 감액: 음수",
                                            key=f"sd_adj_inp_{key_sfx}")
         _sadj_c1.caption(
-            f"적용 후 자본금: **${_def_cap + _sadj_amt:,.0f}** "
+            f"현재 자본금: **${_cur_total:,.0f}** → 적용 후: **${_cur_total + _sadj_amt:,.0f}** "
             f"({'up' if _sadj_amt > 0 else 'down' if _sadj_amt < 0 else '='} "
             f"${abs(_sadj_amt):,.0f})"
         )
@@ -1365,8 +1368,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                                           key=f"sd_adj_memo_{key_sfx}")
         if _sadj_c2.button("적용", use_container_width=True,
                             key=f"sd_apply_adj_{key_sfx}", disabled=(_sadj_amt == 0)):
-            _new_cap = _def_cap + _sadj_amt
-            if _new_cap <= 0:
+            if _cur_total + _sadj_amt <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
             else:
                 _sd_adj_hist.append({
@@ -1375,12 +1377,11 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "누적자본금": 0.0,
                     "메모": _sadj_memo or ("증액" if _sadj_amt > 0 else "감액"),
                 })
-                _sd_adj_hist, _new_cap = _recalc_adj_history(_sd_adj_hist, _new_cap)
+                _sd_adj_hist, _final_cap = _recalc_adj_history(_sd_adj_hist, _def_cap)
                 _save_sd_ticker_setting(tk, {
-                    "os_capital": _new_cap,
                     "capital_adj_history": json.dumps(_sd_adj_hist, ensure_ascii=False),
                 })
-                st.success(f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_new_cap:,.0f}**")
+                st.success(f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
                 st.rerun()
 
         if _sd_adj_hist:
@@ -1431,7 +1432,6 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     st.error(f"현재 자본금이 0 이하가 됩니다 (${_preview_cap:,.0f}). 수정 불가.")
                 else:
                     _save_sd_ticker_setting(tk, {
-                        "os_capital": _preview_cap,
                         "capital_adj_history": json.dumps(_preview_list, ensure_ascii=False),
                     })
                     st.success(f"✅ 이력 업데이트 완료. 현재 자본금: **${_preview_cap:,.0f}**")
