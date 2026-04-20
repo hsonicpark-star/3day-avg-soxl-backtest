@@ -39,6 +39,58 @@ def load_price_data(ticker: str, start: str = "2009-01-01",
 
 
 # ──────────────────────────────────────────────
+# 주문 시트 rows 생성 (공통 — 웹앱 + 자동 발송 스크립트 모두 사용)
+# ──────────────────────────────────────────────
+
+def build_order_rows(os_result: dict, today=None) -> list:
+    """DSS 주문표를 L/M/N/O 4열 포맷 rows로 변환.
+
+    컬럼 순서: [구분(매수/매도), 거래방법(LOC/MOC), 가격($, 숫자), 수량(주, 정수)]
+    MOC 매도(손절일 도래)는 가격 공란.
+
+    Args:
+        os_result: `_build_os_result_from_backtest()` 반환값 또는 유사 dict.
+                   required keys: open_positions, n_pos, cur_divisions,
+                                  next_buy_order, buy_qty_est
+        today: 기준일(Timestamp). None이면 오늘 날짜 사용.
+
+    Returns:
+        list of 4-element rows, 시트 L4:O{N}에 기록될 포맷.
+    """
+    from datetime import datetime as _dt
+    if today is None:
+        today_ts = pd.Timestamp(_dt.today().date())
+    else:
+        today_ts = pd.Timestamp(today)
+
+    rows = []
+    # 매도 주문 (보유 포지션별)
+    for pos in os_result.get("open_positions", []) or []:
+        if pos.get("sell_target") is None:
+            continue
+        _stop = pos.get("stop_date")
+        _is_moc = False
+        if _stop is not None:
+            try:
+                _stop_ts = pd.Timestamp(_stop)
+                _is_moc = (_stop_ts <= today_ts)
+            except Exception:
+                _is_moc = False
+        if _is_moc:
+            rows.append(["매도", "MOC", "", int(pos.get("qty", 0))])
+        else:
+            rows.append(["매도", "LOC", round(float(pos["sell_target"]), 2),
+                         int(pos.get("qty", 0))])
+
+    # 매수 주문 (빈 슬롯 있을 때만)
+    if os_result.get("n_pos", 0) < os_result.get("cur_divisions", 0):
+        rows.append(["매수", "LOC",
+                     round(float(os_result.get("next_buy_order", 0)), 2),
+                     int(os_result.get("buy_qty_est", 0))])
+    return rows
+
+
+# ──────────────────────────────────────────────
 # 1. 주간 RSI 계산 (KB증권 단순평균 방식, 14주)
 # ──────────────────────────────────────────────
 

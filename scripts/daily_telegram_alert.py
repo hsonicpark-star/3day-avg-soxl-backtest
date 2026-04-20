@@ -904,34 +904,13 @@ def build_sigma_order_rows(od: dict, qty: int) -> list:
 
 
 def build_dss_order_rows(os_result: dict) -> list:
-    """DSS 동파법 주문 rows 생성 (웹앱 _write_dss_orders_to_sheet와 동일 포맷).
-    L/M/N/O = 구분 / 거래방법(LOC/MOC) / 가격(숫자) / 수량(정수).
-    MOC 매도(손절일 도래)는 가격 공란."""
-    _o = os_result
-    today_ts = pd.Timestamp(datetime.today().date())
-    rows = []
-    # 매도 주문 (보유 포지션별)
-    for pos in _o.get("open_positions", []):
-        if pos.get("sell_target") is None:
-            continue
-        _stop = pos.get("stop_date")
-        _is_moc = False
-        if _stop is not None:
-            try:
-                _stop_ts = pd.Timestamp(_stop)
-                _is_moc = (_stop_ts <= today_ts)
-            except Exception:
-                _is_moc = False
-        if _is_moc:
-            rows.append(["매도", "MOC", "", int(pos.get("qty", 0))])
-        else:
-            rows.append(["매도", "LOC", round(float(pos["sell_target"]), 2),
-                         int(pos.get("qty", 0))])
-    # 매수 주문
-    if _o.get("n_pos", 0) < _o.get("cur_divisions", 0):
-        rows.append(["매수", "LOC", round(float(_o.get("next_buy_order", 0)), 2),
-                     int(_o.get("buy_qty_est", 0))])
-    return rows
+    """DSS 동파법 주문 rows 생성 — dss_engine.build_order_rows 재사용 (SSOT).
+
+    웹앱의 _write_dss_orders_to_sheet 와 완전히 동일한 함수를 사용하므로
+    포맷 불일치로 인한 자동매매 실패 방지.
+    """
+    from dss_engine import build_order_rows
+    return build_order_rows(os_result)
 
 
 def build_no_order_row(strategy_label: str) -> list:

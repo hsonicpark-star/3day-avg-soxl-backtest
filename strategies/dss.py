@@ -236,28 +236,9 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
         else:
             ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
     ws.batch_clear(["L4:O13"])
-    _o = os_result
-    today_ts = pd.Timestamp(datetime.today().date())
-    rows = []
-    # ── 매도 주문 (보유 포지션별) ──
-    for pos in _o['open_positions']:
-        if pos['sell_target'] is None:
-            continue
-        _stop = pos.get('stop_date')
-        _is_moc = False
-        if _stop is not None:
-            _stop_ts = pd.Timestamp(_stop)
-            _is_moc = (_stop_ts <= today_ts)
-        if _is_moc:
-            # MOC 매도 (손절일 도래) — 가격은 시장가이므로 비워둠
-            rows.append(["매도", "MOC", "", int(pos['qty'])])
-        else:
-            rows.append(["매도", "LOC", round(float(pos['sell_target']), 2),
-                         int(pos['qty'])])
-    # ── 매수 주문 ──
-    if _o['n_pos'] < _o['cur_divisions']:
-        rows.append(["매수", "LOC", round(float(_o['next_buy_order']), 2),
-                     int(_o['buy_qty_est'])])
+    # 공통 rows 생성 — dss_engine.build_order_rows 재사용 (스크립트와 SSOT)
+    from dss_engine import build_order_rows
+    rows = build_order_rows(os_result)
     if rows:
         ws.update(range_name="L4", values=rows)
     return len(rows)
