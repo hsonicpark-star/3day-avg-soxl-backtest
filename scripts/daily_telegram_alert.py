@@ -904,17 +904,33 @@ def build_sigma_order_rows(od: dict, qty: int) -> list:
 
 
 def build_dss_order_rows(os_result: dict) -> list:
-    """DSS 동파법 주문 rows 생성 (웹앱 _write_dss_orders_to_sheet와 동일 포맷)."""
+    """DSS 동파법 주문 rows 생성 (웹앱 _write_dss_orders_to_sheet와 동일 포맷).
+    L/M/N/O = 구분 / 거래방법(LOC/MOC) / 가격(숫자) / 수량(정수).
+    MOC 매도(손절일 도래)는 가격 공란."""
     _o = os_result
+    today_ts = pd.Timestamp(datetime.today().date())
     rows = []
+    # 매도 주문 (보유 포지션별)
     for pos in _o.get("open_positions", []):
-        if pos.get("sell_target") is not None:
-            pnl_pct = (pos["sell_target"] / pos["buy_price"] - 1) * 100 if pos.get("buy_price") else 0
-            rows.append(["매도", f"${pos['sell_target']:,.2f}", f"{pos['qty']}주",
-                         f"목표 {pnl_pct:+.1f}%"])
-    if _o["n_pos"] < _o["cur_divisions"]:
-        rows.append(["매수", f"${_o['next_buy_order']:,.2f}", f"{_o['buy_qty_est']}주",
-                     f"시드 ${_o['seed_per_trade']:,.0f}"])
+        if pos.get("sell_target") is None:
+            continue
+        _stop = pos.get("stop_date")
+        _is_moc = False
+        if _stop is not None:
+            try:
+                _stop_ts = pd.Timestamp(_stop)
+                _is_moc = (_stop_ts <= today_ts)
+            except Exception:
+                _is_moc = False
+        if _is_moc:
+            rows.append(["매도", "MOC", "", int(pos.get("qty", 0))])
+        else:
+            rows.append(["매도", "LOC", round(float(pos["sell_target"]), 2),
+                         int(pos.get("qty", 0))])
+    # 매수 주문
+    if _o.get("n_pos", 0) < _o.get("cur_divisions", 0):
+        rows.append(["매수", "LOC", round(float(_o.get("next_buy_order", 0)), 2),
+                     int(_o.get("buy_qty_est", 0))])
     return rows
 
 
