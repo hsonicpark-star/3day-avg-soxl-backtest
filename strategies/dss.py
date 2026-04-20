@@ -360,39 +360,64 @@ def _save_dss_history(bt_df: pd.DataFrame, acct_name: str = ""):
         df_existing = df_existing[df_existing["날짜"].astype(str) < _cutoff]
         _cleaned = (len(df_existing) < _before)
 
+    # ── 로컬 CSV 저장 ──
     if not df_existing.empty and "날짜" in df_existing.columns:
         existing_dates = set(df_existing["날짜"].astype(str))
-        df_add = df_new[~df_new["날짜"].astype(str).isin(existing_dates)].copy()
-        if df_add.empty and not _cleaned:
-            return
-        df_merged = pd.concat([df_existing, df_add], ignore_index=True)
+        df_add_local = df_new[~df_new["날짜"].astype(str).isin(existing_dates)].copy()
+        if not df_add_local.empty or _cleaned:
+            df_merged = pd.concat([df_existing, df_add_local], ignore_index=True)
+            os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
+            df_merged.to_csv(_get_history_path(acct_name), index=False, encoding="utf-8-sig")
     else:
-        df_add = df_new.copy()
-        df_merged = df_new
-    os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
-    df_merged.to_csv(_get_history_path(acct_name), index=False, encoding="utf-8-sig")
+        os.makedirs(_DSS_CONFIG_DIR, exist_ok=True)
+        df_new.to_csv(_get_history_path(acct_name), index=False, encoding="utf-8-sig")
 
-    # ── Cloud: Google Sheets 매매기록 워크시트 동기화 ──
-    if _IS_CLOUD and st.session_state.get("logged_in") and not df_add.empty:
+    # ── Google Sheets 매매기록 워크시트 동기화 ──
+    # (로컬 CSV 상태와 무관하게 GSheets 자체 기준으로 동기화)
+    _cfg = _load_dss_config()
+    _gs_url = _cfg.get("gs_url", "")
+    if _gs_url and not df_new.empty:
         try:
-            _cfg = _load_dss_config()
-            _gs_url = _cfg.get("gs_url", "")
-            if _gs_url:
-                import gspread as _gs
-                _safe_name = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
-                _ws_name = f"dss_{_safe_name}_매매기록"
-                client = _get_gspread_client()
-                sh = client.open_by_url(_gs_url)
+            import gspread as _gs
+            _safe_name = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
+            _ws_name = f"dss_{_safe_name}_매매기록"
+            client = _get_gspread_client()
+            sh = client.open_by_url(_gs_url)
+            _created_new = False
+            try:
+                ws = sh.worksheet(_ws_name)
+                _existing_cells = ws.get_all_values()
+                _gs_dates = set()
+                if len(_existing_cells) > 1:
+                    _header = _existing_cells[0]
+                    if "날짜" in _header:
+                        _date_idx = _header.index("날짜")
+                        _gs_dates = {row[_date_idx] for row in _existing_cells[1:]
+                                     if len(row) > _date_idx}
+                _df_add_gs = df_new[~df_new["날짜"].astype(str).isin(_gs_dates)].copy()
+            except _gs.WorksheetNotFound:
+                ws = sh.add_worksheet(title=_ws_name, rows=5000, cols=20)
+                ws.append_row(df_new.columns.tolist())
+                _df_add_gs = df_new.copy()
+                _created_new = True
+
+            if not _df_add_gs.empty:
+                rows_to_add = [[str(v) for v in row] for row in _df_add_gs.values.tolist()]
+                ws.append_rows(rows_to_add, value_input_option="RAW")
                 try:
-                    ws = sh.worksheet(_ws_name)
-                except _gs.WorksheetNotFound:
-                    ws = sh.add_worksheet(title=_ws_name, rows=5000, cols=20)
-                    ws.append_row(df_add.columns.tolist())  # 헤더
-                rows_to_add = [[str(v) for v in row] for row in df_add.values.tolist()]
-                if rows_to_add:
-                    ws.append_rows(rows_to_add, value_input_option="RAW")
-        except Exception:
-            pass
+                    if _created_new:
+                        st.toast(f"📊 '{_ws_name}' 시트 신규 생성 + {len(rows_to_add)}건 동기화",
+                                 icon="✅")
+                    else:
+                        st.toast(f"📊 '{_ws_name}'에 {len(rows_to_add)}건 추가",
+                                 icon="✅")
+                except Exception:
+                    pass
+        except Exception as _gs_err:
+            try:
+                st.warning(f"⚠️ GSheets 동기화 실패 [{acct_name}]: {_gs_err}")
+            except Exception:
+                pass
 
 
 # ──────────────────────────────────────────────

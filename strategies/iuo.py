@@ -636,28 +636,52 @@ def _save_iuo_history(ticker: str, daily_log: list, acct_name: str = ""):
         append_df = new_df.copy()
         new_df.to_csv(path, index=False, encoding="utf-8-sig")
 
-    # Cloud: Google Sheets 동기화
-    if _IS_CLOUD and st.session_state.get("logged_in") and not append_df.empty:
+    # Google Sheets 동기화 (로컬 CSV 상태와 무관하게 GSheets 자체 기준으로 비교)
+    cfg = _load_iuo_config()
+    gs_url = cfg.get("gs_url", "")
+    if gs_url and not new_df.empty:
         try:
-            cfg = _load_iuo_config()
-            gs_url = cfg.get("gs_url", "")
-            if gs_url:
-                import gspread as _gs
-                from common.config import _get_gspread_client
-                _safe_name = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
-                _ws_name = f"iuo_{_safe_name}_매매기록"
-                client = _get_gspread_client()
-                sh = client.open_by_url(gs_url)
+            import gspread as _gs
+            from common.config import _get_gspread_client
+            _safe_name = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
+            _ws_name = f"iuo_{_safe_name}_매매기록"
+            client = _get_gspread_client()
+            sh = client.open_by_url(gs_url)
+            _created_new = False
+            try:
+                ws = sh.worksheet(_ws_name)
+                _existing_cells = ws.get_all_values()
+                _gs_dates = set()
+                if len(_existing_cells) > 1:
+                    _header = _existing_cells[0]
+                    if "날짜" in _header:
+                        _date_idx = _header.index("날짜")
+                        _gs_dates = {row[_date_idx] for row in _existing_cells[1:]
+                                     if len(row) > _date_idx}
+                _df_add_gs = new_df[~new_df["날짜"].astype(str).isin(_gs_dates)].copy()
+            except _gs.WorksheetNotFound:
+                ws = sh.add_worksheet(title=_ws_name, rows=5000, cols=25)
+                ws.append_row(new_df.columns.tolist())
+                _df_add_gs = new_df.copy()
+                _created_new = True
+
+            if not _df_add_gs.empty:
+                rows_to_add = [[str(v) for v in row] for row in _df_add_gs.values.tolist()]
+                ws.append_rows(rows_to_add, value_input_option="RAW")
                 try:
-                    ws = sh.worksheet(_ws_name)
-                except _gs.WorksheetNotFound:
-                    ws = sh.add_worksheet(title=_ws_name, rows=5000, cols=25)
-                    ws.append_row(append_df.columns.tolist())
-                rows_to_add = [[str(v) for v in row] for row in append_df.values.tolist()]
-                if rows_to_add:
-                    ws.append_rows(rows_to_add, value_input_option="RAW")
-        except Exception:
-            pass
+                    if _created_new:
+                        st.toast(f"📊 '{_ws_name}' 시트 신규 생성 + {len(rows_to_add)}건 동기화",
+                                 icon="✅")
+                    else:
+                        st.toast(f"📊 '{_ws_name}'에 {len(rows_to_add)}건 추가",
+                                 icon="✅")
+                except Exception:
+                    pass
+        except Exception as _gs_err:
+            try:
+                st.warning(f"⚠️ GSheets 동기화 실패 [{acct_name}]: {_gs_err}")
+            except Exception:
+                pass
 
 
 def render_ordersheet_tab(params: dict):
