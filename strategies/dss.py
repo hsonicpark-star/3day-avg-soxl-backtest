@@ -1243,8 +1243,12 @@ def render_optimization_tab(params):
 # ══════════════════════════════════════════════
 
 
-def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq):
-    """백테스트 결과 DataFrame → 주문표 표시용 result dict."""
+def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
+                                    adj_history=None):
+    """백테스트 결과 DataFrame → 주문표 표시용 result dict.
+
+    adj_history: 자본 조정 이력 리스트. 있으면 last_date 이하 날짜의 조정
+    금액을 cash/total_asset에 합산 (엔진이 조정을 모델링하지 않으므로 보정)."""
     last = bt_df.iloc[-1]
     prev_close = float(last['종가'])
     last_date = pd.Timestamp(last['날짜'])
@@ -1258,6 +1262,20 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq):
     eval_pnl = float(last['평가손익'])
     cum_realized = float(last['누적실현'])
     sell_count = int(last['누적매도'])
+
+    # 자본 조정 반영 (last_date 이하 날짜)
+    adj_applied = 0.0
+    if adj_history:
+        for _item in adj_history:
+            try:
+                _dt = pd.Timestamp(_item.get("날짜"))
+                if _dt <= last_date:
+                    adj_applied += float(_item.get("조정금액", 0))
+            except Exception:
+                continue
+    cash += adj_applied
+    total_asset += adj_applied
+    capital += adj_applied
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
@@ -1322,11 +1340,13 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq):
         "prev_rsi": float(prev_rsi_row['rsi']) if prev_rsi_row is not None else None,
         "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
         "os_capital": float(os_capital),
+        "adj_applied": float(adj_applied),
     }
 
 
-def _build_os_result_fallback(os_params, os_capital):
-    """백테스트 결과 없을 때 (신규 계좌/오늘 시작) → 최신 시장 데이터로 주문표 생성."""
+def _build_os_result_fallback(os_params, os_capital, adj_history=None):
+    """백테스트 결과 없을 때 (신규 계좌/오늘 시작) → 최신 시장 데이터로 주문표 생성.
+    adj_history가 있으면 last_date 이하 날짜의 조정금액을 자본에 합산."""
     try:
         soxl = get_soxl_data()
         qqq = get_qqq_data()
@@ -1356,6 +1376,17 @@ def _build_os_result_fallback(os_params, os_capital):
         cur_max_hold = os_params.sf_max_hold
 
     capital = float(os_capital)
+    # 자본 조정 반영
+    adj_applied = 0.0
+    if adj_history:
+        for _item in adj_history:
+            try:
+                _dt = pd.Timestamp(_item.get("날짜"))
+                if _dt <= last_date:
+                    adj_applied += float(_item.get("조정금액", 0))
+            except Exception:
+                continue
+    capital += adj_applied
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
     seed_per_trade = capital / cur_divisions
     buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
@@ -1388,7 +1419,8 @@ def _build_os_result_fallback(os_params, os_capital):
         "latest_rsi": float(latest_rsi_row['rsi']) if latest_rsi_row is not None else None,
         "prev_rsi": float(prev_rsi_row['rsi']) if prev_rsi_row is not None else None,
         "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
-        "os_capital": capital,
+        "os_capital": float(os_capital),
+        "adj_applied": float(adj_applied),
     }
 
 
@@ -1792,12 +1824,19 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                     str(os_start), today_str,
                 )
 
+            _adj_hist_for_os = acct_data.get("capital_adj_history", [])
+            if not isinstance(_adj_hist_for_os, list):
+                _adj_hist_for_os = []
+
             if bt_df is not None and not bt_df.empty:
                 _save_dss_history(bt_df, acct_name)
-                st.session_state[_ss_key] = _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq)
+                st.session_state[_ss_key] = _build_os_result_from_backtest(
+                    bt_df, os_params, os_capital, qqq,
+                    adj_history=_adj_hist_for_os)
             else:
                 # 시작일이 최근이어서 백테스트 결과 없음 → 최신 시장 데이터로 폴백
-                _fallback = _build_os_result_fallback(os_params, os_capital)
+                _fallback = _build_os_result_fallback(
+                    os_params, os_capital, adj_history=_adj_hist_for_os)
                 if _fallback is not None:
                     st.session_state[_ss_key] = _fallback
                     st.info("ℹ️ 시작일이 최근이어서 매매 내역은 없지만, 현재 시장 데이터 기반으로 주문표를 생성했습니다.")
@@ -1845,15 +1884,21 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
         # ── 포트폴리오 요약 카드 ──
         _os_init_cap = _os.get("os_capital", float(p["initial_capital"]))
-        _ret_pct = (_os['total_asset'] / _os_init_cap - 1) * 100 if _os_init_cap > 0 else 0
+        _os_adj_applied = _os.get("adj_applied", 0.0)
+        # 수익률은 자본 조정 제외한 순수 매매 성과 기준
+        _trading_asset = _os['total_asset'] - _os_adj_applied
+        _ret_pct = (_trading_asset / _os_init_cap - 1) * 100 if _os_init_cap > 0 else 0
         _ret_color = "#2E7D32" if _ret_pct >= 0 else "#C62828"
         _eval_color = "#2E7D32" if _os['eval_pnl'] >= 0 else "#C62828"
         _real_color = "#2E7D32" if _os['cum_realized'] >= 0 else "#C62828"
+        _adj_caption = (f'<div style="font-size:0.68em;color:#0B7A3E;font-weight:600">'
+                        f'+ 조정 ${_os_adj_applied:+,.0f}</div>') if abs(_os_adj_applied) > 0.01 else ''
         st.markdown(f"""
         <div style="display:flex;gap:10px;margin-bottom:8px">
           <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
             <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
             <div style="font-size:1.1em;font-weight:700;color:#333">${_os_init_cap:,.0f}</div>
+            {_adj_caption}
           </div>
           <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
             <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
