@@ -263,6 +263,10 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
     return len(rows)
 
 
+# ── 자본 조정 이력 유틸 (common/analysis.py 재export) ──
+from common.analysis import recalc_adj_history as _recalc_adj_history
+
+
 # ── 일별 매매 히스토리 (B방식: 과거 불변, 새 날짜만 누적) ──
 
 def _get_history_path(acct_name: str = "") -> str:
@@ -1618,12 +1622,15 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
     # ── 자본 조정 (증액/감액) ──
     with st.expander("💰 자본 조정 (증액 / 감액)"):
-        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요.")
+        st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 날짜를 선택해 과거 항목도 입력 가능합니다.")
         _adj_history = acct_data.get("capital_adj_history", [])
         if not isinstance(_adj_history, list):
             _adj_history = []
 
         _adj_c1, _adj_c2 = st.columns([2, 1])
+        _adj_date = _adj_c1.date_input("적용 날짜", value=datetime.today().date(),
+                                        key=f"dss_{sfx}_adj_date",
+                                        help="실제 입금/출금이 일어난 날짜")
         _adj_amount = _adj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
                                             help="증액: 양수 · 감액: 음수",
                                             key=f"dss_{sfx}_adj_amount")
@@ -1641,28 +1648,66 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 st.error("자본금은 0보다 커야 합니다.")
             else:
                 _adj_history.append({
-                    "날짜": datetime.today().strftime("%Y-%m-%d"),
+                    "날짜": _adj_date.strftime("%Y-%m-%d"),
                     "조정금액": float(_adj_amount),
-                    "누적자본금": float(_new_capital),
+                    "누적자본금": 0.0,  # 재계산됨
                     "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
                 })
+                _adj_history, _new_capital = _recalc_adj_history(
+                    _adj_history, _new_capital)
                 acct_data["os_capital"] = _new_capital
                 acct_data["capital_adj_history"] = _adj_history
                 cfg["accounts"][acct_name] = acct_data
                 _save_dss_config(cfg)
-                st.success(f"✅ 자본금이 **${_new_capital:,.0f}**으로 업데이트되었습니다.")
+                st.success(f"✅ {_adj_date} 자본 조정 완료. 현재 자본금: **${_new_capital:,.0f}**")
                 st.rerun()
 
         if _adj_history:
             st.markdown("---")
-            st.markdown("**📋 자본 조정 이력**")
-            _df_adj = pd.DataFrame(_adj_history)
-            _df_adj_show = _df_adj.copy()
-            _df_adj_show["조정금액"] = _df_adj["조정금액"].apply(
-                lambda x: f"{'↑' if x > 0 else '↓'} ${abs(x):,.0f}")
-            _df_adj_show["누적자본금"] = _df_adj["누적자본금"].apply(lambda x: f"${x:,.0f}")
-            st.dataframe(_df_adj_show[["날짜", "조정금액", "누적자본금", "메모"]],
-                         use_container_width=True, hide_index=True)
+            st.markdown("**📋 자본 조정 이력** (직접 수정 가능 — 날짜/금액/메모 편집 · 행 삭제)")
+            _df_adj_edit = pd.DataFrame(_adj_history)
+            _df_adj_edit["날짜"] = pd.to_datetime(_df_adj_edit["날짜"]).dt.date
+            _df_adj_edit["조정금액"] = _df_adj_edit["조정금액"].astype(float)
+            _df_adj_edit["누적자본금"] = _df_adj_edit["누적자본금"].astype(float)
+            _edited = st.data_editor(
+                _df_adj_edit[["날짜", "조정금액", "누적자본금", "메모"]],
+                column_config={
+                    "날짜": st.column_config.DateColumn("날짜", format="YYYY-MM-DD", required=True),
+                    "조정금액": st.column_config.NumberColumn("조정금액 ($)",
+                                                              format="$%.0f", required=True,
+                                                              help="증액: 양수 · 감액: 음수"),
+                    "누적자본금": st.column_config.NumberColumn("누적자본금 ($)",
+                                                                format="$%.0f", disabled=True,
+                                                                help="저장 시 자동 재계산"),
+                    "메모": st.column_config.TextColumn("메모"),
+                },
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                key=f"dss_{sfx}_adj_editor",
+            )
+            if st.button("💾 변경사항 저장", key=f"dss_{sfx}_save_adj_edit",
+                         type="primary"):
+                _new_list = []
+                for _, _r in _edited.iterrows():
+                    if pd.isna(_r.get("날짜")) or pd.isna(_r.get("조정금액")):
+                        continue
+                    _new_list.append({
+                        "날짜": pd.Timestamp(_r["날짜"]).strftime("%Y-%m-%d"),
+                        "조정금액": float(_r["조정금액"]),
+                        "누적자본금": 0.0,
+                        "메모": str(_r.get("메모") or ""),
+                    })
+                _new_list, _new_cap = _recalc_adj_history(_new_list, _os_capital_val)
+                if _new_cap <= 0:
+                    st.error(f"현재 자본금이 0 이하가 됩니다 (${_new_cap:,.0f}). 수정 불가.")
+                else:
+                    acct_data["os_capital"] = _new_cap
+                    acct_data["capital_adj_history"] = _new_list
+                    cfg["accounts"][acct_name] = acct_data
+                    _save_dss_config(cfg)
+                    st.success(f"✅ 이력 업데이트 완료. 현재 자본금: **${_new_cap:,.0f}**")
+                    st.rerun()
         else:
             st.info("아직 자본 조정 이력이 없습니다.")
 
