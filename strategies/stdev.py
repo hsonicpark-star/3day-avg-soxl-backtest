@@ -1489,6 +1489,26 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             if _sd_r is None:
                 st.error("주문표 계산 실패. 데이터 기간을 늘려보세요.")
             else:
+                # 자본 조정 반영 (엔진은 os_capital로만 시뮬, 조정은 별도 합산)
+                _adj_raw_sd = tk_cfg.get("capital_adj_history", "[]")
+                try:
+                    _adj_list_sd = json.loads(_adj_raw_sd) if isinstance(_adj_raw_sd, str) else _adj_raw_sd
+                    if not isinstance(_adj_list_sd, list):
+                        _adj_list_sd = []
+                except Exception:
+                    _adj_list_sd = []
+                _end_ts_sd = pd.Timestamp(datetime.today().date())
+                _adj_applied_sd = 0.0
+                for _it in _adj_list_sd:
+                    try:
+                        _dt = pd.Timestamp(_it.get("날짜"))
+                        if _dt <= _end_ts_sd:
+                            _adj_applied_sd += float(_it.get("조정금액", 0))
+                    except Exception:
+                        continue
+                _sd_r["cash"] = float(_sd_r.get("cash", 0)) + _adj_applied_sd
+                _sd_r["final_asset"] = float(_sd_r.get("final_asset", 0)) + _adj_applied_sd
+                _sd_r["adj_applied"] = _adj_applied_sd
                 st.session_state[_sd_ss] = _sd_r
                 # 새 날짜 히스토리 누적 저장 (B방식)
                 _save_sd_daily_history(tk, _sd_r.get("hist"))
@@ -1516,8 +1536,11 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _realized_pnl = float(_hdf["실현손익"].sum())
     _realized_pct = (_realized_pnl / _os_cap * 100) if _os_cap else 0.0
 
+    _sd_adj = float(_sd_res.get("adj_applied", 0.0))
     _sm1, _sm2, _sm3, _sm4, _sm5 = st.columns(5)
-    _sm1.metric("시작 자본",  f"${_os_cap:,.0f}")
+    _sm1.metric("시작 자본",  f"${_os_cap:,.0f}",
+                delta=(f"+ 조정 ${_sd_adj:+,.0f}" if abs(_sd_adj) > 0.01 else None),
+                delta_color="off")
     _sm2.metric("최종 자산",  f"${_final_a:,.0f}",
                 delta=f"CAGR {_cagr*100:.2f}%")
     _sm3.metric("실현손익",   f"${_realized_pnl:+,.2f}",

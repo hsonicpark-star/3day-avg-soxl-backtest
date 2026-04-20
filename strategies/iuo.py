@@ -1038,6 +1038,15 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
     total_asset = _use_capital
     cycle_base = _use_capital
 
+    # 자본 조정 반영 준비
+    _adj_raw_iuo = acct_data.get("capital_adj_history", "[]")
+    try:
+        _adj_list_iuo = json.loads(_adj_raw_iuo) if isinstance(_adj_raw_iuo, str) else _adj_raw_iuo
+        if not isinstance(_adj_list_iuo, list):
+            _adj_list_iuo = []
+    except Exception:
+        _adj_list_iuo = []
+
     if result:
         log = result["daily_log"]
         if log:
@@ -1052,6 +1061,23 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
             total_asset = last_row.get("총자산", _use_capital)
             cycle_base = last_row.get("매수기준액", _use_capital)
 
+            # 자본 조정 반영 — last_row의 날짜 이하 조정금액 합산
+            _end_ts_iuo = pd.Timestamp(last_row.get("날짜") or last_date)
+            _adj_applied_iuo = 0.0
+            for _it in _adj_list_iuo:
+                try:
+                    _dt = pd.Timestamp(_it.get("날짜"))
+                    if _dt <= _end_ts_iuo:
+                        _adj_applied_iuo += float(_it.get("조정금액", 0))
+                except Exception:
+                    continue
+            cash += _adj_applied_iuo
+            total_asset += _adj_applied_iuo
+        else:
+            _adj_applied_iuo = 0.0
+    else:
+        _adj_applied_iuo = 0.0
+
     # ── 6) 포트폴리오 현황 ──
     if result:
         st.caption(f"{_use_start} ~ {last_date}")
@@ -1060,7 +1086,9 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
         stock_ratio = (cur_shares * last_close / total_asset * 100) if total_asset > 0 else 0
 
         p1, p2, p3, p4, p5 = st.columns(5)
-        p1.metric("시작 자본", f"${_use_capital:,.0f}")
+        p1.metric("시작 자본", f"${_use_capital:,.0f}",
+                  delta=(f"+ 조정 ${_adj_applied_iuo:+,.0f}" if abs(_adj_applied_iuo) > 0.01 else None),
+                  delta_color="off")
         p2.metric("평가 자산", f"${total_asset:,.0f}",
                   f"📈 CAGR {result.get('metrics',{}).get('cagr',0):.1f}%")
         p3.metric("실현손익", f"${cum_realized:+,.2f}",

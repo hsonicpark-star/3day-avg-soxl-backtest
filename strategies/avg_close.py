@@ -1674,6 +1674,26 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if res is None:
             st.warning("시뮬레이션 데이터가 없습니다.")
             return
+        # 자본 조정 반영 (엔진은 os_capital로만 시뮬, 조정은 별도 합산)
+        _adj_raw_os = tk_cfg.get("capital_adj_history", "[]")
+        try:
+            _adj_list_os = json.loads(_adj_raw_os) if isinstance(_adj_raw_os, str) else _adj_raw_os
+            if not isinstance(_adj_list_os, list):
+                _adj_list_os = []
+        except Exception:
+            _adj_list_os = []
+        _end_ts_os = pd.Timestamp(res.get("end_date") or datetime.today().date())
+        _adj_applied = 0.0
+        for _it in _adj_list_os:
+            try:
+                _dt = pd.Timestamp(_it.get("날짜"))
+                if _dt <= _end_ts_os:
+                    _adj_applied += float(_it.get("조정금액", 0))
+            except Exception:
+                continue
+        res["cash"] = float(res.get("cash", 0)) + _adj_applied
+        res["current_asset"] = float(res.get("current_asset", 0)) + _adj_applied
+        res["adj_applied"] = _adj_applied
         st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
         # 새 날짜 데이터만 누적 저장 (파라미터 바꿔도 기존 기록 불변)
         _save_ticker_daily_history(tk, res.get("daily_log", []))
@@ -1691,8 +1711,11 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     )
     _realized_ret_pct = (_realized_pnl / res['initial_capital'] * 100) if res['initial_capital'] else 0.0
 
+    _res_adj = float(res.get("adj_applied", 0.0))
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}")
+    m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}",
+              delta=(f"+ 조정 ${_res_adj:+,.0f}" if abs(_res_adj) > 0.01 else None),
+              delta_color="off")
     m2.metric("평가 자산",  f"${res['current_asset']:,.0f}",
               delta=f"CAGR {res['cagr']*100:.2f}%")
     m3.metric("실현손익",   f"${_realized_pnl:+,.2f}",
