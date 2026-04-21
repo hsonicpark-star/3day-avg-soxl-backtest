@@ -839,6 +839,233 @@ def parse_iuo_config(user: dict) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════
+# 🔍 이상치 감지 (Sanity Check) — 모든 전략 공통
+# ══════════════════════════════════════════════════════════════
+
+def _check_qty_sanity(qty, label: str = "수량") -> list:
+    """수량이 비정상적인지 체크."""
+    msgs = []
+    try:
+        q = int(qty)
+        if q < 0:
+            msgs.append(f"⚠️ {label}이 음수({q})")
+        elif q > 10000:
+            msgs.append(f"⚠️ {label} 과다({q:,}주) — 계산 오류 가능성")
+    except Exception:
+        msgs.append(f"⚠️ {label} 파싱 실패 ({qty})")
+    return msgs
+
+
+def _check_price_sanity(price, prev_close, label: str = "주문가") -> list:
+    """가격이 전일종가 대비 ±20% 넘으면 경고."""
+    msgs = []
+    try:
+        p = float(price)
+        pc = float(prev_close)
+        if pc > 0 and p > 0:
+            diff = abs(p / pc - 1)
+            if diff > 0.20:
+                msgs.append(
+                    f"⚠️ {label} ${p:.2f} 가 전일종가 ${pc:.2f} 대비 "
+                    f"{diff*100:.0f}% 차이 — 데이터 이상 가능성"
+                )
+    except Exception:
+        pass
+    return msgs
+
+
+def sanity_check_avg(res: dict, tk: str) -> list:
+    """종가평균매매 이상치 감지."""
+    if not res:
+        return []
+    issues = []
+    issues.extend(_check_qty_sanity(res.get("buy_qty", 0), "매수수량"))
+    if res.get("shares", 0) > 0:
+        issues.extend(_check_qty_sanity(res.get("sell_qty", 0), "매도수량"))
+    issues.extend(_check_price_sanity(res.get("tb", 0), res.get("p1", 0), "매수LOC"))
+    issues.extend(_check_price_sanity(res.get("ts", 0), res.get("p1", 0), "매도LOC"))
+    return issues
+
+
+def sanity_check_sd(r: dict, tk: str) -> list:
+    """표준편차매매 이상치 감지."""
+    if not r:
+        return []
+    issues = []
+    sigma = r.get("sigma_next", 0)
+    if sigma is not None:
+        try:
+            s = float(sigma)
+            if s < 0.0005:
+                issues.append(f"⚠️ σ 값 비정상 낮음 ({s*100:.4f}%) — 데이터 부족 가능성")
+            elif s > 0.20:
+                issues.append(f"⚠️ σ 값 비정상 높음 ({s*100:.2f}%) — 극단 변동성")
+        except Exception:
+            pass
+    issues.extend(_check_qty_sanity(r.get("est_buy_qty", 0), "매수수량"))
+    issues.extend(_check_qty_sanity(r.get("est_sell_qty", 0), "매도수량"))
+    issues.extend(_check_price_sanity(r.get("next_buy_loc", 0),
+                                      r.get("last_close", 0), "매수LOC"))
+    issues.extend(_check_price_sanity(r.get("next_sell_loc", 0),
+                                      r.get("last_close", 0), "매도LOC"))
+    return issues
+
+
+def sanity_check_sigma(od: dict) -> list:
+    """Sigma매매법 이상치 감지."""
+    if not od:
+        return []
+    issues = []
+    sigma_pct = od.get("sigma_pct", 0)
+    try:
+        s = float(sigma_pct)
+        if s < 0.05:
+            issues.append(f"⚠️ σ {s:.3f}% 비정상 낮음 — 데이터 부족 가능성")
+        elif s > 20:
+            issues.append(f"⚠️ σ {s:.2f}% 비정상 높음 — 극단 변동성")
+    except Exception:
+        pass
+    issues.extend(_check_price_sanity(od.get("buy_loc_1", 0),
+                                      od.get("prev_close", 0), "1σ 매수LOC"))
+    return issues
+
+
+def sanity_check_dss(os_result: dict, acct_name: str, acct_data: dict) -> list:
+    """DSS 이상치 감지 (가장 중요 — 과거 버그가 많았음)."""
+    if not os_result:
+        return []
+    issues = []
+
+    # 1. last_date 가 오늘이면 intraday 오염 의심
+    try:
+        last_date = pd.Timestamp(os_result.get("last_date"))
+        today = pd.Timestamp(datetime.today().date())
+        if last_date >= today:
+            # 미국장은 KST 기준 늦게 마감되므로, US 기준 오늘 데이터가 들어오면 이상
+            import pytz
+            now_est = pd.Timestamp.now(tz='America/New_York').tz_localize(None)
+            if now_est.replace(hour=16, minute=30, second=0) > now_est:
+                # 장 마감 전인데 오늘 날짜 존재 → intraday 오염
+                if last_date.date() >= now_est.date():
+                    issues.append(
+                        f"⚠️ 엔진 last_date={last_date.date()} 가 오늘 이후 "
+                        f"(미국장 마감 전) — intraday 데이터 오염 의심"
+                    )
+    except Exception:
+        pass
+
+    # 2. 자본 조정 미반영 체크 — 가장 중요!
+    #    adj_history 있는데 1회시드가 (os_capital / divisions) 와 거의 동일하면 의심
+    adj_history = acct_data.get("capital_adj_history", []) or []
+    if isinstance(adj_history, list) and adj_history:
+        os_cap = float(acct_data.get("os_capital", 0))
+        divisions = os_result.get("cur_divisions", 0)
+        if os_cap > 0 and divisions > 0:
+            expected_no_adj = os_cap / divisions
+            actual_seed = float(os_result.get("seed_per_trade", 0))
+            if abs(actual_seed - expected_no_adj) < 1.0:
+                issues.append(
+                    f"⚠️ 자본조정 이력 {len(adj_history)}건 있으나 "
+                    f"1회시드 ${actual_seed:,.0f}가 조정 미반영 값과 동일 "
+                    f"(${expected_no_adj:,.0f}) — 조정 누락 의심"
+                )
+
+    # 3. 매수주문가/매도목표가 sanity
+    prev_close = os_result.get("prev_close", 0)
+    issues.extend(_check_price_sanity(
+        os_result.get("next_buy_order", 0), prev_close, "매수주문가"))
+    for i, pos in enumerate(os_result.get("open_positions", []) or []):
+        if pos.get("sell_target"):
+            issues.extend(_check_price_sanity(
+                pos["sell_target"], pos.get("buy_price", prev_close),
+                f"티어{i+1} 매도목표"))
+
+    # 4. 수량 sanity
+    if os_result.get("n_pos", 0) < os_result.get("cur_divisions", 0):
+        issues.extend(_check_qty_sanity(os_result.get("buy_qty_est", 0), "매수수량"))
+
+    # 5. 손절예정일 < 오늘 (workday_offset 버그 재발)
+    today = pd.Timestamp(datetime.today().date())
+    for i, pos in enumerate(os_result.get("open_positions", []) or []):
+        stop = pos.get("stop_date")
+        if stop is not None:
+            try:
+                stop_ts = pd.Timestamp(stop)
+                buy_ts = pd.Timestamp(pos.get("buy_date"))
+                # 매수일로부터 stop_date가 최소 7일 뒤여야 정상 (AG max_hold=8)
+                if (stop_ts - buy_ts).days < 5 and stop_ts.date() != today.date():
+                    # 손절일이 매수일과 너무 가까우면 의심 (단, 오늘이 실제 손절일인 경우 제외)
+                    issues.append(
+                        f"⚠️ 티어{i+1} 손절예정일 {stop_ts.date()} 가 "
+                        f"매수일 {buy_ts.date()} 대비 너무 가까움 — "
+                        f"workday_offset 버그 재발 가능성"
+                    )
+            except Exception:
+                pass
+
+    return issues
+
+
+def sanity_check_iuo(o: dict, acct_name: str, acct_data: dict) -> list:
+    """IUO 매매법 이상치 감지."""
+    if not o:
+        return []
+    issues = []
+
+    # 1. cycle_day 비정상
+    cycle_day = o.get("cycle_day", 0)
+    moc_days = o.get("moc_days", 18)
+    try:
+        cd = int(cycle_day)
+        md = int(moc_days)
+        if cd < 0:
+            issues.append(f"⚠️ 사이클 진행일 음수({cd})")
+        elif cd > md + 3:
+            issues.append(f"⚠️ 사이클 진행일 {cd} > MOC기한 {md} 초과 — 시간청산 실패 가능성")
+    except Exception:
+        pass
+
+    # 2. 자본 조정 미반영 체크 (DSS와 동일 패턴)
+    adj_raw = acct_data.get("capital_adj_history", "[]")
+    try:
+        adj_list = json.loads(adj_raw) if isinstance(adj_raw, str) else adj_raw
+        if not isinstance(adj_list, list):
+            adj_list = []
+    except Exception:
+        adj_list = []
+    # IUO는 cash/total_asset에 조정 반영 체크 — 이미 합산됨이 정답
+
+    # 3. 가격 sanity
+    lc = o.get("last_close", 0)
+    for k, label in [("buy0_loc", "첫매수LOC"), ("buy1_loc", "추가매수1LOC"),
+                     ("buy2_loc", "추가매수2LOC")]:
+        v = o.get(k, 0)
+        if v:
+            issues.extend(_check_price_sanity(v, lc, label))
+    if o.get("sell_loc"):
+        issues.extend(_check_price_sanity(
+            o["sell_loc"], o.get("last_buy_close", lc), "매도LOC"))
+
+    return issues
+
+
+def build_admin_alert(username: str, warnings: list) -> str:
+    """관리자(유저 본인) 알림 메시지 생성."""
+    today = datetime.today().strftime("%Y-%m-%d")
+    lines = [
+        f"<b>🚨 주문표 이상치 감지 — {username}</b>",
+        f"📅 {today}",
+        f"",
+    ]
+    for w in warnings:
+        lines.append(w)
+    lines.append("")
+    lines.append("※ 정상이라고 판단되면 무시하세요.")
+    lines.append("※ 반복되면 앱 설정 / 자본 조정 이력 / 데이터 로딩을 점검해주세요.")
+    return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════
 # 공통: 텔레그램 발송
 # ══════════════════════════════════════════════════════════════
 
@@ -1034,6 +1261,8 @@ def main():
         username = user.get("username", "")
         # 종가평균/표준편차/Sigma 공용 gs_url (사용자 레벨)
         shared_gs_url = str(user.get("gs_url", "")).strip()
+        # 이상치 알림 수집 버킷 (유저별)
+        user_warnings = []
 
         # ── 1. 종가평균매매 발송 ──────────────────────────────
         avg_chat_id = str(user.get("tg_chat_id", "")).strip()
@@ -1077,6 +1306,10 @@ def main():
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
                                                   _label, status="ERROR", error_reason="시뮬레이션 실패")
                     continue
+
+                # 이상치 감지
+                _issues = sanity_check_avg(res, tk)
+                user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])
 
                 msg = build_avg_message(res, tk)
                 ok, resp = send_telegram(avg_chat_id, avg_token, msg, parse_mode="Markdown")
@@ -1141,6 +1374,10 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 이상치 감지
+                _issues = sanity_check_sd(r, tk)
+                user_warnings.extend([f"[표준편차/{tk}] {m}" for m in _issues])
+
                 msg = build_sd_message(r)
                 ok, resp = send_telegram(sd_chat_id, sd_token, msg, parse_mode="HTML")
                 if ok:
@@ -1201,6 +1438,10 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 이상치 감지 (DSS는 중점 체크)
+                _issues = sanity_check_dss(os_result, acct_name, acct_data)
+                user_warnings.extend([f"[DSS/{acct_name}] {m}" for m in _issues])
+
                 msg = build_dss_message(os_result, acct_name)
                 ok, resp = send_telegram(dss_chat_id, dss_token, msg, parse_mode="HTML")
                 if ok:
@@ -1251,6 +1492,10 @@ def main():
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
+
+                # 이상치 감지
+                _issues = sanity_check_sigma(od)
+                user_warnings.extend([f"[Sigma/{tk}] {m}" for m in _issues])
 
                 msg = build_sigma_message(od, capital, divisions)
                 ok, resp = send_telegram(sg_chat_id, sg_token, msg, parse_mode="HTML")
@@ -1310,6 +1555,10 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 이상치 감지
+                _issues = sanity_check_iuo(iuo_result, acct_name, acct_data)
+                user_warnings.extend([f"[IUO/{acct_name}] {m}" for m in _issues])
+
                 msg = build_iuo_message(iuo_result, acct_name)
                 ok, resp = send_telegram(iuo_chat_id, iuo_token, msg, parse_mode="HTML")
                 if ok:
@@ -1334,6 +1583,37 @@ def main():
         else:
             print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
             skip_count += 1
+
+        # ── 6. 이상치 알림 (유저 본인에게 발송) ─────────────────
+        if user_warnings:
+            # 텔레그램 채널: 등록된 전략 중 하나 선택
+            # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO
+            _candidates = [
+                (avg_chat_id, avg_token),
+                (sd_chat_id, sd_token),
+                (dss_chat_id, dss_token),
+                (sg_chat_id, sg_token),
+                (iuo_chat_id, iuo_token),
+            ]
+            _alert_chat_id = ""
+            _alert_token = ""
+            for _cid, _tok in _candidates:
+                if _cid and _tok:
+                    _alert_chat_id = _cid
+                    _alert_token = _tok
+                    break
+            if _alert_chat_id and _alert_token:
+                _alert_msg = build_admin_alert(username, user_warnings)
+                ok, resp = send_telegram(_alert_chat_id, _alert_token,
+                                         _alert_msg, parse_mode="HTML")
+                if ok:
+                    print(f"  🚨 {username} 이상치 {len(user_warnings)}건 알림 발송 성공")
+                else:
+                    print(f"  ❌ {username} 이상치 알림 발송 실패 → {resp}")
+            else:
+                print(f"  ⚠️ {username} 이상치 {len(user_warnings)}건이나 텔레그램 채널 없음:")
+                for w in user_warnings:
+                    print(f"     - {w}")
 
     print(f"\n🏁 완료: 성공 {ok_count}건 / 건너뜀 {skip_count}명 / 실패 {fail_count}건")
 
