@@ -428,16 +428,23 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     n_pos = 0
     cash = os_capital
     total_asset = os_capital
+    capital = os_capital  # 엔진 현재 투자금 (PCR/LCR로 갱신된 값)
     cum_realized = 0
     sell_count = 0
     holding_value = 0
+    engine_last_date = None
 
     if bt_df is not None and not bt_df.empty:
         last_row = bt_df.iloc[-1]
         cash = float(last_row['예수금'])
         total_asset = float(last_row['총자산'])
+        capital = float(last_row['투자금'])  # ← 웹앱 UI와 동일: 엔진 갱신된 투자금
         cum_realized = float(last_row['누적실현'])
         sell_count = int(last_row['누적매도'])
+        try:
+            engine_last_date = pd.Timestamp(last_row['날짜'])
+        except Exception:
+            engine_last_date = pd.Timestamp(last_date)
 
         # 미체결 포지션 수집
         _all_sold = set()
@@ -462,8 +469,24 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         n_pos = len(open_positions)
         holding_value = sum(p['qty'] * prev_close for p in open_positions)
 
+    # 자본 조정 반영 — 웹앱 UI와 동일 로직
+    adj_applied = 0.0
+    _adj_hist = acct_data.get("capital_adj_history", []) or []
+    if isinstance(_adj_hist, list) and engine_last_date is not None:
+        for _item in _adj_hist:
+            try:
+                _dt = pd.Timestamp(_item.get("날짜"))
+                if _dt <= engine_last_date:
+                    adj_applied += float(_item.get("조정금액", 0))
+            except Exception:
+                continue
+    cash += adj_applied
+    total_asset += adj_applied
+    capital += adj_applied
+
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
-    seed_per_trade = os_capital / cur_div if cur_div > 0 else os_capital
+    # 웹앱과 동일: 엔진 투자금(PCR 갱신) + 자본 조정 기준 (초기 os_capital 아님)
+    seed_per_trade = capital / cur_div if cur_div > 0 else capital
     buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
 
     return {
