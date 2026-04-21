@@ -1018,6 +1018,16 @@ def main():
     users  = get_users(client, sheet_url)
     print(f"✅ {len(users)}명 로드")
 
+    # 특정 유저만 필터링 (테스트 모드)
+    filter_user = os.environ.get("FILTER_USER", "").strip()
+    if filter_user:
+        _before = len(users)
+        users = [u for u in users if str(u.get("username", "")).strip() == filter_user]
+        print(f"🎯 필터 적용: '{filter_user}' → {len(users)}/{_before}명 선택")
+        if not users:
+            print(f"❌ username='{filter_user}' 사용자를 찾을 수 없습니다.")
+            return
+
     ok_count = skip_count = fail_count = 0
 
     for user in users:
