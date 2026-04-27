@@ -1276,8 +1276,10 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
                                     adj_history=None):
     """백테스트 결과 DataFrame → 주문표 표시용 result dict.
 
-    adj_history: 자본 조정 이력 리스트. 있으면 last_date 이하 날짜의 조정
-    금액을 cash/total_asset에 합산 (엔진이 조정을 모델링하지 않으므로 보정)."""
+    adj_history: 자본 조정 이력 리스트.
+    NOTE: 엔진이 이제 직접 capital_adj_history를 받아 백테스트 도중 적용하므로,
+    bt_df의 cash/total_asset/capital은 이미 조정 반영된 값.
+    여기서는 표시용으로 adj_applied 합계만 계산 (UI 캡션에 사용)."""
     last = bt_df.iloc[-1]
     prev_close = float(last['종가'])
     last_date = pd.Timestamp(last['날짜'])
@@ -1292,7 +1294,7 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
     cum_realized = float(last['누적실현'])
     sell_count = int(last['누적매도'])
 
-    # 자본 조정 반영 (last_date 이하 날짜)
+    # 자본 조정 합계 (UI 표시용 — 엔진이 이미 적용했으므로 여기서 더하지 않음)
     adj_applied = 0.0
     if adj_history:
         for _item in adj_history:
@@ -1302,9 +1304,6 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
                     adj_applied += float(_item.get("조정금액", 0))
             except Exception:
                 continue
-    cash += adj_applied
-    total_asset += adj_applied
-    capital += adj_applied
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
@@ -1847,15 +1846,17 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             )
 
             today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
-            with st.spinner("포트폴리오 시뮬레이션 중..."):
-                bt_df = run_backtest(
-                    os_params, soxl, mode_series,
-                    str(os_start), today_str,
-                )
-
             _adj_hist_for_os = acct_data.get("capital_adj_history", [])
             if not isinstance(_adj_hist_for_os, list):
                 _adj_hist_for_os = []
+
+            with st.spinner("포트폴리오 시뮬레이션 중..."):
+                # 자본 조정을 엔진에 직접 전달 → 백테스트 도중 적용 (시트와 일치)
+                bt_df = run_backtest(
+                    os_params, soxl, mode_series,
+                    str(os_start), today_str,
+                    capital_adj_history=_adj_hist_for_os,
+                )
 
             if bt_df is not None and not bt_df.empty:
                 _save_dss_history(bt_df, acct_name)

@@ -406,7 +406,12 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     )
 
     today_str = datetime.today().strftime("%Y-%m-%d")
-    bt_df = run_backtest(dss_params, soxl, mode_series_df, os_start, today_str)
+    # 자본 조정 이력 추출 (엔진이 백테스트 도중 직접 적용)
+    _adj_hist = acct_data.get("capital_adj_history", [])
+    if not isinstance(_adj_hist, list):
+        _adj_hist = []
+    bt_df = run_backtest(dss_params, soxl, mode_series_df, os_start, today_str,
+                          capital_adj_history=_adj_hist)
 
     # 최신 데이터
     prev_close = float(soxl.iloc[-1]['Close'])
@@ -469,9 +474,8 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         n_pos = len(open_positions)
         holding_value = sum(p['qty'] * prev_close for p in open_positions)
 
-    # 자본 조정 반영 — 웹앱 UI와 동일 로직
+    # 자본 조정 합계 (UI 표시용 — 엔진이 이미 적용했으므로 여기서 더하지 않음)
     adj_applied = 0.0
-    _adj_hist = acct_data.get("capital_adj_history", []) or []
     if isinstance(_adj_hist, list) and engine_last_date is not None:
         for _item in _adj_hist:
             try:
@@ -480,12 +484,9 @@ def calc_dss_order(acct_data: dict) -> dict | None:
                     adj_applied += float(_item.get("조정금액", 0))
             except Exception:
                 continue
-    cash += adj_applied
-    total_asset += adj_applied
-    capital += adj_applied
 
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
-    # 웹앱과 동일: 엔진 투자금(PCR 갱신) + 자본 조정 기준 (초기 os_capital 아님)
+    # 엔진의 capital(투자금)은 PCR 갱신 + 자본 조정 모두 이미 반영된 값
     seed_per_trade = capital / cur_div if cur_div > 0 else capital
     buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
 

@@ -306,9 +306,16 @@ def run_backtest(params: DSSParams,
                  soxl_daily: pd.DataFrame,
                  mode_series: pd.DataFrame,
                  start_date: str = "2024-01-02",
-                 end_date: str = "2026-04-10") -> pd.DataFrame:
+                 end_date: str = "2026-04-10",
+                 capital_adj_history: list = None) -> pd.DataFrame:
     """
     DSS 동파법 백테스트 실행.
+
+    Args:
+        capital_adj_history: 자본 조정 이력 [{날짜, 조정금액, ...}, ...]
+            - 백테스트 도중 해당 날짜에 capital/cash 에 즉시 합산
+            - 다음 거래일부터 시드/매수수량에 반영됨
+            - 시트 동작과 일치: 조정 발생 다음 거래일부터 새 시드 적용
 
     Returns: DataFrame with daily trading log.
     """
@@ -331,6 +338,20 @@ def run_backtest(params: DSSParams,
     # 모드 맵 생성
     mode_map = get_week_mode_map(mode_series, all_trading_days)
 
+    # 자본 조정 이력 정렬 (날짜 오름차순)
+    pending_adjs = []
+    if capital_adj_history:
+        for _adj in capital_adj_history:
+            try:
+                _dt = pd.Timestamp(_adj.get("날짜"))
+                _amt = float(_adj.get("조정금액", 0))
+                if _amt != 0:
+                    pending_adjs.append((_dt, _amt))
+            except Exception:
+                continue
+        pending_adjs.sort(key=lambda x: x[0])
+    _adj_idx = 0  # 다음 적용 대기 중인 조정의 인덱스
+
     # 상태 변수
     capital = params.initial_capital          # 현재 투자금 (갱신 대상)
     cash = params.initial_capital             # 예수금
@@ -343,6 +364,15 @@ def run_backtest(params: DSSParams,
     records = []
 
     for date in trading_days:
+        # ── 자본 조정 적용 (이전 날짜에 발생한 조정을 오늘 시작 시 반영) ──
+        # 시트 동작 기준: 4/17 시드증액 → 4/20 첫 매수부터 새 시드 사용
+        # 즉, adj_date < 오늘 인 조정은 오늘 트레이딩에 적용됨
+        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] < date:
+            _, _amt = pending_adjs[_adj_idx]
+            capital += _amt
+            cash += _amt
+            _adj_idx += 1
+
         close = soxl.loc[date, 'Close']
         if isinstance(close, pd.Series):
             close = close.iloc[0]
@@ -502,11 +532,15 @@ def run_backtest_fast(params: DSSParams,
                       soxl_daily: pd.DataFrame,
                       mode_series: pd.DataFrame,
                       start_date: str = "2024-01-02",
-                      end_date: str = "2026-04-10") -> dict:
+                      end_date: str = "2026-04-10",
+                      capital_adj_history: list = None) -> dict:
     """
     최적화 전용 경량 백테스트.
     UI 출력용 데이터를 생성하지 않고, 핵심 지표만 반환.
     run_backtest 대비 2~3배 빠름.
+
+    Args:
+        capital_adj_history: 자본 조정 이력 (run_backtest와 동일)
 
     Returns: dict with 핵심 지표 or None
     """
@@ -575,12 +609,34 @@ def run_backtest_fast(params: DSSParams,
     pnl_since_renew = []
     cum_realized = 0.0
 
+    # 자본 조정 이력 정렬
+    pending_adjs = []
+    if capital_adj_history:
+        for _adj in capital_adj_history:
+            try:
+                _dt = pd.Timestamp(_adj.get("날짜"))
+                _amt = float(_adj.get("조정금액", 0))
+                if _amt != 0:
+                    pending_adjs.append((_dt, _amt))
+            except Exception:
+                continue
+        pending_adjs.sort(key=lambda x: x[0])
+    _adj_idx = 0
+
     # MDD 계산용
     peak_asset = init_cap
     max_dd = 0.0
     final_asset = init_cap
 
     for i in range(n_days):
+        # 자본 조정 적용 (이전 날짜 발생 조정을 오늘 시작 시 반영)
+        cur_date = trade_dates[i]
+        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] < cur_date:
+            _, _amt = pending_adjs[_adj_idx]
+            capital += _amt
+            cash += _amt
+            _adj_idx += 1
+
         close = closes[i]
         is_ag = mode_arr[i]
 
