@@ -336,7 +336,7 @@ def run_backtest(params: DSSParams,
     cash = params.initial_capital             # 예수금
     positions: list[Position] = []            # 보유 포지션
     sell_count = 0                            # 누적 매도 건수
-    sell_count_since_renewal = 0              # 갱신 이후 매도 건수
+    days_since_renewal = 0                    # 갱신 이후 거래일수 (10거래일마다 갱신)
     realized_pnl_since_renewal: list[float] = []  # 갱신 주기 내 실현손익
     cumulative_realized = 0.0                 # 누적 실현손익
 
@@ -401,27 +401,29 @@ def run_backtest(params: DSSParams,
                 daily_realized += pnl
                 cumulative_realized += pnl
                 sell_count += 1
-                sell_count_since_renewal += 1
                 realized_pnl_since_renewal.append(pnl)
             else:
                 remaining_positions.append(pos)
 
         positions = remaining_positions
 
-        # ── 투자금 갱신 (복리) ──
+        # ── 투자금 갱신 (복리) — 매 N 거래일마다 ──
+        # (시트 RECORD 검증: 거래일수 10일째에 갱신, 매도 횟수와 무관)
+        days_since_renewal += 1
         renewal_happened = False
         renewal_amount = 0.0
-        if sell_count_since_renewal >= params.renewal_period and len(realized_pnl_since_renewal) >= params.renewal_period:
-            # 직전 N회 매도 실현손익 합산
-            recent_pnls = realized_pnl_since_renewal[-params.renewal_period:]
-            total_pnl = sum(recent_pnls)
-            if total_pnl >= 0:
+        if days_since_renewal >= params.renewal_period:
+            # 직전 N거래일 동안의 실현손익 합산 (매도 0회면 갱신 0)
+            total_pnl = sum(realized_pnl_since_renewal) if realized_pnl_since_renewal else 0.0
+            if total_pnl > 0:
                 renewal_amount = total_pnl * params.pcr
-            else:
+            elif total_pnl < 0:
                 renewal_amount = total_pnl * params.lcr
-            capital += renewal_amount
-            renewal_happened = True
-            sell_count_since_renewal = 0
+            # else: total_pnl == 0 → renewal_amount = 0 (그래도 카운터 리셋)
+            if renewal_amount != 0:
+                capital += renewal_amount
+                renewal_happened = True
+            days_since_renewal = 0
             realized_pnl_since_renewal = []
 
         # ── 매수 처리 ──
@@ -569,7 +571,7 @@ def run_backtest_fast(params: DSSParams,
     capital = init_cap
     cash = init_cap
     sell_count = 0
-    sell_since_renew = 0
+    days_since_renew = 0  # 거래일수 카운터 (10거래일마다 갱신)
     pnl_since_renew = []
     cum_realized = 0.0
 
@@ -605,17 +607,18 @@ def run_backtest_fast(params: DSSParams,
                 cash += sell_amt - sell_amt * (fee_r + sec_fee)
                 cum_realized += pnl
                 sell_count += 1
-                sell_since_renew += 1
                 pnl_since_renew.append(pnl)
             else:
                 new_pos.append(pos)
         positions = new_pos
 
-        # ── 투자금 갱신 ──
-        if sell_since_renew >= renew_period:
-            total_pnl = sum(pnl_since_renew[-renew_period:])
-            capital += total_pnl * (pcr_val if total_pnl >= 0 else lcr_val)
-            sell_since_renew = 0
+        # ── 투자금 갱신 (매 N 거래일마다, 매도 횟수 무관) ──
+        days_since_renew += 1
+        if days_since_renew >= renew_period:
+            total_pnl = sum(pnl_since_renew) if pnl_since_renew else 0.0
+            if total_pnl != 0:
+                capital += total_pnl * (pcr_val if total_pnl > 0 else lcr_val)
+            days_since_renew = 0
             pnl_since_renew = []
 
         # ── 매수 처리 ──
