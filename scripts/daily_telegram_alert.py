@@ -98,81 +98,50 @@ def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════
 # 종가평균매매 관련
 # ══════════════════════════════════════════════════════════════
+# avg_close_engine 사용 (웹앱과 동일 엔진)
+from avg_close_engine import (
+    run_portfolio_for_ordersheet as _avg_run_ordersheet,
+    buy_limit_price,
+)
 
-def buy_limit_price(p1: float, p2: float, a: float) -> float:
-    return (p1 + p2) * (1 + a) / (2 - a)
 
-def calc_today_order(df: pd.DataFrame,
+def calc_today_order(ticker: str, os_start: str,
                      a_buy: float, a_sell: float,
                      sell_ratio: float, divisions: int,
-                     capital: float) -> dict:
-    closes = df["Close"].values
-    if len(closes) < 2:
+                     capital: float, n_days: int = 2) -> dict:
+    """종가평균매매 오늘의 주문 계산.
+    웹앱(strategies/avg_close.py:run_portfolio_for_ordersheet)과 동일 로직.
+    n_days 파라미터 지원 (사용자 설정 그대로 사용).
+    """
+    df = fetch_prices(ticker, os_start)
+    if df is None or df.empty or len(df) < n_days + 1:
         return {}
 
-    shares, cash, avg_cost = 0, capital, 0.0
-    open_tiers = []
-    prev_asset = capital
+    res = _avg_run_ordersheet(
+        price_df=df, start_date=os_start, ticker_name=ticker,
+        a_buy=a_buy, a_sell=a_sell,
+        sell_ratio=sell_ratio, divisions=divisions,
+        initial_capital=capital, n_days=n_days,
+    )
+    if res is None:
+        return {}
 
-    for i in range(2, len(closes)):
-        x   = float(closes[i])
-        p1  = float(closes[i - 1])
-        p2  = float(closes[i - 2])
-        tb  = buy_limit_price(p1, p2, a_buy)
-        ts  = buy_limit_price(p1, p2, a_sell)
-        chunk = prev_asset / divisions
-
-        if shares > 0 and x >= ts:
-            sell_qty = math.floor(shares * (sell_ratio / 100.0))
-            if sell_qty > 0:
-                cash  += sell_qty * x
-                shares -= sell_qty
-                remaining = sell_qty
-                while remaining > 0 and open_tiers:
-                    if open_tiers[0]["qty"] <= remaining:
-                        remaining -= open_tiers[0]["qty"]
-                        open_tiers.pop(0)
-                    else:
-                        open_tiers[0]["qty"] -= remaining
-                        remaining = 0
-                if shares > 0 and open_tiers:
-                    total_inv = sum(t["price"] * t["qty"] for t in open_tiers)
-                    total_qty = sum(t["qty"] for t in open_tiers)
-                    avg_cost  = total_inv / total_qty if total_qty > 0 else 0.0
-                else:
-                    avg_cost, open_tiers = 0.0, []
-        elif x <= tb:
-            buy_qty = min(
-                math.floor(chunk / tb + 1e-9),
-                math.floor(cash / tb + 1e-9),
-            )
-            if buy_qty > 0:
-                total_inv = avg_cost * shares + x * buy_qty
-                shares   += buy_qty
-                avg_cost  = total_inv / shares
-                cash     -= buy_qty * x
-                open_tiers.append({"price": x, "qty": buy_qty})
-
-        prev_asset = cash + shares * x
-
-    p1_now = float(closes[-1])
-    p2_now = float(closes[-2])
-    tb_next = buy_limit_price(p1_now, p2_now, a_buy)
-    ts_next = buy_limit_price(p1_now, p2_now, a_sell)
-    current_asset = cash + shares * p1_now
-    chunk_now = current_asset / divisions
-
-    buy_qty_next  = min(
-        math.floor(chunk_now / tb_next + 1e-9),
-        math.floor(cash / tb_next + 1e-9),
-    ) if cash > 0 else 0
-    sell_qty_next = math.floor(shares * (sell_ratio / 100.0)) if shares > 0 else 0
+    # 자동발송 메시지/GSheet에서 사용하는 필드로 변환
+    pending = res.get("pending_buys") or [{}]
+    buy_qty = int(pending[0].get("수량", 0)) if pending else 0
+    shares = int(res.get("shares", 0))
+    sell_qty = math.floor(shares * (sell_ratio / 100.0)) if shares > 0 else 0
 
     return {
-        "p1": p1_now, "p2": p2_now,
-        "tb": round(tb_next, 2), "ts": round(ts_next, 2),
-        "shares": shares, "buy_qty": buy_qty_next,
-        "sell_qty": sell_qty_next, "cash": cash, "avg_cost": avg_cost,
+        "p1":       float(res.get("p1_now", 0)),
+        "p2":       float(res.get("p2_now", 0)),
+        "tb":       round(float(res.get("next_buy_primary", 0)), 2),
+        "ts":       round(float(res.get("next_sell_target", 0)), 2),
+        "shares":   shares,
+        "buy_qty":  buy_qty,
+        "sell_qty": sell_qty,
+        "cash":     float(res.get("cash", 0)),
+        "avg_cost": float(res.get("avg_cost", 0)),
     }
 
 def build_avg_message(res: dict, ticker: str) -> str:
@@ -224,6 +193,9 @@ def parse_ticker_settings(user: dict) -> dict:
 # 표준편차매매 관련
 # ══════════════════════════════════════════════════════════════
 
+from stdev_engine import run_stdev_ordersheet as _sd_run_ordersheet
+
+
 def calc_sd_today_order(ticker: str, os_start: str,
                         k_buy: float, k_sell: float,
                         sigma_period: int, sell_ratio: float,
@@ -232,173 +204,36 @@ def calc_sd_today_order(ticker: str, os_start: str,
                         pcr: float = 1.0, lcr: float = 1.0) -> dict | None:
     """표준편차매매 오늘의 주문 계산.
 
-    웹 엔진(strategies/stdev.py: run_backtest_stdev_fast + run_stdev_ordersheet)과
-    100% 동일한 로직을 사용하여 일치된 결과 반환.
-    포함된 메커니즘:
-      - tier (1~divisions 순환), tier=1일 때만 total_invest 갱신
-      - renewal 주기 동안 누적 실현손익 delta 기반 total_invest 업데이트
-      - pcr (이익 시 가중치) / lcr (손실 시 가중치)
-      - σ 계산 윈도우: 최근 sigma_period 개 일간수익률
+    stdev_engine.run_stdev_ordersheet (웹앱과 동일 엔진) 사용.
     """
     buf_start = (pd.to_datetime(os_start) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
     df = fetch_prices(ticker, buf_start)
     if df is None or df.empty:
         return None
 
-    today = datetime.today().date()
-
-    # ── 1) σ 사전 계산 (전체 데이터 기준) ──────────────────
-    df_sigma = df.loc[:pd.to_datetime(today)]
-    df_idx   = df_sigma.loc[pd.to_datetime(os_start):pd.to_datetime(today)].index
-    if len(df_idx) == 0 or len(df_sigma) < sigma_period + 2:
-        # 시뮬할 거래일이 없으면 초기 상태 + 다음 LOC만 산출
-        c_all = df_sigma["Close"].values.astype(np.float64)
-        if len(c_all) < sigma_period + 1:
-            return None
-        rets_last = [(c_all[j] - c_all[j-1]) / c_all[j-1]
-                     for j in range(len(c_all) - sigma_period, len(c_all))]
-        sigma_next = float(np.std(rets_last, ddof=0))
-        last_close = float(c_all[-1])
-        next_buy_loc  = round(last_close * (1.0 + sigma_next * k_buy),  2)
-        next_sell_loc = round(last_close * (1.0 + sigma_next * k_sell), 2)
-        cur_invest = float(capital)
-        daily_inv  = cur_invest / divisions if divisions > 0 else cur_invest
-        avail_next = min(daily_inv, float(capital))
-        est_buy_qty = math.floor(avail_next / next_buy_loc) if next_buy_loc > 0 else 0
-        return {
-            "ticker": ticker, "last_close": last_close, "sigma_next": sigma_next,
-            "next_buy_loc": next_buy_loc, "next_sell_loc": next_sell_loc,
-            "holdings": 0, "avg_cost": 0.0, "cash": float(capital),
-            "est_buy_qty": est_buy_qty, "est_sell_qty": 0,
-        }
-
-    c_all = df_sigma["Close"].values.astype(np.float64)
-    n_all = len(c_all)
-
-    # 일간수익률 사전 계산 (인덱스 i = (i-1, i) 사이의 수익률)
-    r_all = np.empty(n_all, dtype=np.float64)
-    r_all[0] = np.nan
-    r_all[1:] = np.where(c_all[:-1] > 0, (c_all[1:] - c_all[:-1]) / c_all[:-1], np.nan)
-
-    # σ_all[i] = 인덱스 [i-sigma_period, i) 구간의 수익률 sigma_period개의 std
-    s_all = np.full(n_all, np.nan, dtype=np.float64)
-    for i in range(sigma_period, n_all):
-        w = r_all[i - sigma_period:i]
-        if not np.any(np.isnan(w)):
-            s_all[i] = np.std(w, ddof=0)
-
-    # ── 2) 시뮬레이션 구간 잘라내기 ──────────────────────────
-    sim_offset = df_sigma.index.searchsorted(df_idx[0])
-    n = len(df_idx)
-    closes = c_all[sim_offset:sim_offset + n]
-    sigmas = s_all[sim_offset:sim_offset + n]
-
-    if sim_offset > 0:
-        prev_closes = c_all[sim_offset - 1:sim_offset - 1 + n]
-    else:
-        prev_closes = np.empty(n, dtype=np.float64)
-        prev_closes[0] = np.nan
-        prev_closes[1:] = closes[:-1]
-
-    # ── 3) 시뮬레이션 (웹 엔진 run_backtest_stdev_fast와 동일) ─
-    cash         = float(capital)
-    holdings     = 0
-    avg_cost     = 0.0
-    cum_realized = 0.0
-    total_invest = float(capital)
-    tier         = 0
-
-    # cum_realized 히스토리 (renewal 갱신용)
-    cum_r_buf = np.empty(n + 1, dtype=np.float64)
-    cum_r_idx = 0
-
-    sell_ratio_f = sell_ratio / 100.0
-
-    for i in range(n):
-        close = closes[i]
-        sigma = sigmas[i]
-
-        if np.isnan(sigma):
-            cum_r_buf[cum_r_idx] = cum_realized
-            cum_r_idx += 1
-            continue
-
-        prev_close = prev_closes[i]
-        buy_loc    = prev_close * (1.0 + sigma * k_buy)
-        sell_loc   = prev_close * (1.0 + sigma * k_sell)
-
-        # tier 순환 (1..divisions)
-        tier = (tier % divisions) + 1
-
-        # tier=1일 때 total_invest 갱신 (renewal 메커니즘)
-        if tier == 1 and cum_r_idx > 0:
-            lookback = (renewal + 1) if cum_r_idx > 2 * divisions else renewal
-            prev_cum = cum_r_buf[cum_r_idx - lookback] if cum_r_idx >= lookback else 0.0
-            delta    = cum_realized - prev_cum
-            total_invest += delta * (pcr if delta >= 0 else lcr)
-
-        daily_invest = total_invest / divisions
-        prev_avg     = avg_cost
-        prev_hold    = holdings
-
-        # 매도 (보유 + 종가 ≥ sell_loc)
-        sell_qty = 0
-        if holdings > 0 and close >= sell_loc:
-            sell_qty = int(round(float(holdings) * sell_ratio_f))
-
-        # 매수 (종가 ≤ buy_loc)
-        buy_qty = 0
-        if close <= buy_loc:
-            available = min(daily_invest, cash)
-            buy_qty   = math.floor(available / buy_loc) if buy_loc > 0 else 0
-
-        # 체결 처리
-        sell_amt = close * sell_qty
-        buy_amt  = close * buy_qty
-
-        if sell_qty > 0:
-            cum_realized += sell_amt - prev_avg * sell_qty
-
-        remaining = prev_hold - sell_qty
-        new_hold  = remaining + buy_qty
-        if new_hold > 0:
-            avg_cost = ((remaining * prev_avg + close * buy_qty) / new_hold
-                        if buy_qty > 0 else prev_avg)
-        else:
-            avg_cost = 0.0
-
-        holdings = new_hold
-        cash     = cash - buy_amt + sell_amt
-
-        cum_r_buf[cum_r_idx] = cum_realized
-        cum_r_idx += 1
-
-    # ── 4) 내일 LOC 계산 (전체 데이터 기준 최신 σ) ─────────
-    last_close = float(c_all[-1])
-    rets_last = [(c_all[j] - c_all[j-1]) / c_all[j-1]
-                 for j in range(n_all - sigma_period, n_all)]
-    sigma_next = float(np.std(rets_last, ddof=0))
-    next_buy_loc  = round(last_close * (1.0 + sigma_next * k_buy),  2)
-    next_sell_loc = round(last_close * (1.0 + sigma_next * k_sell), 2)
-
-    daily_inv  = total_invest / divisions if divisions > 0 else total_invest
-    avail_next = min(daily_inv, cash)
-    est_buy_qty  = math.floor(avail_next / next_buy_loc) if next_buy_loc > 0 else 0
-    est_sell_qty = int(round(holdings * sell_ratio_f)) if holdings > 0 else 0
+    res = _sd_run_ordersheet(
+        price_df=df, start_date=os_start,
+        sigma_period=sigma_period, k_buy=k_buy, k_sell=k_sell,
+        sell_ratio=sell_ratio, divisions=divisions, renewal=renewal,
+        pcr=pcr, lcr=lcr, initial_capital=capital,
+    )
+    if res is None:
+        return None
 
     return {
         "ticker":         ticker,
-        "last_close":     last_close,
-        "sigma_next":     sigma_next,
-        "next_buy_loc":   next_buy_loc,
-        "next_sell_loc":  next_sell_loc,
-        "holdings":       int(holdings),
-        "avg_cost":       float(avg_cost),
-        "cash":           float(cash),
-        "est_buy_qty":    int(est_buy_qty),
-        "est_sell_qty":   int(est_sell_qty),
-        "total_invest":   float(total_invest),  # 디버깅용
+        "last_close":     float(res.get("last_close", 0)),
+        "sigma_next":     float(res.get("sigma_next", 0)),
+        "next_buy_loc":   float(res.get("next_buy_loc", 0)),
+        "next_sell_loc":  float(res.get("next_sell_loc", 0)),
+        "holdings":       int(res.get("holdings", 0)),
+        "avg_cost":       float(res.get("avg_cost", 0)),
+        "cash":           float(res.get("cash", 0)),
+        "est_buy_qty":    int(res.get("est_buy_qty", 0)),
+        "est_sell_qty":   int(res.get("est_sell_qty", 0)),
+        "total_invest":   float(res.get("total_invest", capital)),
     }
+
 
 def build_sd_message(r: dict) -> str:
     today = datetime.today().strftime("%Y-%m-%d")
@@ -1368,35 +1203,33 @@ def main():
                 a_sell     = float(cfg.get("a_sell",     DEFAULT_A_SELL))
                 sell_ratio = float(cfg.get("sell_ratio", DEFAULT_SELL_RATIO))
                 divisions  = int(float(cfg.get("divisions", DEFAULT_DIVISIONS)))
+                n_days     = int(float(cfg.get("n_days",   2)))   # 사용자 N일 평균 설정
                 capital    = float(cfg.get("os_capital", DEFAULT_CAPITAL))
                 os_start   = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
                 _gs_sheet  = str(cfg.get("gs_sheet", tk)).strip() or tk
                 _label     = f"종가평균/{tk}"
 
                 try:
-                    df = fetch_prices(tk, os_start)
+                    res = calc_today_order(
+                        ticker=tk, os_start=os_start,
+                        a_buy=a_buy, a_sell=a_sell,
+                        sell_ratio=sell_ratio, divisions=divisions,
+                        capital=capital, n_days=n_days,
+                    )
                 except Exception as e:
-                    print(f"    ❌ [{tk}] 데이터 로드 실패 → {e}")
+                    print(f"    ❌ [{tk}] 계산 오류 → {e}")
                     fail_count += 1
                     if shared_gs_url:
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
-                                                  _label, status="ERROR", error_reason=f"데이터 로드 실패: {e}")
+                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
                     continue
 
-                if df.empty or len(df) < 2:
+                if not res:
                     print(f"    ❌ [{tk}] 데이터 부족")
                     fail_count += 1
                     if shared_gs_url:
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
                                                   _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                res = calc_today_order(df, a_buy, a_sell, sell_ratio, divisions, capital)
-                if not res:
-                    fail_count += 1
-                    if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
-                                                  _label, status="ERROR", error_reason="시뮬레이션 실패")
                     continue
 
                 # 이상치 감지
