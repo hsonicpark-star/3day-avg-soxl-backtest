@@ -47,6 +47,29 @@ from avg_close_engine import (
 
 
 # ══════════════════════════════════════════════
+# Presets DB (ticker별 추천 파라미터)
+# ══════════════════════════════════════════════
+_AVG_PRESETS_DB = {
+    "SOXL": [
+        {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
+         "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
+        {"label": "⚖️ 균형형",   "a_buy": -0.0048, "a_sell": 0.0096, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+         "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n수익률과 안정성의 중간"},
+        {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+         "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
+    ],
+    "USD": [
+        {"label": "🚀 공격형",    "a_buy": -0.0088, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
+         "help": "CAGR 37.64%  |  MDD 24.73%  |  Calmar 1.52\n높은 수익률 추구, 변동성 감수"},
+        {"label": "⚖️ 균형형",   "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
+         "help": "CAGR 36.57%  |  MDD 20.51%  |  Calmar 1.78\n수익률과 안정성의 중간"},
+        {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+         "help": "CAGR 31.37%  |  MDD 16.03%  |  Calmar 1.96\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
+    ],
+}
+
+
+# ══════════════════════════════════════════════
 # Engine Functions (engine.py로 이전됨)
 # ══════════════════════════════════════════════
 
@@ -863,26 +886,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _p5.metric("이동평균",          f"{_n_days + 1}일 평균")
 
         with st.expander("✏️ 파라미터 수정"):
-            # ── 추천 프리셋 (ticker별) ──
-            _ALL_PRESETS = {
-                "SOXL": [
-                    {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
-                     "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
-                    {"label": "⚖️ 균형형",   "a_buy": -0.0048, "a_sell": 0.0096, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-                     "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n수익률과 안정성의 중간"},
-                    {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-                     "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
-                ],
-                "USD": [
-                    {"label": "🚀 공격형",    "a_buy": -0.0088, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
-                     "help": "CAGR 37.64%  |  MDD 24.73%  |  Calmar 1.52\n높은 수익률 추구, 변동성 감수"},
-                    {"label": "⚖️ 균형형",   "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
-                     "help": "CAGR 36.57%  |  MDD 20.51%  |  Calmar 1.78\n수익률과 안정성의 중간"},
-                    {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-                     "help": "CAGR 31.37%  |  MDD 16.03%  |  Calmar 1.96\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
-                ],
-            }
-            _PARAM_PRESETS = _ALL_PRESETS.get(tk, [])
+            # ── 추천 프리셋 (ticker별) — 모듈 레벨 _AVG_PRESETS_DB 사용 ──
+            _PARAM_PRESETS = _AVG_PRESETS_DB.get(tk, [])
             if _PARAM_PRESETS:
                 st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
                 _pc1, _pc2, _pc3 = st.columns(3)
@@ -2480,32 +2485,59 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
     # ── 분석 실행: 등록된 ticker 전체 ─────────────────────────
     _perf_tk_settings = get_ticker_settings(prefix="", settings_key="ticker_settings", exclude_prefix="sd_")
 
-    def _resolve_params(ptk, pcfg):
-        if ptk == ticker:
-            return float(a_buy), float(a_sell), float(sell_ratio), int(divisions)
-        return (
-            float(pcfg.get("a_buy",      a_buy)),
-            float(pcfg.get("a_sell",     a_sell)),
-            float(pcfg.get("sell_ratio", sell_ratio)),
-            int  (pcfg.get("divisions",  divisions)),
-        )
+    st.markdown("사이드바의 파라미터와 기간 설정을 기반으로 성과를 분석합니다.")
 
-    if _perf_tk_settings:
-        st.caption(
-            f"등록된 계좌: **{', '.join(_perf_tk_settings.keys())}**  |  "
-            f"현재 사이드바 선택 ticker(**{ticker}**)는 사이드바 파라미터 그대로 적용 · "
-            f"나머지는 각자 저장된 파라미터 사용  |  기간·초기자본은 사이드바 설정 공통 적용"
-        )
+    # ── 파라미터 소스 선택 (사이드바 or 프리셋) ──
+    _avg_presets_for_tk = _AVG_PRESETS_DB.get(ticker, [])
+    _src_options = ["📐 사이드바 설정값"] + [pr["label"] for pr in _avg_presets_for_tk]
+    _src_sel = st.radio(
+        "파라미터 소스", _src_options, index=0, horizontal=True,
+        key="avg_intro_param_src",
+    )
+    _src_idx = _src_options.index(_src_sel)
+
+    if _src_idx == 0:
+        # 사이드바 설정값 사용
+        _use_ab = float(a_buy)
+        _use_as = float(a_sell)
+        _use_sr = float(sell_ratio)
+        _use_dv = int(divisions)
+        _use_nd = int(n_days)
     else:
-        st.caption("사이드바의 공통 설정(티커 · 파라미터 · 기간 · 초기 자본)을 기준으로 분석합니다.")
+        # 프리셋 값 사용 (기간/자본은 사이드바 유지)
+        _pr = _avg_presets_for_tk[_src_idx - 1]
+        _use_ab = float(_pr["a_buy"])
+        _use_as = float(_pr["a_sell"])
+        _use_sr = float(_pr["sell_ratio"])
+        _use_dv = int(_pr["divisions"])
+        _use_nd = int(_pr["n_days"])
+
+    # 적용 파라미터 미리보기
+    with st.expander("🔍 적용 파라미터 확인", expanded=False):
+        _pv1, _pv2, _pv3 = st.columns(3)
+        _pv1.markdown(f"**a_buy**: `{_use_ab:+.4f}`")
+        _pv2.markdown(f"**a_sell**: `{_use_as:+.4f}`")
+        _pv3.markdown(f"**이동평균**: `{_use_nd + 1}일`")
+        _pv4, _pv5, _pv6 = st.columns(3)
+        _pv4.markdown(f"**매도비율**: `{_use_sr:.0f}%`")
+        _pv5.markdown(f"**분할수**: `{_use_dv}회`")
+        _pv6.markdown(f"**대상 종목**: `{ticker}`")
+        st.caption(
+            f"기간 {start_date} ~ {end_date} · 자본 ${initial_capital:,.0f}"
+            + (f"  |  등록된 계좌: **{', '.join(_perf_tk_settings.keys())}** (각자 저장된 파라미터 적용)"
+               if _perf_tk_settings else "")
+        )
 
     if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
         st.session_state["perf_run_params"] = {
             "tk_settings": dict(_perf_tk_settings) if _perf_tk_settings else None,
-            "ticker": ticker, "a_buy": float(a_buy), "a_sell": float(a_sell),
-            "sell_ratio": float(sell_ratio), "divisions": int(divisions),
+            "ticker": ticker,
+            "a_buy": _use_ab, "a_sell": _use_as,
+            "sell_ratio": _use_sr, "divisions": _use_dv,
+            "n_days": _use_nd,
             "initial_capital": initial_capital,
             "start_date": start_date, "end_date": end_date,
+            "source_label": _src_sel,
         }
 
     def _do_render_perf():

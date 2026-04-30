@@ -2018,8 +2018,8 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
     st.divider()
 
     # -- 성과 분석 섹션 ------
-    st.subheader("전략 성과 분석")
-    st.caption("백테스트 탭의 현재 파라미터와 종목 설정을 기반으로 분석합니다.")
+    st.subheader("📊 전략 성과 분석")
+    st.markdown("사이드바의 파라미터와 기간 설정을 기반으로 성과를 분석합니다.")
 
     # -- 분석 종목 선택: 등록된 계좌 우선 ------
     _sd_all_for_perf  = _get_sd_ticker_settings()
@@ -2029,55 +2029,103 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         if _xt not in _perf_candidates:
             _perf_candidates.append(_xt)
 
-    with st.form(key="sd_perf_form"):
-        _pf1, _pf2 = st.columns(2)
-        _pf_s  = _pf1.date_input("분석 시작일", value=datetime(2014, 1, 1).date(),
-                                   min_value=datetime(2010, 1, 1).date(),
-                                   max_value=datetime.today().date(), key="sd_pf_s")
-        _pf_e  = _pf2.date_input("분석 종료일",  value=datetime.today().date(),
-                                   min_value=datetime(2010, 1, 1).date(),
-                                   max_value=datetime.today().date(), key="sd_pf_e")
-        _pf3, _pf4 = st.columns(2)
-        _pf_cap4 = _pf3.number_input("시작 자본 ($)", value=20000.0, step=1000.0, key="sd_pf_cap")
-        _pf_tk4  = _pf4.selectbox("분석 종목", _perf_candidates, key="sd_pf_tk",
-                                   help="주문표 탭에 등록된 계좌가 목록 상단에 표시됩니다.")
-        _submitted4 = st.form_submit_button("성과 분석 실행", type="primary", use_container_width=True)
+    # 분석 종목 선택 (멀티 ticker 지원 위해 유지)
+    _act_tk = st.selectbox(
+        "분석 종목", _perf_candidates, key="sd_pf_tk",
+        help="주문표 탭에 등록된 계좌가 목록 상단에 표시됩니다.",
+    )
 
-    if _submitted4 or st.session_state.get("sd_perf_done"):
-        if _submitted4:
-            st.session_state["sd_perf_done"] = True
+    # ── 파라미터 소스 선택 (사이드바 or 프리셋 or 등록 계좌) ──
+    _sd_presets_for_tk = _SD_PRESETS_DB.get(_act_tk, [])
+    _act_cfg = _sd_all_for_perf.get(_act_tk, {})
 
-        _act_tk = _pf_tk4 if _submitted4 else st.session_state.get("sd_pf_tk", ticker)
+    _src_options = ["📐 사이드바 설정값"]
+    if _act_cfg:
+        _src_options.append(f"📂 등록 계좌 ({_act_tk})")
+    _src_options.extend([f"{pr['label']}" if pr['label'].startswith(('🚀','⚖️','🛡️'))
+                          else f"🎯 {pr['label']}" for pr in _sd_presets_for_tk])
 
-        # -- 파라미터: 등록 계좌 -> 사이드바 순서로 우선 적용 --
-        _act_cfg = _sd_all_for_perf.get(_act_tk, {})
-        if _act_cfg:
-            _act_kb  = float(_act_cfg.get("k_buy",       sd_k_buy))
-            _act_ks  = float(_act_cfg.get("k_sell",      sd_k_sell))
-            _act_sp  = int  (_act_cfg.get("sigma_period", sd_sigma_period))
-            _act_rn  = int  (_act_cfg.get("renewal",      sd_renewal))
-            _act_sr  = float(_act_cfg.get("sell_ratio",  sell_ratio))
-            _act_div = int  (_act_cfg.get("divisions",   divisions))
-            _act_cap = float(_act_cfg.get("os_capital",  _pf_cap4))
-            st.info(
-                f"**{_act_tk} 등록 계좌 파라미터** 기준으로 분석합니다.  \n"
-                f"k_buy={_act_kb:.2f} / k_sell={_act_ks:.2f} / 매도비율={_act_sr:.0f}% / "
-                f"분할수={_act_div} / sigma기간={_act_sp}일  \n"
-                f"*(파라미터를 변경하려면 주문표 탭 -> 파라미터 수정에서 저장하세요)*"
-            )
+    _src_sel = st.radio(
+        "파라미터 소스", _src_options, index=0, horizontal=True,
+        key="sd_intro_param_src",
+    )
+    _src_idx = _src_options.index(_src_sel)
+
+    # 소스별 파라미터 결정
+    _has_acct = bool(_act_cfg)
+    if _src_idx == 0:
+        # 사이드바 설정값
+        _use_kb  = float(sd_k_buy)
+        _use_ks  = float(sd_k_sell)
+        _use_sp  = int(sd_sigma_period)
+        _use_rn  = int(sd_renewal)
+        _use_sr  = float(sell_ratio)
+        _use_div = int(divisions)
+    elif _has_acct and _src_idx == 1:
+        # 등록 계좌 값
+        _use_kb  = float(_act_cfg.get("k_buy",        sd_k_buy))
+        _use_ks  = float(_act_cfg.get("k_sell",       sd_k_sell))
+        _use_sp  = int  (_act_cfg.get("sigma_period", sd_sigma_period))
+        _use_rn  = int  (_act_cfg.get("renewal",      sd_renewal))
+        _use_sr  = float(_act_cfg.get("sell_ratio",   sell_ratio))
+        _use_div = int  (_act_cfg.get("divisions",    divisions))
+    else:
+        # 프리셋 값 (사이드바 sigma_period/renewal 유지)
+        _preset_idx = _src_idx - (2 if _has_acct else 1)
+        _pr = _sd_presets_for_tk[_preset_idx]
+        _use_kb  = float(_pr["k_buy"])
+        _use_ks  = float(_pr["k_sell"])
+        _use_sp  = int(sd_sigma_period)
+        _use_rn  = int(sd_renewal)
+        _use_sr  = float(_pr["sell_ratio"])
+        _use_div = int(_pr["divisions"])
+
+    # 적용 파라미터 미리보기
+    with st.expander("🔍 적용 파라미터 확인", expanded=False):
+        _pv1, _pv2, _pv3 = st.columns(3)
+        _pv1.markdown(f"**k_buy**: `{_use_kb:.2f}`")
+        _pv2.markdown(f"**k_sell**: `{_use_ks:.2f}`")
+        _pv3.markdown(f"**σ 기간**: `{_use_sp}일`")
+        _pv4, _pv5, _pv6 = st.columns(3)
+        _pv4.markdown(f"**매도비율**: `{_use_sr:.0f}%`")
+        _pv5.markdown(f"**분할수**: `{_use_div}회`")
+        _pv6.markdown(f"**갱신주기**: `{_use_rn}일`")
+        st.caption(
+            f"대상 종목 **{_act_tk}** · 기간 {start_date} ~ {end_date} · "
+            f"자본 ${initial_capital:,.0f}"
+        )
+
+    if st.button("▶ 성과 분석 실행", type="primary",
+                  key="sd_run_intro_perf", use_container_width=False):
+        st.session_state["sd_perf_done"] = True
+        st.session_state["sd_perf_run_params"] = {
+            "act_tk": _act_tk,
+            "kb": _use_kb, "ks": _use_ks,
+            "sp": _use_sp, "rn": _use_rn,
+            "sr": _use_sr, "div": _use_div,
+            "cap": float(initial_capital),
+            "s_date": str(start_date), "e_date": str(end_date),
+            "source_label": _src_sel,
+        }
+
+    if st.session_state.get("sd_perf_done"):
+        _prm = st.session_state.get("sd_perf_run_params", {})
+        if _prm:
+            _act_tk  = _prm["act_tk"]
+            _act_kb  = _prm["kb"]
+            _act_ks  = _prm["ks"]
+            _act_sp  = _prm["sp"]
+            _act_rn  = _prm["rn"]
+            _act_sr  = _prm["sr"]
+            _act_div = _prm["div"]
+            _act_cap = _prm["cap"]
+            _pf_s    = _prm["s_date"]
+            _pf_e    = _prm["e_date"]
+            st.success(f"✅ **{_prm['source_label']}** 기준 분석 결과 — {_act_tk}")
         else:
-            _act_kb  = sd_k_buy
-            _act_ks  = sd_k_sell
-            _act_sp  = sd_sigma_period
-            _act_rn  = sd_renewal
-            _act_sr  = sell_ratio
-            _act_div = divisions
-            _act_cap = _pf_cap4
-            st.warning(
-                f"**{_act_tk}**은 주문표 탭에 등록된 계좌가 없습니다.  \n"
-                f"사이드바 파라미터(k_buy={_act_kb:.2f} / k_sell={_act_ks:.2f})로 분석합니다.  \n"
-                f"*(주문표 탭에서 계좌를 등록하면 해당 파라미터로 자동 분석됩니다)*"
-            )
+            _act_kb, _act_ks, _act_sp, _act_rn = _use_kb, _use_ks, _use_sp, _use_rn
+            _act_sr, _act_div, _act_cap = _use_sr, _use_div, float(initial_capital)
+            _pf_s, _pf_e = str(start_date), str(end_date)
 
         _render_sd_perf_analysis(
             _act_tk, _act_kb, _act_ks, _act_sp, _act_rn,
