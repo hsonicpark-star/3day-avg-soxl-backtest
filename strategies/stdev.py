@@ -1148,23 +1148,31 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                else (f"-${abs(v):,.2f}" if (not pd.isna(v) and v < 0)
                else "-")
         )
-        # 매매 컬럼: BUY/SELL 표시
+        # 매매 컬럼: BUY/SELL/BUY+SELL 표시
+        # 표준편차매매는 buy_loc/sell_loc 둘 다 트리거 가능 (k_sell < k_buy 인 경우)
+        # → 같은 날 매수+매도 동시 발생 가능 → BUY+SELL 라벨로 명시
         def _fmt_trade(row):
             b = int(row.get("매수량", 0) or 0)
             s = int(row.get("매도량", 0) or 0)
             c = float(row.get("종가", 0) or 0)
+            if b > 0 and s > 0: return f"BUY+SELL (${c:.2f})"
             if b > 0: return f"BUY (${c:.2f})"
             if s > 0: return f"SELL (${c:.2f})"
             return "-"
         _sd_show["매매"] = _sd_daily.apply(_fmt_trade, axis=1)
 
         def _style_sd_daily(row):
-            if str(row.get("매매","")).startswith("BUY"):  return ["background-color:#FFF0F0"]*len(row)
-            if str(row.get("매매","")).startswith("SELL"): return ["background-color:#F0FFF4"]*len(row)
+            v = str(row.get("매매",""))
+            # BUY+SELL 동시 발생: 노란색 (혼합 표시)
+            if v.startswith("BUY+SELL"): return ["background-color:#FFF8E1"]*len(row)
+            if v.startswith("BUY"):  return ["background-color:#FFF0F0"]*len(row)
+            if v.startswith("SELL"): return ["background-color:#F0FFF4"]*len(row)
             return [""]*len(row)
         def _style_sd_action(val):
-            if str(val).startswith("BUY"):  return "color:#C62828;font-weight:bold"
-            if str(val).startswith("SELL"): return "color:#1565C0;font-weight:bold"
+            v = str(val)
+            if v.startswith("BUY+SELL"): return "color:#9A6700;font-weight:bold"  # 갈색/주황
+            if v.startswith("BUY"):  return "color:#C62828;font-weight:bold"
+            if v.startswith("SELL"): return "color:#1565C0;font-weight:bold"
             return "color:#999"
         def _style_sd_pnl(val):
             if isinstance(val, str) and val.startswith("+"): return "color:#1565C0;font-weight:bold"
