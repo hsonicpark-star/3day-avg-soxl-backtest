@@ -339,8 +339,9 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     bt_df = run_backtest(dss_params, soxl, mode_series_df, os_start, today_str,
                           capital_adj_history=_adj_hist)
 
-    # 최신 데이터
-    prev_close = float(soxl.iloc[-1]['Close'])
+    # 최신 데이터 — 엔진(dss_engine.run_backtest)과 동일하게 round(2) 적용
+    # yfinance float32 정밀도 차이로 매수주문가 1¢ 어긋남 방지
+    prev_close = round(float(soxl.iloc[-1]['Close']), 2)
     last_date = soxl.index[-1]
     mode_map = get_week_mode_map(mode_series_df, soxl.index)
     last_mode = mode_map.get(last_date, "AG")
