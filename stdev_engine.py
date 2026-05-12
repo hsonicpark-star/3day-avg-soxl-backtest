@@ -199,6 +199,8 @@ def run_backtest_stdev(
         assets=assets_arr, dates=df.index,
         sell_pnls_list=sell_pnls,
         cash_series=cash_arr,
+        # ordersheet 의 next-day tier=1 갱신 계산에 사용 (NaN 일 포함 전체 길이)
+        cum_realiz_hist=list(cum_realiz_hist),
     )
     if return_history:
         out["history"] = pd.DataFrame(history)
@@ -505,6 +507,19 @@ def run_stdev_ordersheet(
             cagr      = res["cagr"]
             mdd       = res["mdd"]
             final_asset = res["final_asset"]
+
+            # ── 내일 tier=1로 진입 시: renewal 갱신을 미리 적용 ──
+            # 엔진(run_backtest_stdev)은 다음 거래일 처리 시 tier가 1이 되면
+            # total_invest를 renewal 주기 동안의 누적실현 delta로 갱신한다.
+            # ordersheet는 미리 이를 적용해야 실제 백테스트와 동일한 daily_invest 산출 가능.
+            # (이전 버그: ordersheet는 갱신 전 total_invest를 사용 → est_buy_qty 불일치)
+            cum_realiz_hist = res.get("cum_realiz_hist", [])
+            if next_tier == 1 and len(cum_realiz_hist) > 0:
+                lookback = (renewal + 1) if len(cum_realiz_hist) > 2 * divisions else renewal
+                prev_cum = cum_realiz_hist[-lookback] if len(cum_realiz_hist) >= lookback else 0.0
+                cur_cum_realized = cum_realiz_hist[-1]
+                delta = cur_cum_realized - prev_cum
+                cur_invest += delta * (pcr if delta >= 0 else lcr)
 
     # -- 내일 예상 수량 --------
     daily_invest = cur_invest / divisions if divisions > 0 else cur_invest
