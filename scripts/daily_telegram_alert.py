@@ -477,9 +477,17 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
                     _rdate = _before[-1].strftime('%m/%d').replace('/0', '/').lstrip('0')
         _pos_data.append((pos, i, _is_stop, _remain, _rdate))
 
-    _reserve_tiers = {i + 1 for pos, i, _is_stop, _, _ in _pos_data if not _is_stop}
+    # ★ 마커: 전 거래일 매수 포지션만 (오늘 새로 예약해야 하는 것)
+    _latest_td = pd.Timestamp(_o['last_date'])
+    def _is_new_buy(pos):
+        try:
+            return pd.Timestamp(pos.get('buy_date')) == _latest_td
+        except Exception:
+            return False
+    _reserve_tiers = {i + 1 for pos, i, _is_stop, _, _ in _pos_data
+                      if not _is_stop and _is_new_buy(pos)}
 
-    # 오늘의 주문
+    # 오늘의 주문 (전체 매도/매수)
     lines.append(f"")
     lines.append(f"── 오늘의 주문 ──")
     for pos, i, _is_stop, _remain, _rdate in _pos_data:
@@ -499,17 +507,19 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
     else:
         lines.append(f"⚠️ 전 슬롯 사용 중 — 매수 없음")
 
-    # 예약 현황
+    # 오늘 새로 예약할 매도 (전 거래일 매수분만 — 이전 예약은 증권사에 살아있음)
     _reserve_lines = []
     for pos, i, _is_stop, _remain, _rdate in _pos_data:
         if _is_stop:
             continue
+        if not _is_new_buy(pos):
+            continue  # 전 거래일 매수분만
         _tier = i + 1
         _deadline = f"예약~{_rdate} (잔여 {_remain}일)" if _remain is not None and _rdate else ""
         _reserve_lines.append(f" ★티어{_tier}: ${pos['sell_target']:,.2f} {_deadline}")
     if _reserve_lines:
         lines.append(f"")
-        lines.append(f"── 예약 현황 ──")
+        lines.append(f"── 오늘 새로 예약 ──")
         lines.extend(_reserve_lines)
 
     if _o.get('latest_rsi'):

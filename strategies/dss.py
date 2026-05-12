@@ -189,18 +189,26 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
     else:
         lines.append(f"⚠️ 전 슬롯 사용 중 — 매수 없음")
 
-    # ── 예약 현황 (예약 중인 티어가 있을 때만) ──
+    # ── 오늘 새로 예약할 매도 (전 거래일 매수분만) ──
+    # 이전 매수 포지션의 예약은 이미 증권사에 살아있으므로 표시 안 함
+    _latest_td = pd.Timestamp(_o['last_date'])
     _reserve_lines = []
     for pos, i, _is_stop, _remain, _rdate in _pos_data:
         if _is_stop:
             continue
+        try:
+            _buy_d = pd.Timestamp(pos['buy_date'])
+        except Exception:
+            continue
+        if _buy_d != _latest_td:
+            continue  # 전 거래일 매수분만
         _tier = i + 1
         _deadline = f"예약~{_rdate} (잔여 {_remain}일)" if _remain is not None and _rdate else ""
         _reserve_lines.append(f" ★티어{_tier}: ${pos['sell_target']:,.2f} {_deadline}")
 
     if _reserve_lines:
         lines.append(f"")
-        lines.append(f"── 예약 현황 ──")
+        lines.append(f"── 오늘 새로 예약 ──")
         lines.extend(_reserve_lines)
 
     if _o.get('latest_rsi'):
@@ -2066,13 +2074,18 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                         "장 마감 시 조건 충족되면 체결됩니다. 미체결 시 자동 취소되므로 다음 날 다시 넣어주세요.")
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # 탭 2: 예약 주문 — LOC 예약 세팅 후 대기
+        # 탭 2: 예약 주문 — 오늘 새로 예약해야 할 것만 (전날 매수분 + MOC + LOC매수)
+        # 이전 매수 포지션의 예약LOC매도는 증권사에 이미 살아있으므로 표시 안 함
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━
         with _order_tab2:
             st.caption("LOC 예약 주문을 세팅해두면, 조건 도달 시 자동 체결됩니다. 손절일에는 MOC 매도로 전환하세요.")
+            st.caption("ℹ️ 예약LOC매도는 **전 거래일에 매수한 포지션만 표시** (이전 매수 포지션은 이미 증권사에 예약되어 있음)")
+            # 가장 최근 거래일에 매수한 포지션 식별 (오늘 새로 예약 필요)
+            _latest_td = pd.Timestamp(_os['last_date'])
             _reserve_orders = []
             for pos, i, _is_stop, _remain, _rdate in _pos_info:
                 if _is_stop:
+                    # MOC매도: 손절일 도래는 무조건 오늘 액션 필요
                     _reserve_orders.append({
                         "구분": "🔴 MOC매도", "시드": f"티어{i+1}",
                         "주문가": "시장가(종가)",
@@ -2082,13 +2095,20 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                                  f"({(_os['prev_close']/pos['buy_price']-1)*100:+.1f}%)"),
                     })
                 else:
+                    # 예약LOC매도: 전 거래일 매수분만 표시 (오늘 새로 걸어야 하는 것)
+                    try:
+                        _buy_d = pd.Timestamp(pos['buy_date'])
+                    except Exception:
+                        _buy_d = None
+                    if _buy_d is None or _buy_d != _latest_td:
+                        continue  # 이전 매수분은 스킵
                     _deadline = f"~{_rdate} (잔여 {_remain}일)" if _remain is not None and _rdate else "-"
                     _reserve_orders.append({
                         "구분": "예약LOC매도", "시드": f"티어{i+1}",
                         "주문가": f"${pos['sell_target']:,.2f}",
                         "수량": f"{pos['qty']:,}주",
                         "예약기한": _deadline,
-                        "비고": (f"매수가 ${pos['buy_price']:.2f} → "
+                        "비고": (f"전일({_buy_d.strftime('%m/%d')}) 매수 ${pos['buy_price']:.2f} → "
                                  f"목표 ${pos['sell_target']:.2f} "
                                  f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
                     })
