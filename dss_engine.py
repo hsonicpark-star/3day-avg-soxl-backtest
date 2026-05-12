@@ -361,18 +361,18 @@ def run_backtest(params: DSSParams,
     realized_pnl_since_renewal: list[float] = []  # 갱신 주기 내 실현손익
     cumulative_realized = 0.0                 # 누적 실현손익
 
-    records = []
-
-    for date in trading_days:
-        # ── 자본 조정 적용 (이전 날짜에 발생한 조정을 오늘 시작 시 반영) ──
-        # 시트 동작 기준: 4/17 시드증액 → 4/20 첫 매수부터 새 시드 사용
-        # 즉, adj_date < 오늘 인 조정은 오늘 트레이딩에 적용됨
-        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] < date:
+    # 백테스트 시작일 이전 발생 조정은 시작 전에 적용 (초기 자본에 반영)
+    if len(trading_days) > 0:
+        first_td = trading_days[0]
+        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] < first_td:
             _, _amt = pending_adjs[_adj_idx]
             capital += _amt
             cash += _amt
             _adj_idx += 1
 
+    records = []
+
+    for date in trading_days:
         close = soxl.loc[date, 'Close']
         if isinstance(close, pd.Series):
             close = close.iloc[0]
@@ -494,6 +494,21 @@ def run_backtest(params: DSSParams,
         total_asset = cash + holding_value
         eval_pnl = sum(p.qty * close - p.buy_amount - p.buy_fee for p in positions)
 
+        # ── 자본 조정 적용 (당일 날짜의 조정을 일중 매매 처리 후 반영) ──
+        # 시트 동작: 4/17 시드증액 → 4/17 매매는 옛 시드 사용, 4/20 첫 매수부터 새 시드
+        # 우리 엔진: 4/17 매매 후 (records.append 전에) 조정 적용 → 다음 날 자동 반영
+        # 또한 백테스트 마지막 날이 adj_date 인 경우도 정상 반영
+        _adj_today = 0.0
+        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] <= date:
+            _, _amt = pending_adjs[_adj_idx]
+            capital += _amt
+            cash += _amt
+            _adj_today += _amt
+            _adj_idx += 1
+        # capital/cash/total_asset 모두 조정 반영된 값으로 기록
+        if _adj_today != 0:
+            total_asset += _adj_today
+
         records.append({
             '날짜': date,
             '종가': close,
@@ -517,6 +532,7 @@ def run_backtest(params: DSSParams,
             '갱신금액': renewal_amount if renewal_happened else 0,
             '누적매도': sell_count,
             '매도내역': sold_positions if sold_positions else None,
+            '자본조정': _adj_today if _adj_today != 0 else 0,
         })
 
         prev_close = close
@@ -623,20 +639,22 @@ def run_backtest_fast(params: DSSParams,
         pending_adjs.sort(key=lambda x: x[0])
     _adj_idx = 0
 
+    # 백테스트 시작일 이전 발생 조정은 미리 반영
+    if n_days > 0:
+        first_td = trade_dates[0]
+        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] < first_td:
+            _, _amt = pending_adjs[_adj_idx]
+            capital += _amt
+            cash += _amt
+            _adj_idx += 1
+
     # MDD 계산용
     peak_asset = init_cap
     max_dd = 0.0
     final_asset = init_cap
 
     for i in range(n_days):
-        # 자본 조정 적용 (이전 날짜 발생 조정을 오늘 시작 시 반영)
         cur_date = trade_dates[i]
-        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] < cur_date:
-            _, _amt = pending_adjs[_adj_idx]
-            capital += _amt
-            cash += _amt
-            _adj_idx += 1
-
         close = closes[i]
         is_ag = mode_arr[i]
 
@@ -697,6 +715,15 @@ def run_backtest_fast(params: DSSParams,
         # ── 총자산 & MDD ──
         holding = sum(p[2] * close for p in positions)
         total = cash + holding
+
+        # ── 당일 자본 조정 (매매 후 반영) ──
+        while _adj_idx < len(pending_adjs) and pending_adjs[_adj_idx][0] <= cur_date:
+            _, _amt = pending_adjs[_adj_idx]
+            capital += _amt
+            cash += _amt
+            total += _amt
+            _adj_idx += 1
+
         if total > peak_asset:
             peak_asset = total
         dd = (total - peak_asset) / peak_asset if peak_asset > 0 else 0
