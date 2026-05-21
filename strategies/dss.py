@@ -41,7 +41,8 @@ from dss_engine import (
     load_price_data, get_weekly_closes, calc_weekly_rsi,
     build_weekly_rsi_series, build_mode_series, determine_mode,
     get_week_mode_map,
-    run_backtest, run_backtest_fast, DSSParams
+    run_backtest, run_backtest_fast, DSSParams,
+    next_us_trading_days,
 )
 
 from common.config import _IS_CLOUD, _CONFIG, load_config, save_config, \
@@ -130,10 +131,10 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
     ]
 
-    # 거래일 인덱스 (예약매도 잔여일 계산) — 미래 영업일 보정 포함
+    # 거래일 인덱스 (예약매도 잔여일 계산) — NYSE 휴장일 제외한 미래 거래일 보정
     try:
         _raw_idx = get_soxl_data().index
-        _extra_bdays = pd.bdate_range(_raw_idx[-1] + pd.Timedelta(days=1), periods=60)
+        _extra_bdays = next_us_trading_days(_raw_idx[-1], 60)
         _tdays = _raw_idx.append(_extra_bdays)
     except Exception:
         _tdays = None
@@ -1972,10 +1973,10 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             unsafe_allow_html=True,
         )
 
-        # 거래일 인덱스 (잔여일 계산용) — 미래 영업일 보정 포함
+        # 거래일 인덱스 (잔여일 계산용) — NYSE 휴장일 제외한 미래 거래일 보정
         try:
             _raw_idx = get_soxl_data().index
-            _extra_bdays = pd.bdate_range(_raw_idx[-1] + pd.Timedelta(days=1), periods=60)
+            _extra_bdays = next_us_trading_days(_raw_idx[-1], 60)
             _trading_days_idx = _raw_idx.append(_extra_bdays)
         except Exception:
             _trading_days_idx = None

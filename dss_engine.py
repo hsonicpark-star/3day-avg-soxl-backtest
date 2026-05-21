@@ -205,21 +205,117 @@ def get_trading_days(daily_data: pd.DataFrame) -> pd.DatetimeIndex:
     return pd.to_datetime(daily_data.index)
 
 
+def _nth_weekday_of_month(year: int, month: int, weekday: int, n: int):
+    """year/month의 n번째 weekday(0=월요일)를 반환."""
+    from datetime import date as _d, timedelta as _td
+    first = _d(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + _td(days=offset + 7 * (n - 1))
+
+
+def _last_weekday_of_month(year: int, month: int, weekday: int):
+    """year/month의 마지막 weekday를 반환."""
+    from datetime import date as _d, timedelta as _td
+    if month == 12:
+        last = _d(year + 1, 1, 1) - _td(days=1)
+    else:
+        last = _d(year, month + 1, 1) - _td(days=1)
+    offset = (last.weekday() - weekday) % 7
+    return last - _td(days=offset)
+
+
+def _easter_date(year: int):
+    """Anonymous Gregorian algorithm으로 부활절 일자 반환."""
+    from datetime import date as _d
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * m + 114, 31)
+    return _d(year, month, day + 1)
+
+
+def _us_market_holidays_year(year: int):
+    """해당 연도의 NYSE 휴장일 집합 반환."""
+    from datetime import date as _d, timedelta as _td
+    hs = set()
+    hs.add(_d(year, 1, 1))                              # New Year's Day
+    hs.add(_nth_weekday_of_month(year, 1, 0, 3))        # MLK Day (1월 셋째 월)
+    hs.add(_nth_weekday_of_month(year, 2, 0, 3))        # Presidents' Day (2월 셋째 월)
+    hs.add(_easter_date(year) - _td(days=2))            # Good Friday
+    hs.add(_last_weekday_of_month(year, 5, 0))          # Memorial Day (5월 마지막 월)
+    hs.add(_d(year, 6, 19))                              # Juneteenth
+    hs.add(_d(year, 7, 4))                               # Independence Day
+    hs.add(_nth_weekday_of_month(year, 9, 0, 1))        # Labor Day (9월 첫째 월)
+    hs.add(_nth_weekday_of_month(year, 11, 3, 4))       # Thanksgiving (11월 넷째 목)
+    hs.add(_d(year, 12, 25))                             # Christmas
+    # 주말과 겹치는 휴일의 observed 처리
+    observed = set()
+    for h in hs:
+        if h.weekday() == 5:    # 토요일 → 금요일
+            observed.add(h - _td(days=1))
+        elif h.weekday() == 6:  # 일요일 → 월요일
+            observed.add(h + _td(days=1))
+    return hs | observed
+
+
+def _is_us_trading_day(d) -> bool:
+    """주말/NYSE 휴장일이 아닌 거래일이면 True."""
+    d = d.date() if hasattr(d, 'date') else d
+    if d.weekday() >= 5:  # 주말
+        return False
+    return d not in _us_market_holidays_year(d.year)
+
+
+def next_us_trading_days(start_date, n_days: int) -> pd.DatetimeIndex:
+    """start_date 다음 영업일부터 n개의 NYSE 거래일 반환.
+    Memorial Day, Good Friday 등 NYSE 휴장일 자동 제외.
+
+    Args:
+        start_date: 기준일 (이 날짜 다음부터 카운트 시작)
+        n_days: 반환할 거래일 개수
+    """
+    result = []
+    current = pd.Timestamp(start_date) + pd.Timedelta(days=1)
+    safety = 0
+    while len(result) < n_days and safety < n_days * 3 + 30:
+        if _is_us_trading_day(current):
+            result.append(current)
+        current += pd.Timedelta(days=1)
+        safety += 1
+    return pd.DatetimeIndex(result)
+
+
 def workday_offset(start_date: pd.Timestamp, n_days: int,
                    trading_days: pd.DatetimeIndex) -> pd.Timestamp:
     """start_date로부터 n_days 거래일 이후의 날짜 반환.
-    데이터 범위를 넘어서면 영업일(bday) 달력으로 보정."""
+    데이터 범위를 넘어서면 NYSE 휴장일을 제외한 거래일 계산으로 보정.
+    (Memorial Day, Good Friday 등 휴장일을 정확히 처리)"""
     future = trading_days[trading_days > start_date]
     if len(future) >= n_days:
         return future[n_days - 1]
-    # 데이터 부족 시 영업일 달력으로 보정
+    # 데이터 부족 시: 마지막 known 거래일부터 NYSE 거래일 기준 day-by-day 진행
     covered = len(future)
     remaining = n_days - covered
     last_known = future[-1] if covered > 0 else start_date
-    extra = pd.bdate_range(last_known + pd.Timedelta(days=1), periods=remaining + 5)
-    if remaining <= len(extra):
-        return extra[remaining - 1]
-    return extra[-1] if len(extra) > 0 else last_known
+
+    current = pd.Timestamp(last_known) + pd.Timedelta(days=1)
+    count = 0
+    while count < remaining:
+        if _is_us_trading_day(current):
+            count += 1
+            if count == remaining:
+                return current
+        current += pd.Timedelta(days=1)
+        # 안전장치: 무한루프 방지 (1년 이상 가면 중단)
+        if (current - pd.Timestamp(last_known)).days > 400:
+            break
+    return current
 
 
 # ──────────────────────────────────────────────

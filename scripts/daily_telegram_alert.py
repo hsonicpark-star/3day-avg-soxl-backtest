@@ -450,9 +450,11 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
     _today_ts = pd.Timestamp(datetime.today().date())
     _tdays = pd.DatetimeIndex([])
     try:
+        from dss_engine import next_us_trading_days
         _soxl = fetch_prices("SOXL", "2024-01-01")
         _raw_idx = _soxl.index
-        _extra_bdays = pd.bdate_range(_raw_idx[-1] + pd.Timedelta(days=1), periods=60)
+        # NYSE 휴장일 제외한 미래 60거래일 추가 (Memorial Day 등 제외)
+        _extra_bdays = next_us_trading_days(_raw_idx[-1], 60)
         _tdays = _raw_idx.append(_extra_bdays)
     except Exception:
         pass
