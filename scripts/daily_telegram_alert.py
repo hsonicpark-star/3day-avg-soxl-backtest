@@ -1180,6 +1180,22 @@ def main():
         print("❌ ADMIN_SHEET_URL 환경변수가 없습니다.")
         return
 
+    # ── 미국 휴장일 체크: NYSE 휴장이면 발송 스킵 ──
+    # (Memorial Day, Independence Day, Thanksgiving, Christmas 등)
+    # FORCE_RUN=1 환경변수 설정 시 휴장일에도 발송 (테스트용)
+    try:
+        from dss_engine import _is_us_trading_day
+        from datetime import datetime as _dt
+        # GitHub Actions runner는 UTC. trigger time 03:00 UTC = KST 12:00.
+        # 이 시점 UTC 날짜 = 오늘의 KST 날짜 = 오늘의 US 시장 개장일
+        today_date = _dt.utcnow().date()
+        if not _is_us_trading_day(today_date) and not os.environ.get("FORCE_RUN", "").strip():
+            print(f"🏖️ {today_date} 는 NYSE 휴장일 — 발송 스킵 (FORCE_RUN=1 로 강제 실행 가능)")
+            return
+    except Exception as _e:
+        # 휴장일 체크 실패해도 발송은 진행 (보수적)
+        print(f"⚠️ 휴장일 체크 실패 (계속 진행): {_e}")
+
     print("👥 사용자 목록 로드 중...")
     client = get_gspread_client()
     users  = get_users(client, sheet_url)
