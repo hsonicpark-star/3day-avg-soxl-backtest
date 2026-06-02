@@ -51,14 +51,14 @@ from avg_close_engine import (
 # ══════════════════════════════════════════════
 _AVG_PRESETS_DB = {
     "SOXL": [
-        {"label": "🚀 공격형",    "a_buy": -0.0050, "a_sell": 0.0095, "sell_ratio": 100.0, "divisions": 3, "n_days": 2,
-         "help": "CAGR 62.60%  |  MDD 35.17%  |  Calmar 1.78\n3분할 + 100% 매도. CAGR 최고 (종가평균 한계 영역)\n2014-01-02 ~ 2026-06-02 grid 결과"},
+        {"label": "🚀 공격형",    "a_buy": -0.0055, "a_sell": 0.00875, "sell_ratio": 100.0, "divisions": 3, "n_days": 2,
+         "help": "CAGR 61.81%  |  MDD 33.11%  |  Calmar 1.87\n3분할 + 100% 매도. CAGR 최고 (종가평균 한계 영역)\nv3 grid에서 MDD -2%p 개선"},
         {"label": "⚖️ 균형형",   "a_buy": -0.0050, "a_sell": 0.0095, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
          "help": "CAGR 55.23%  |  MDD 28.52%  |  Calmar 1.94\n4분할 + 100% 매도. CAGR과 안정성의 균형\n수익률과 안정성의 중간"},
-        {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0065, "a_sell": 0.0075, "sell_ratio": 95.0, "divisions": 5, "n_days": 2,
-         "help": "CAGR 45.60%  |  MDD 22.57%  |  Calmar 2.02\n5분할 + 95% 매도. Calmar 1위 (15,000개 중)\n안정적 운용 추천 — 종가평균 최고 효율"},
-        {"label": "🪨 Ultra-Safe형", "a_buy": -0.0110, "a_sell": 0.0075, "sell_ratio": 90.0, "divisions": 7, "n_days": 2,
-         "help": "CAGR 31.24%  |  MDD 16.02%  |  Calmar 1.95\n7분할 + 90% 매도. MDD 16% 이내 — 매우 안정\n변동성 큰 시기에도 견디기 좋음"},
+        {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0065, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+         "help": "CAGR 45.43%  |  MDD 22.96%  |  Calmar 1.98\n5분할 + 100% 매도. 안정형 — 종가평균 클래식\n검증된 최적 영역 (변경 불요)"},
+        {"label": "🪨 Ultra-Safe형", "a_buy": -0.01275, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 7, "n_days": 2,
+         "help": "CAGR 29.36%  |  MDD 15.61%  |  Calmar 1.88\n7분할 + 100% 매도. MDD 15.6% 이내 — 매우 안정\nv3 grid에서 MDD 16→15.6%로 더 안전"},
     ],
     "USD": [
         {"label": "🚀 공격형",    "a_buy": -0.0088, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
