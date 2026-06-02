@@ -213,9 +213,12 @@ _SD_PRESETS_DB = {
         {"label": "안정형",
          "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0, "divisions": 5,
          "help": "CAGR 57.40%  |  MDD 28.02%  |  Calmar 2.05\n최저 MDD + 최고 Calmar -- 안정적 운용 추천"},
+        {"label": "Ultra-Safe형",
+         "k_buy": 0.55, "k_sell": 0.30, "sell_ratio": 95.0, "divisions": 7,
+         "help": "CAGR 35.81%  |  MDD 17.40%  |  Calmar 2.06\n7분할 + 95% 매도로 매우 보수적. MDD 17% 이내\n변동성 22% (안정형 35%)로 심리 안정\n(권장: sigma_period=2일, 갱신주기=7)"},
         {"label": "Sonic형",
-         "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 100.0, "divisions": 4,
-         "help": "CAGR 67.24%  |  MDD 36.19%  |  Calmar 1.86\n100% 매도 + 4분할로 매우 공격적. 자산 증식 극대화\n(Calmar는 안정형보다 낮지만 절대 수익 약 2배)\n(권장: sigma_period=2일, 갱신주기=5)"},
+         "k_buy": 0.55, "k_sell": 0.45, "sell_ratio": 95.0, "divisions": 3,
+         "help": "CAGR 77.25%  |  MDD 35.80%  |  Calmar 2.16\n3분할 + 95% 매도. 19,200개 중 Calmar 1위\nCAGR 최고, 절대 수익 극대화\n(권장: sigma_period=2일, 갱신주기=3)"},
     ],
 }
 
