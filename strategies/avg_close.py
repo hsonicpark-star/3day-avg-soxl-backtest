@@ -51,12 +51,14 @@ from avg_close_engine import (
 # ══════════════════════════════════════════════
 _AVG_PRESETS_DB = {
     "SOXL": [
-        {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
-         "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
-        {"label": "⚖️ 균형형",   "a_buy": -0.0048, "a_sell": 0.0096, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-         "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n수익률과 안정성의 중간"},
-        {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-         "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
+        {"label": "🚀 공격형",    "a_buy": -0.0050, "a_sell": 0.0095, "sell_ratio": 100.0, "divisions": 3, "n_days": 2,
+         "help": "CAGR 62.60%  |  MDD 35.17%  |  Calmar 1.78\n3분할 + 100% 매도. CAGR 최고 (종가평균 한계 영역)\n2014-01-02 ~ 2026-06-02 grid 결과"},
+        {"label": "⚖️ 균형형",   "a_buy": -0.0050, "a_sell": 0.0095, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
+         "help": "CAGR 55.23%  |  MDD 28.52%  |  Calmar 1.94\n4분할 + 100% 매도. CAGR과 안정성의 균형\n수익률과 안정성의 중간"},
+        {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0065, "a_sell": 0.0075, "sell_ratio": 95.0, "divisions": 5, "n_days": 2,
+         "help": "CAGR 45.60%  |  MDD 22.57%  |  Calmar 2.02\n5분할 + 95% 매도. Calmar 1위 (15,000개 중)\n안정적 운용 추천 — 종가평균 최고 효율"},
+        {"label": "🪨 Ultra-Safe형", "a_buy": -0.0110, "a_sell": 0.0075, "sell_ratio": 90.0, "divisions": 7, "n_days": 2,
+         "help": "CAGR 31.24%  |  MDD 16.02%  |  Calmar 1.95\n7분할 + 90% 매도. MDD 16% 이내 — 매우 안정\n변동성 큰 시기에도 견디기 좋음"},
     ],
     "USD": [
         {"label": "🚀 공격형",    "a_buy": -0.0088, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
@@ -890,8 +892,9 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _PARAM_PRESETS = _AVG_PRESETS_DB.get(tk, [])
             if _PARAM_PRESETS:
                 st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
-                _pc1, _pc2, _pc3 = st.columns(3)
-                for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _PARAM_PRESETS)):
+                # 프리셋 개수에 맞춰 동적으로 컬럼 생성 (3개 또는 4개 등)
+                _preset_cols = st.columns(len(_PARAM_PRESETS))
+                for _pi, (_pcol, _pr) in enumerate(zip(_preset_cols, _PARAM_PRESETS)):
                     if _pcol.button(_pr["label"], key=f"preset_{_pi}_{key_sfx}",
                                     help=_pr["help"], use_container_width=True):
                         st.session_state[f"edit_abuy_{key_sfx}"]  = _pr["a_buy"]
