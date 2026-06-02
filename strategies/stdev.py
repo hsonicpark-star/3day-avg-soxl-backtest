@@ -206,16 +206,16 @@ _SD_PRESETS_DB = {
     "SOXL": [
         {"label": "공격형",
          "k_buy": 0.70, "k_sell": 0.50, "sell_ratio": 60.0, "divisions": 5,
-         "help": "CAGR 60.19%  |  MDD 41.26%  |  Calmar 1.46\n높은 수익률 추구, 변동성 감수"},
+         "help": "CAGR 70.50%  |  MDD 41.26%  |  Calmar 1.71\n높은 수익률 추구, 변동성 감수"},
         {"label": "균형형",
          "k_buy": 0.65, "k_sell": 0.50, "sell_ratio": 75.0, "divisions": 5,
-         "help": "CAGR 53.89%  |  MDD 33.62%  |  Calmar 1.60\n수익률과 안정성의 중간"},
+         "help": "CAGR 62.69%  |  MDD 33.61%  |  Calmar 1.87\n수익률과 안정성의 중간"},
         {"label": "안정형",
          "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0, "divisions": 5,
-         "help": "CAGR 48.64%  |  MDD 28.02%  |  Calmar 1.74\n최저 MDD + 최고 Calmar -- 안정적 운용 추천"},
+         "help": "CAGR 57.40%  |  MDD 28.02%  |  Calmar 2.05\n최저 MDD + 최고 Calmar -- 안정적 운용 추천"},
         {"label": "Sonic형",
          "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 100.0, "divisions": 4,
-         "help": "CAGR 75.33%  |  MDD 34.44%  |  Calmar 2.19\n100% 매도 + 4분할로 매우 공격적. CAGR +17%p\n(권장: sigma_period=2일, 갱신주기=5)"},
+         "help": "CAGR 67.24%  |  MDD 36.19%  |  Calmar 1.86\n100% 매도 + 4분할로 매우 공격적. 자산 증식 극대화\n(Calmar는 안정형보다 낮지만 절대 수익 약 2배)\n(권장: sigma_period=2일, 갱신주기=5)"},
     ],
 }
 
