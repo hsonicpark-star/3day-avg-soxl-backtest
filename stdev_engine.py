@@ -155,6 +155,10 @@ def run_backtest_stdev(
         cash_arr[i]   = cash
 
         if return_history:
+            # 매도 시 손익률 계산에 사용할 "매도 직전 평단가" 별도 기록
+            # (sell_ratio=100% 전량 매도 시 avg_cost가 0이 되어 손익률 계산이 망가지는 문제 해결)
+            _sell_avg_cost = round(prev_avg, 4) if sell_qty > 0 and prev_avg > 0 else None
+            _pnl_pct = round((close / prev_avg - 1) * 100, 4) if sell_qty > 0 and prev_avg > 0 else None
             history.append({
                 "날짜":       df.index[i].date(),
                 "티어":       tier,
@@ -166,7 +170,9 @@ def run_backtest_stdev(
                 "매도량":    sell_qty,
                 "보유량":    holdings,
                 "평단가":    round(avg_cost, 4),
+                "매도전평단가": _sell_avg_cost,
                 "실현손익":  round(sell_amt - prev_avg * sell_qty if sell_qty > 0 else 0, 2),
+                "실현손익률(%)": _pnl_pct,
                 "누적실현":  round(cum_realized, 2),
                 "총투자금":  round(total_invest, 2),
                 "예수금":    round(cash, 2),
@@ -405,7 +411,26 @@ def run_stdev_tier_analysis(hist_df, div4: int) -> list:
         # -- 매도 처리 (엔진 순서: 매도 -> 매수)
         if sell_qty > 0:
             n_tier    = max(1, min(buys_since_last_sell, div4))
-            pnl       = (close / avg_cost - 1) * 100 if avg_cost > 0 else 0.0
+            # 매도 손익률: "매도전평단가" 우선 사용 (sell_ratio=100% 호환).
+            # 폴백: 행의 평단가 (구버전 history 호환).
+            # 두 경우 모두 None/0이면 "실현손익률(%)" 컬럼 사용.
+            _sell_avg = row.get("매도전평단가")
+            try:
+                _sell_avg_f = float(_sell_avg) if _sell_avg is not None and not pd.isna(_sell_avg) else 0.0
+            except Exception:
+                _sell_avg_f = 0.0
+            if _sell_avg_f <= 0:
+                # 폴백: 행의 평단가 (구 데이터 호환)
+                _sell_avg_f = avg_cost
+            if _sell_avg_f > 0:
+                pnl = (close / _sell_avg_f - 1) * 100
+            else:
+                # 그래도 안 되면 실현손익률 컬럼 시도
+                _pnl_col = row.get("실현손익률(%)")
+                try:
+                    pnl = float(_pnl_col) if _pnl_col is not None and not pd.isna(_pnl_col) else 0.0
+                except Exception:
+                    pnl = 0.0
             hold_days = (idx - first_buy_idx_since) if first_buy_idx_since is not None else 0
 
             events.append({
