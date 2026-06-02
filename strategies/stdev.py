@@ -213,6 +213,9 @@ _SD_PRESETS_DB = {
         {"label": "안정형",
          "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0, "divisions": 5,
          "help": "CAGR 48.64%  |  MDD 28.02%  |  Calmar 1.74\n최저 MDD + 최고 Calmar -- 안정적 운용 추천"},
+        {"label": "Sonic형",
+         "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 100.0, "divisions": 4,
+         "help": "CAGR 75.33%  |  MDD 34.44%  |  Calmar 2.19\n100% 매도 + 4분할로 매우 공격적. CAGR +17%p\n(권장: sigma_period=2일, 갱신주기=5)"},
     ],
 }
 
@@ -793,8 +796,10 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _param_presets = _SD_PRESETS_DB.get(tk, [])
             if _param_presets:
                 st.caption("추천 프리셋 -- 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
-                _pp1, _pp2, _pp3 = st.columns(3)
-                for _pi, (_ppc, _pp) in enumerate(zip([_pp1, _pp2, _pp3], _param_presets)):
+                # 프리셋 개수에 맞춰 동적으로 컬럼 생성 (3개 또는 4개 등)
+                _n_presets = len(_param_presets)
+                _preset_cols = st.columns(_n_presets)
+                for _pi, (_ppc, _pp) in enumerate(zip(_preset_cols, _param_presets)):
                     if _ppc.button(_pp["label"], key=f"sd_preset_{_pi}_{key_sfx}",
                                    help=_pp["help"], use_container_width=True):
                         st.session_state[f"sd_ekb_{key_sfx}"]  = _pp["k_buy"]
