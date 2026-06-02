@@ -109,6 +109,44 @@ def _load_sd_daily_history(tk: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def _clear_sd_daily_history(tk: str):
+    """매매기록 완전 삭제 (로컬 CSV + Cloud GSheets 워크시트).
+    Returns: (local_deleted: bool, cloud_deleted: bool, error: str)
+    """
+    local_deleted = False
+    cloud_deleted = False
+    error_msg = ""
+
+    # 로컬 CSV 삭제
+    try:
+        f = _get_sd_history_file(tk)
+        if f.exists():
+            f.unlink()
+            local_deleted = True
+    except Exception as e:
+        error_msg = f"로컬 CSV 삭제 실패: {e}"
+
+    # Cloud GSheets 워크시트 삭제
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws_name = f"sd_{tk}_매매기록"
+                try:
+                    ws = sh.worksheet(ws_name)
+                    sh.del_worksheet(ws)
+                    cloud_deleted = True
+                except _gs.WorksheetNotFound:
+                    cloud_deleted = True   # 이미 없음 → 성공으로 간주
+        except Exception as e:
+            error_msg += f" / GSheets 삭제 실패: {e}"
+
+    return local_deleted, cloud_deleted, error_msg
+
+
 def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
     """시뮬레이션 히스토리 중 새 날짜만 누적 저장 (B방식).
     로컬: CSV 저장. Cloud: CSV + Google Sheets 'sd_{tk}_매매기록' 워크시트 동기."""
@@ -953,6 +991,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         st.markdown("---")
         st.markdown("**전체 초기화**")
         st.caption("시작일/자본금/조정 이력을 모두 초기화합니다.")
+        # 옵션: 매매기록 함께 삭제
+        _sreset_wipe_hist = st.checkbox(
+            "🗑️ 매매기록(GSheet 워크시트 + 로컬 CSV)도 완전 삭제",
+            value=False, key=f"sd_reset_wipe_{key_sfx}",
+            help="체크 시 'sd_{ticker}_매매기록' GSheet 시트와 로컬 history CSV가 모두 삭제됩니다.\n"
+                 "(파라미터 변경 + 완전 새 시작 시 권장)",
+        )
         _src1, _src2, _src3 = st.columns(3)
         _sreset_start   = _src1.date_input("새 시작일", value=datetime.today().date(),
                                             key=f"sd_reset_start_{key_sfx}")
@@ -962,8 +1007,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         key=f"sd_do_reset_{key_sfx}", type="secondary"):
             st.session_state[f"sd_reset_confirm_{key_sfx}"] = True
         if st.session_state.get(f"sd_reset_confirm_{key_sfx}", False):
+            _wipe_msg = " / **매매기록 전체 삭제**" if _sreset_wipe_hist else ""
             st.warning(f"**정말 초기화하시겠습니까?**  \n"
-                       f"시작일: {_sreset_start} / 자본금: ${_sreset_capital:,.0f} / 조정 이력 전체 삭제")
+                       f"시작일: {_sreset_start} / 자본금: ${_sreset_capital:,.0f} / 조정 이력 전체 삭제{_wipe_msg}")
             _sc1r, _sc2r = st.columns(2)
             if _sc1r.button("확인 (초기화)", type="primary", key=f"sd_confirm_reset_{key_sfx}"):
                 _save_sd_ticker_setting(tk, {
@@ -971,8 +1017,18 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "os_capital": float(_sreset_capital),
                     "capital_adj_history": "[]",
                 })
+                # 매매기록 삭제 (옵션)
+                _hist_msg = ""
+                if _sreset_wipe_hist:
+                    _local_ok, _cloud_ok, _err = _clear_sd_daily_history(tk)
+                    if _err:
+                        _hist_msg = f"\n⚠️ 매매기록 삭제 일부 실패: {_err}"
+                    else:
+                        _hist_msg = "\n🗑️ 매매기록 완전 삭제 완료 (GSheet 워크시트 + 로컬 CSV)"
+                # 주문표 캐시도 초기화
+                st.session_state.pop(f"sd_os_res_{key_sfx}", None)
                 st.session_state[f"sd_reset_confirm_{key_sfx}"] = False
-                st.success(f"초기화 완료! 시작일: {_sreset_start} / 자본금: ${_sreset_capital:,.0f}")
+                st.success(f"초기화 완료! 시작일: {_sreset_start} / 자본금: ${_sreset_capital:,.0f}{_hist_msg}")
                 st.rerun()
             if _sc2r.button("취소", key=f"sd_cancel_reset_{key_sfx}"):
                 st.session_state[f"sd_reset_confirm_{key_sfx}"] = False
