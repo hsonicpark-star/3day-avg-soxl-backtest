@@ -129,7 +129,7 @@ with st.sidebar:
         col1, col2 = st.columns(2)
         start_date = col1.date_input(
             "시작 일",
-            datetime(2010, 3, 15).date() if _is_stdev else datetime(2014, 1, 1).date(),
+            datetime(2014, 1, 2).date(),
         )
         end_date = col2.date_input("종료 일", datetime.today().date())
         initial_capital = st.number_input(
