@@ -243,20 +243,25 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
 _SD_PRESETS_DB = {
     "SOXL": [
         {"label": "공격형",
-         "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0, "divisions": 3,
-         "help": "CAGR 83.59%  |  MDD 41.06%  |  Calmar 2.04\n3분할 + 85% 매도로 매우 공격적. CAGR 최고\n(권장: sigma_period=2일, 갱신주기=3)"},
+         "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0,
+         "divisions": 3, "renewal": 3,
+         "help": "CAGR 83.59%  |  MDD 41.06%  |  Calmar 2.04\n3분할 + 85% 매도로 매우 공격적. CAGR 최고\n(σ기간=2일, 갱신주기=3 자동 적용)"},
         {"label": "균형형",
-         "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 90.0, "divisions": 6,
-         "help": "CAGR 65.88%  |  MDD 31.29%  |  Calmar 2.11\n6분할 + 90% 매도로 균형. 다른 프리셋과 다른 매매 패턴\n(권장: sigma_period=2일, 갱신주기=10)"},
+         "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 90.0,
+         "divisions": 6, "renewal": 10,
+         "help": "CAGR 65.88%  |  MDD 31.29%  |  Calmar 2.11\n6분할 + 90% 매도로 균형. 다른 프리셋과 다른 매매 패턴\n(σ기간=2일, 갱신주기=10 자동 적용)"},
         {"label": "안정형",
-         "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0, "divisions": 5,
-         "help": "CAGR 57.40%  |  MDD 28.02%  |  Calmar 2.05\n안정적 운용 추천 (검증된 클래식)"},
+         "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0,
+         "divisions": 5, "renewal": 5,
+         "help": "CAGR 57.40%  |  MDD 28.02%  |  Calmar 2.05\n안정적 운용 추천 (검증된 클래식)\n(σ기간=2일, 갱신주기=5 자동 적용)"},
         {"label": "Ultra-Safe형",
-         "k_buy": 0.55, "k_sell": 0.30, "sell_ratio": 95.0, "divisions": 7,
-         "help": "CAGR 35.81%  |  MDD 17.40%  |  Calmar 2.06\n7분할 + 95% 매도로 매우 보수적. MDD 17% 이내\n변동성 22% (안정형 35%)로 심리 안정\n(권장: sigma_period=2일, 갱신주기=7)"},
+         "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.30, "sell_ratio": 95.0,
+         "divisions": 7, "renewal": 7,
+         "help": "CAGR 35.81%  |  MDD 17.40%  |  Calmar 2.06\n7분할 + 95% 매도로 매우 보수적. MDD 17% 이내\n변동성 22% (안정형 35%)로 심리 안정\n(σ기간=2일, 갱신주기=7 자동 적용)"},
         {"label": "Sonic형",
-         "k_buy": 0.55, "k_sell": 0.45, "sell_ratio": 95.0, "divisions": 3,
-         "help": "CAGR 77.25%  |  MDD 35.80%  |  Calmar 2.16\n3분할 + 95% 매도. 19,200개 중 Calmar 1위\n(권장: sigma_period=2일, 갱신주기=3)"},
+         "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.45, "sell_ratio": 95.0,
+         "divisions": 3, "renewal": 3,
+         "help": "CAGR 77.25%  |  MDD 35.80%  |  Calmar 2.16\n3분할 + 95% 매도. 19,200개 중 Calmar 1위\n(σ기간=2일, 갱신주기=3 자동 적용)"},
     ],
 }
 
@@ -847,6 +852,11 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         st.session_state[f"sd_eks_{key_sfx}"]  = _pp["k_sell"]
                         st.session_state[f"sd_esr_{key_sfx}"]  = _pp["sell_ratio"]
                         st.session_state[f"sd_edv_{key_sfx}"]  = _pp["divisions"]
+                        # sigma_period / renewal도 함께 강제 적용 (프리셋 정확성 보장)
+                        if "sigma_period" in _pp:
+                            st.session_state[f"sd_esp_{key_sfx}"] = _pp["sigma_period"]
+                        if "renewal" in _pp:
+                            st.session_state[f"sd_ern_{key_sfx}"] = _pp["renewal"]
                         st.rerun()
                 st.divider()
             else:
@@ -1302,6 +1312,11 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
                     st.session_state["sd_add_ks_inp"]  = _sapp["k_sell"]
                     st.session_state["sd_add_sr_inp"]  = _sapp["sell_ratio"]
                     st.session_state["sd_add_dv_inp"]  = _sapp["divisions"]
+                    # sigma_period / renewal도 함께 강제 적용 (프리셋 정확성 보장)
+                    if "sigma_period" in _sapp:
+                        st.session_state["sd_add_sp_inp"] = int(_sapp["sigma_period"])
+                    if "renewal" in _sapp:
+                        st.session_state["sd_add_rn_inp"] = int(_sapp["renewal"])
                     st.rerun()
             st.divider()
 
@@ -2142,13 +2157,14 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         _use_sr  = float(_act_cfg.get("sell_ratio",   sell_ratio))
         _use_div = int  (_act_cfg.get("divisions",    divisions))
     else:
-        # 프리셋 값 (사이드바 sigma_period/renewal 유지)
+        # 프리셋 값 (sigma_period/renewal도 프리셋에 정의된 값 강제 적용)
         _preset_idx = _src_idx - (2 if _has_acct else 1)
         _pr = _sd_presets_for_tk[_preset_idx]
         _use_kb  = float(_pr["k_buy"])
         _use_ks  = float(_pr["k_sell"])
-        _use_sp  = int(sd_sigma_period)
-        _use_rn  = int(sd_renewal)
+        # 프리셋에 sigma_period/renewal 키가 있으면 우선 사용, 없으면 사이드바 값 (구버전 호환)
+        _use_sp  = int(_pr.get("sigma_period", sd_sigma_period))
+        _use_rn  = int(_pr.get("renewal",      sd_renewal))
         _use_sr  = float(_pr["sell_ratio"])
         _use_div = int(_pr["divisions"])
 
