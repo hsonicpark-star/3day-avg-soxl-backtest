@@ -1548,8 +1548,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
         # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
         with st.expander("✏️ 파라미터 수정"):
             st.caption("💡 추천 프리셋")
-            _pc1, _pc2, _pc3 = st.columns(3)
-            for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _DSS_PRESETS)):
+            _pcols = st.columns(len(_DSS_PRESETS))
+            for _pi, (_pcol, _pr) in enumerate(zip(_pcols, _DSS_PRESETS)):
                 if _pcol.button(_pr["label"], key=f"dss_{sfx}_preset_{_pi}",
                                 help=_pr["help"], use_container_width=True):
                     for _k in _DSS_PARAM_KEYS:
