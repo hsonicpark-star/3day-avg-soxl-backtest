@@ -1474,6 +1474,10 @@ _DSS_PRESETS = [
      "ag_div": 7, "ag_hold": 8, "ag_buy": 2.77, "ag_sell": 3.06,
      "pcr": 70, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
      "help": "안정형 파라미터\nCAGR 58.07% | MDD -40.69% | Calmar 1.427"},
+    {"label": "🔬 sonic형", "sf_div": 7, "sf_hold": 36, "sf_buy": 3.3, "sf_sell": 1.8,
+     "ag_div": 7, "ag_hold": 6, "ag_buy": 2.9, "ag_sell": 6.5,
+     "pcr": 65, "lcr": 20, "renewal_period": 12, "fee_rate": 0.04,
+     "help": "sonic형 (2010~ 풀히스토리 최적화)\nCAGR 61.9% | MDD -39.6% | Calmar 1.563\n전 기간 강건 + 최저 MDD"},
 ]
 
 _DSS_PARAM_KEYS = ["sf_div","sf_hold","sf_buy","sf_sell",
