@@ -1052,7 +1052,7 @@ def render_intro_tab(params=None):
 | 매도사유 일치 | 97.1% | — |
 """)
 
-    with st.expander("🟥 공격모드 로직 (추세 상승 구간)", expanded=False):
+    with st.expander("🟥 공격모드 로직 (추세 상승 구간)", expanded=True):
         st.markdown("""
 **컨셉**: 빈번한 소액 회전. 슬롯(티어)별 독립 관리.
 
@@ -1080,7 +1080,7 @@ def render_intro_tab(params=None):
 **1티어 보류** — 전일종가 > 전일 MA(5)면 슬롯1의 LOC 매도를 보류(MOC 제외) → 상승추세에서 첫 슬롯을 끌고 감.
 """)
 
-    with st.expander("🟦 방어모드 로직 (추세 하락/횡보 구간)", expanded=False):
+    with st.expander("🟦 방어모드 로직 (추세 하락/횡보 구간)", expanded=True):
         st.markdown("""
 **컨셉**: 보수적. **역피라미딩**(하락할수록 큰 물량) 후 MA 반등 시 전량 익절.
 
@@ -1095,7 +1095,7 @@ def render_intro_tab(params=None):
 **보유기간** — 8거래일 고정, 만기 MOC 청산.
 """)
 
-    with st.expander("🧭 모드 전환 규칙 (자체 하이브리드)", expanded=False):
+    with st.expander("🧭 모드 전환 규칙 (자체 하이브리드)", expanded=True):
         st.markdown("""
 원전략의 모드 전환 규칙은 **비공개**입니다. 대신 자체 설계·검증한 견고한 규칙을 기본 적용합니다.
 
@@ -1109,7 +1109,7 @@ def render_intro_tab(params=None):
 > 지표: MA(3)·일RSI(14)·wRSI(14) 모두 Wilder · 종가 = yfinance 미조정(raw)
 """)
 
-    with st.expander("⚠️ 유의사항 & 한계", expanded=False):
+    with st.expander("⚠️ 유의사항 & 한계", expanded=True):
         st.markdown("""
 - **2011~2015(반도체 약세장) 포함 시 Calmar 1.1로 하락** — 좋은 숫자는 부분적으로 반도체 secular 강세장 덕. 레버리지 추세전략의 정직한 한계.
 - 원전략 실제모드(Calmar 3.69)의 진짜 강점은 **위기연도(2020 +143%, 2022 +124%) 정밀 타이밍** — 비공개 규칙의 고유 엣지. 자체 자동모드는 여기서 한발 늦음.
