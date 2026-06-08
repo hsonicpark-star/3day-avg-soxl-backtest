@@ -942,7 +942,8 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             px_df = get_soxl_data()
             mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
                                            peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
-            r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start))
+            r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
+                                   mode_rule=mode_rule)
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
             return

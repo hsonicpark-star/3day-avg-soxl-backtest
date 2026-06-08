@@ -212,6 +212,35 @@ def build_auto_mode_map(prices: pd.DataFrame,
     return map_modes_to_days(ms, df.index)
 
 
+def forward_mode(prices: pd.DataFrame, ma_weeks: int = 36, peak_thr: float = 66.0,
+                 dn: float = 42.0, prev_mode: str = '방어', rsi_period: int = 14) -> str:
+    """다음 거래 세션(다가오는 주)의 모드를 '직전 확정 주봉' 기준으로 판정.
+
+    백테스트의 주별 모드는 1주 지연(전주 기준)이 정상이나, 실거래 주문표는
+    가장 최근 확정된 주봉(지난주)과 그 전주(지지난주)로 다음 세션 모드를 산출해야
+    불필요한 추가 지연이 없다. (룩어헤드 아님 — 모두 확정된 과거 주봉 사용)"""
+    df = prices.copy()
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    wclose = df['close'].resample('W-FRI').last().dropna()
+    wv = wclose.values.astype(float)
+    if len(wv) < 2:
+        return prev_mode
+    wrsi = calc_rsi_wilder(wv, rsi_period)
+    wma = pd.Series(wv).rolling(ma_weeks).mean().values
+    v, vp = wrsi[-1], wrsi[-2]      # 지난주, 지지난주
+    c, m = wv[-1], wma[-1]
+    if np.isnan(v):
+        return prev_mode
+    trend_up = (not np.isnan(m)) and c > m
+    crash = (v < dn) or (not np.isnan(vp) and v < vp and vp > peak_thr)
+    if crash:
+        return '방어'
+    if trend_up:
+        return '공격'
+    return '방어'
+
+
 def build_mode_series(weekly_rsi_df: pd.DataFrame,
                       initial_mode: str = '방어') -> pd.DataFrame:
     """주간 RSI 시리즈 → 주별 모드 시리즈."""
@@ -716,8 +745,12 @@ def next_trading_days(start_date, n_days):
     return pd.DatetimeIndex(out)
 
 
-def build_today_orders(prices, params, mode_map=None, start_date=None):
+def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule=None):
     """백테스트 최종 상태 → 다음 거래일 LOC/MOC 주문표.
+
+    mode_rule: {'ma_weeks','peak_thr','dn'} 제공 시, 다음 세션 모드를 '직전 확정 주봉
+               (지난주/지지난주)' 기준으로 산출 (실거래 주문표 권장 — 1주 추가지연 제거).
+               미제공 시 백테스트 마지막 주 모드를 그대로 carry.
 
     Returns dict: order_date, last_date, last_close, next_mode, cash, total_asset,
                   n_pos, divisions, positions(list), orders(list).
@@ -731,7 +764,10 @@ def build_today_orders(prices, params, mode_map=None, start_date=None):
     prev_fi = state['prev_fi']
     last_ma5 = state['last_ma5']
     cash = state['cash']
-    mode = state['last_mode']           # 다음 세션 모드 (carry)
+    if mode_rule:
+        mode = forward_mode(prices, prev_mode=state['last_mode'], **mode_rule)
+    else:
+        mode = state['last_mode']           # 다음 세션 모드 (carry)
 
     nd = next_trading_days(last_date, 1)
     order_date = nd[0] if len(nd) else pd.Timestamp(last_date) + pd.Timedelta(days=1)
