@@ -111,6 +111,33 @@ def get_auto_mode_map(_price_hash, ma_weeks, peak_thr, dn):
 
 
 # ══════════════════════════════════════════════
+# 정규화 표 (공격모드 자세히)
+# ══════════════════════════════════════════════
+
+def _render_norm_tables(hold_alpha, sell_alpha, buy_pct):
+    """공격모드 보유기간/매도조건 정규화 표 + FI 매수 분기 규칙."""
+    rsis = [70, 65, 60, 55, 50, 45, 40, 35]
+    def hold(r):
+        x = max(0.0, min(1.0, (r - 35) / 30))
+        return round(7 + 23 * (1 - x) ** (1 / hold_alpha))
+    def sellp(r):
+        x = max(0.0, min(1.0, (r - 35) / 30))
+        return round(0.1 + 2.9 * (1 - x) ** (1 / sell_alpha), 2)
+    st.markdown(f"**보유기간 정규화 (α={hold_alpha})**")
+    st.dataframe(pd.DataFrame({"매수RSI": rsis, "보유일": [hold(r) for r in rsis]}),
+                 hide_index=True, use_container_width=True)
+    st.caption("보유일 = 7 + 23×(1-x)^(1/α), x=(매수RSI-35)/30")
+    st.markdown(f"**매도조건 정규화 (α={sell_alpha})**")
+    st.dataframe(pd.DataFrame({"매수RSI": rsis, "매도%": [f"{sellp(r):.2f}%" for r in rsis]}),
+                 hide_index=True, use_container_width=True)
+    st.caption("매도% = 0.1 + 2.9×(1-x)^(1/α)")
+    st.markdown("**매수조건 FI 분기 규칙**")
+    st.dataframe(pd.DataFrame({"전일 FI": ["FI > 0", "FI ≤ 0"],
+                              "매수주문가": [f"전일종가 +{buy_pct:.1f}%", "전일종가 -0.1% (고정)"]}),
+                 hide_index=True, use_container_width=True)
+
+
+# ══════════════════════════════════════════════
 # 사이드바
 # ══════════════════════════════════════════════
 
@@ -130,27 +157,38 @@ def render_sidebar():
         dn = st.number_input("방어 이탈 wRSI", 30.0, 50.0, float(mr.get("dn", 42.0)), 1.0, key="ds_dn")
         st.caption("기본값: 36 / 66 / 42 (Calmar 2.64)")
 
-    # ── 공격모드 파라미터 ──
-    with st.sidebar.expander("🟥 공격모드", expanded=False):
-        c1, c2 = st.columns(2)
-        ag_div = c1.number_input("분할수", 1, 12, int(sp.get("ag_div", 6)), 1, key="ds_agdiv")
-        ag_buy = c2.number_input("매수조건%", 0.0, 30.0, float(sp.get("ag_buy", 8.0)), 0.5, key="ds_agbuy")
-        c3, c4 = st.columns(2)
-        ag_sa = c3.number_input("매도 α", 0.1, 3.0, float(sp.get("ag_sell_alpha", 0.4)), 0.1, key="ds_agsa")
-        ag_ha = c4.number_input("보유 α", 0.1, 5.0, float(sp.get("ag_hold_alpha", 2.0)), 0.1, key="ds_agha")
+    # ══ 공격모드 (원전략 패널과 동일 레이아웃) ══
+    st.sidebar.markdown("#### 🟥 공격모드")
+    c1, c2 = st.sidebar.columns(2)
+    ag_div = c1.number_input("공격 분할수", 1, 12, int(sp.get("ag_div", 6)), 1, key="ds_agdiv")
+    ag_ha = c2.number_input("보유기간(정규화 α)", 0.1, 5.0,
+                            float(sp.get("ag_hold_alpha", 2.0)), 0.1, key="ds_agha")
+    c3, c4 = st.sidebar.columns(2)
+    ag_buy = c3.number_input("매수조건(종가%)", 0.0, 30.0,
+                             float(sp.get("ag_buy", 8.0)), 0.5, key="ds_agbuy")
+    ag_sa = c4.number_input("매도조건(정규화 α)", 0.1, 3.0,
+                            float(sp.get("ag_sell_alpha", 0.4)), 0.1, key="ds_agsa")
+    with st.sidebar.expander("📊 자세히 (정규화 표 · FI 규칙)"):
+        _render_norm_tables(ag_ha, ag_sa, ag_buy)
 
-    # ── 방어모드 파라미터 ──
-    with st.sidebar.expander("🟦 방어모드", expanded=False):
-        d1, d2 = st.columns(2)
-        sf_div = d1.number_input("분할수", 1, 12, int(sp.get("sf_div", 5)), 1, key="ds_sfdiv")
-        sf_hold = d2.number_input("보유기간", 1, 60, int(sp.get("sf_hold", 8)), 1, key="ds_sfhold")
-        e1, e2 = st.columns(2)
-        sf_b1 = e1.number_input("매수조건1 MA%", -10.0, 10.0, float(sp.get("sf_buy1", -0.6)), 0.1, key="ds_sfb1")
-        sf_b2 = e2.number_input("매수조건2 종가%", 0.0, 30.0, float(sp.get("sf_buy2", 5.5)), 0.1, key="ds_sfb2")
-        f1, f2 = st.columns(2)
-        sf_sell = f1.number_input("매도 MA%", 0.0, 10.0, float(sp.get("sf_sell", 0.7)), 0.1, key="ds_sfsell")
-        sf_ma = f2.number_input("MA기준", 2, 10, int(sp.get("sf_ma_base", 3)), 1, key="ds_sfma")
-        sf_w = st.text_input("티어비중%", sp.get("sf_weights", "6, 13, 20, 27, 34"), key="ds_sfw")
+    # ══ 방어모드 (원전략 패널과 동일 레이아웃) ══
+    st.sidebar.markdown("#### 🟦 방어모드")
+    d1, d2 = st.sidebar.columns(2)
+    sf_div = d1.number_input("방어 분할수", 1, 12, int(sp.get("sf_div", 5)), 1, key="ds_sfdiv")
+    sf_hold = d2.number_input("보유기간", 1, 60, int(sp.get("sf_hold", 8)), 1, key="ds_sfhold")
+    e1, e2 = st.sidebar.columns(2)
+    sf_b1 = e1.number_input("매수조건1(MA%)", -10.0, 10.0,
+                            float(sp.get("sf_buy1", -0.6)), 0.1, key="ds_sfb1")
+    sf_b2 = e2.number_input("매수조건2(종가%)", 0.0, 30.0,
+                            float(sp.get("sf_buy2", 5.5)), 0.1, key="ds_sfb2")
+    st.sidebar.caption("↳ 매수조건 1, 2 중에 낮은 값")
+    f1, f2 = st.sidebar.columns(2)
+    sf_sell = f1.number_input("매도조건(MA%)", 0.0, 10.0,
+                              float(sp.get("sf_sell", 0.7)), 0.1, key="ds_sfsell")
+    sf_ma = f2.number_input("MA기준", 2, 10, int(sp.get("sf_ma_base", 3)), 1, key="ds_sfma")
+    sf_w = st.sidebar.text_input("티어별 매수비중(%)",
+                                 sp.get("sf_weights", "6, 13, 20, 27, 34"), key="ds_sfw")
+    st.sidebar.caption("↳ 오름차순(등차수열) 권장 · 합계 100")
 
     st.sidebar.markdown("### ⚙️ 백테스트 설정")
     b1, b2 = st.sidebar.columns(2)
@@ -302,14 +340,104 @@ def render_backtest_tab(params):
 
 
 # ══════════════════════════════════════════════
-# 탭2: 모드 규칙 최적화
+# 탭2: 파라미터 최적화 (전략 파라미터 / 모드 규칙)
 # ══════════════════════════════════════════════
 
 def render_optimization_tab(params):
     p = params
-    st.subheader("🔍 모드 규칙 최적화 (Calmar)")
-    st.caption("자체 하이브리드 모드 규칙의 추세MA·천장·이탈 파라미터를 탐색합니다.")
+    st.subheader("🔍 파라미터 최적화")
+    target = st.radio("최적화 대상", ["🎯 전략 파라미터", "🧭 모드 규칙"],
+                      horizontal=True, key="ds_opt_target")
+    sort_col = st.selectbox("정렬 기준", ["Calmar", "CAGR(%)", "최종자산"], key="ds_opt_sort")
 
+    if target == "🎯 전략 파라미터":
+        _opt_strategy_params(p, sort_col)
+    else:
+        _opt_mode_rule(p, sort_col)
+
+
+def _opt_strategy_params(p, sort_col):
+    st.caption("공격/방어 매매 파라미터를 탐색합니다. 모드는 사이드바 규칙으로 고정. (랜덤 서치)")
+    st.markdown("**🟥 공격모드 범위**")
+    a1, a2, a3 = st.columns(3)
+    agbuy_r = a1.slider("매수조건(종가%)", 0.0, 15.0, (4.0, 10.0), 0.5, key="ds_o_agbuy")
+    agsa_r = a2.slider("매도 α", 0.2, 1.5, (0.3, 0.7), 0.1, key="ds_o_agsa")
+    agha_r = a3.slider("보유 α", 0.5, 4.0, (1.5, 3.0), 0.5, key="ds_o_agha")
+    st.markdown("**🟦 방어모드 범위**")
+    b1, b2, b3 = st.columns(3)
+    sfb1_r = b1.slider("매수조건1(MA%)", -3.0, 1.0, (-1.5, 0.0), 0.1, key="ds_o_sfb1")
+    sfb2_r = b2.slider("매수조건2(종가%)", 1.0, 12.0, (3.0, 8.0), 0.5, key="ds_o_sfb2")
+    sfsell_r = b3.slider("매도조건(MA%)", 0.1, 3.0, (0.4, 1.2), 0.1, key="ds_o_sfsell")
+    n_samples = st.slider("랜덤 샘플 수", 50, 800, 300, 50, key="ds_o_n")
+
+    if st.button("🚀 최적화 실행", type="primary", key="ds_run_opt_sp", use_container_width=True):
+        import random
+        try:
+            px_df = get_soxl_data()
+            mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
+                                           peak_thr=p["peak_thr"], dn=p["dn"])
+        except Exception as e:
+            st.error(f"데이터/모드 로드 실패: {e}")
+            return
+        start = str(p["start_date"]); end = str(p["end_date"]); cap = float(p["initial_capital"])
+
+        def rng(lo, hi, step):
+            n = int(round((hi - lo) / step))
+            return [round(lo + k * step, 3) for k in range(n + 1)]
+        AGB, AGS, AGH = rng(*agbuy_r, 0.5), rng(*agsa_r, 0.1), rng(*agha_r, 0.5)
+        SB1, SB2, SS = rng(*sfb1_r, 0.1), rng(*sfb2_r, 0.5), rng(*sfsell_r, 0.1)
+
+        prog = st.progress(0)
+        results = []
+        seen = set()
+        for i in range(n_samples):
+            combo = (random.choice(AGB), random.choice(AGS), random.choice(AGH),
+                     random.choice(SB1), random.choice(SB2), random.choice(SS))
+            if combo in seen:
+                continue
+            seen.add(combo)
+            agb, ags, agh, sb1, sb2, ss = combo
+            ds_p = DualSniperParams(
+                ag_divisions=p["ag_div"], ag_buy_pct=agb,
+                ag_sell_alpha=ags, ag_hold_alpha=agh,
+                sf_divisions=p["sf_div"], sf_buy_pct1=sb1, sf_buy_pct2=sb2,
+                sf_sell_pct=ss, sf_ma_base=p["sf_ma_base"], sf_hold=p["sf_hold"],
+                sf_tier_weights=p["sf_weights"], initial_capital=cap,
+                fee_rate=p["fee_rate"] / 100, sec_fee_rate=0.0,
+                ag_buy_inclusive=False, sf_buy_inclusive=False)
+            log = run_backtest(px_df, ds_p, mode_map=mode_map, start_date=start, light=True)
+            log = log[(log['날짜'] >= pd.Timestamp(start)) & (log['날짜'] <= pd.Timestamp(end))]
+            if len(log) < 50:
+                continue
+            mm = compute_metrics(log, None, cap)
+            results.append({'매수%': agb, '매도α': ags, '보유α': agh,
+                            '방매수1': sb1, '방매수2': sb2, '방매도': ss,
+                            'CAGR(%)': round(mm['CAGR(%)'], 1), 'MDD(%)': round(mm['MDD(%)'], 1),
+                            'Calmar': round(mm['Calmar'], 2), '최종자산': round(mm['최종자산'])})
+            if i % max(1, n_samples // 20) == 0:
+                prog.progress(min((i + 1) / n_samples, 1.0))
+        prog.progress(1.0)
+        if results:
+            st.session_state["ds_opt_sp_res"] = pd.DataFrame(results).sort_values(
+                sort_col, ascending=False).reset_index(drop=True)
+
+    res = st.session_state.get("ds_opt_sp_res")
+    if res is None:
+        return
+    st.success(f"완료: {len(res)}개 결과 (정렬: {sort_col})")
+    st.dataframe(res.sort_values(sort_col, ascending=False).head(25),
+                 use_container_width=True, hide_index=True)
+    fig = px.scatter(res, x="MDD(%)", y="CAGR(%)", color="Calmar",
+                     hover_data=['매수%', '매도α', '보유α', '방매수1', '방매수2', '방매도'],
+                     color_continuous_scale="RdYlGn")
+    fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+    st.download_button("📥 결과 CSV", res.to_csv(index=False).encode('utf-8-sig'),
+                       "dual_sniper_opt_strategy.csv", "text/csv", key="ds_dl_opt_sp")
+
+
+def _opt_mode_rule(p, sort_col):
+    st.caption("자체 하이브리드 모드 규칙의 추세MA·천장·이탈을 탐색합니다. 전략 파라미터는 사이드바 값 고정.")
     col1, col2, col3 = st.columns(3)
     ma_range = col1.slider("추세 MA(주)", 5, 52, (20, 40), 2, key="ds_opt_ma")
     pk_range = col2.slider("천장 wRSI", 58, 74, (60, 70), 2, key="ds_opt_pk")
@@ -322,9 +450,7 @@ def render_optimization_tab(params):
             st.error(f"데이터 로드 실패: {e}")
             return
         ds_p = _make_params(p)
-        start = str(p["start_date"]); end = str(p["end_date"])
-        cap = float(p["initial_capital"])
-
+        start = str(p["start_date"]); end = str(p["end_date"]); cap = float(p["initial_capital"])
         mas = list(range(ma_range[0], ma_range[1] + 1, 2))
         pks = list(range(pk_range[0], pk_range[1] + 1, 2))
         dns = list(range(dn_range[0], dn_range[1] + 1, 1))
@@ -347,13 +473,14 @@ def render_optimization_tab(params):
         prog.progress(1.0)
         if results:
             st.session_state["ds_opt_results"] = pd.DataFrame(results).sort_values(
-                "Calmar", ascending=False).reset_index(drop=True)
+                sort_col, ascending=False).reset_index(drop=True)
 
     res = st.session_state.get("ds_opt_results")
     if res is None:
         return
-    st.success(f"완료: {len(res)}개 결과")
-    st.dataframe(res.head(25), use_container_width=True, hide_index=True)
+    st.success(f"완료: {len(res)}개 결과 (정렬: {sort_col})")
+    st.dataframe(res.sort_values(sort_col, ascending=False).head(25),
+                 use_container_width=True, hide_index=True)
     fig = px.scatter(res, x="MDD(%)", y="CAGR(%)", color="Calmar",
                      hover_data=["MA(주)", "천장", "이탈"], color_continuous_scale="RdYlGn")
     fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
