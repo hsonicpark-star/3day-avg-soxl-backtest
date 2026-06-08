@@ -29,7 +29,7 @@ except Exception as _import_err:
     st.stop()
 
 # ── 전략 목록 ────────────────────────────────────────────────
-_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법"]
+_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼"]
 
 # ── 전략 판별 ────────────────────────────────────────────────
 _strategy_title = st.session_state.get("strategy_radio", "📐 표준편차매매")
@@ -37,6 +37,7 @@ _is_stdev = (_strategy_title == "📐 표준편차매매")
 _is_sigma = (_strategy_title == "📐 Sigma매매")
 _is_dss = (_strategy_title == "🌊 DSS 동파법")
 _is_iuo = (_strategy_title == "📊 IUO 매매법")
+_is_dual = (_strategy_title == "🎯 듀얼스나이퍼")
 
 # ── DSS lazy import (선택 시에만 로드) ───────────────────────
 dss = None
@@ -62,8 +63,22 @@ if _is_iuo:
         import traceback
         st.code(traceback.format_exc())
 
+# ── 듀얼스나이퍼 lazy import (선택 시에만 로드) ───────────────
+dual = None
+if _is_dual:
+    try:
+        from strategies import dual_sniper as dual
+        import importlib
+        importlib.reload(dual)
+    except Exception as _dual_err:
+        st.error(f"⚠️ 듀얼스나이퍼 모듈 로드 실패: {_dual_err}")
+        import traceback
+        st.code(traceback.format_exc())
+
 # ── 타이틀 ───────────────────────────────────────────────────
-if _is_iuo:
+if _is_dual:
+    st.title("🎯 Dual Sniper Pro 백테스터")
+elif _is_iuo:
     st.title("📊 IUO 매매법 백테스터")
 elif _is_dss:
     st.title("🌊 DSS 동파법 백테스터")
@@ -85,8 +100,8 @@ with st.sidebar:
     st.selectbox("전략 선택", _STRATEGIES, key="strategy_radio")
     st.markdown("---")
 
-    # ── 공통 종목 선택 (Sigma·DSS 제외 — 자체 사이드바 사용) ──
-    if not _is_sigma and not _is_dss and not _is_iuo:
+    # ── 공통 종목 선택 (Sigma·DSS·IUO·듀얼 제외 — 자체 사이드바 사용) ──
+    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual:
         st.subheader("📌 종목")
         _PRESET_TICKERS = ["SOXL", "USD", "TQQQ", "직접입력"]
         _ticker_select = st.selectbox("종목코드 (Ticker)", _PRESET_TICKERS, index=0)
@@ -183,6 +198,26 @@ with st.sidebar:
         data_source = "야후 파이낸스 (yfinance)"
         excel_file = None
 
+    elif _is_dual and dual:
+        # 듀얼스나이퍼: 자체 사이드바 (SOXL 전용, 하이브리드 모드)
+        params = dual.render_sidebar()
+        ticker = params.get("bt_ticker", "SOXL")
+        start_date = params.get("bt_start_date")
+        end_date = params.get("bt_end_date")
+        initial_capital = params.get("bt_initial_capital", 10000.0)
+        data_source = "야후 파이낸스 (yfinance)"
+        excel_file = None
+
+    elif _is_dual and not dual:
+        st.warning("듀얼스나이퍼 모듈 로드 실패. 위 에러를 확인하세요.")
+        params = {}
+        ticker = "SOXL"
+        start_date = datetime(2016, 1, 4).date()
+        end_date = datetime.today().date()
+        initial_capital = 10000.0
+        data_source = "야후 파이낸스 (yfinance)"
+        excel_file = None
+
     elif _is_dss and not dss:
         # DSS 로드 실패 시 최소 변수 설정
         st.warning("DSS 모듈 로드 실패. 위 에러를 확인하세요.")
@@ -221,7 +256,15 @@ with st.sidebar:
 # ══════════════════════════════════════════════════════════════
 # 탭 구성 & 라우팅
 # ══════════════════════════════════════════════════════════════
-if _is_iuo and iuo:
+if _is_dual and dual:
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 백테스트", "🔍 모드 규칙 최적화", "📋 오늘의 주문표",
+        "📖 전략 소개", "📂 DB 조회", "⚙️ 개인 설정",
+    ])
+elif _is_dual and not dual:
+    st.warning("⚠️ 듀얼스나이퍼 모듈을 로드하지 못했습니다.")
+    st.stop()
+elif _is_iuo and iuo:
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 백테스트", "🔍 파라미터 최적화", "📋 주문표 & 계좌관리",
         "📖 전략 소개 & 성과", "📂 DB 조회", "⚙️ 개인 설정",
@@ -255,7 +298,9 @@ else:
 
 
 with tab1:
-    if _is_iuo and iuo:
+    if _is_dual and dual:
+        dual.render_backtest_tab(params)
+    elif _is_iuo and iuo:
         iuo.render_backtest_tab(params)
     elif _is_dss and dss:
         dss.render_backtest_tab(params)
@@ -269,7 +314,9 @@ with tab1:
                                       start_date, end_date, initial_capital)
 
 with tab2:
-    if _is_iuo and iuo:
+    if _is_dual and dual:
+        dual.render_optimization_tab(params)
+    elif _is_iuo and iuo:
         iuo.render_optimization_tab(params)
     elif _is_dss and dss:
         dss.render_optimization_tab(params)
@@ -283,7 +330,9 @@ with tab2:
                                           initial_capital, data_source, excel_file)
 
 with tab3:
-    if _is_iuo and iuo:
+    if _is_dual and dual:
+        dual.render_ordersheet_tab(params)
+    elif _is_iuo and iuo:
         iuo.render_ordersheet_tab(params)
     elif _is_dss and dss:
         dss.render_ordersheet_tab(params)
@@ -297,7 +346,9 @@ with tab3:
                                         data_source, excel_file)
 
 with tab4:
-    if _is_iuo and iuo:
+    if _is_dual and dual:
+        dual.render_intro_tab(params)
+    elif _is_iuo and iuo:
         iuo.render_intro_tab(params)
     elif _is_dss and dss:
         dss.render_intro_tab(params)
@@ -311,7 +362,9 @@ with tab4:
                                    start_date, end_date, initial_capital)
 
 with tab5:
-    if _is_iuo and iuo:
+    if _is_dual and dual:
+        dual.render_db_tab(params)
+    elif _is_iuo and iuo:
         iuo.render_db_tab(params)
     elif _is_dss and dss:
         dss.render_db_tab(params)
@@ -322,8 +375,11 @@ with tab5:
     else:
         avg_close.render_settings_tab()
 
-# 6번째 탭 (설정) — IUO / DSS
-if _is_iuo and iuo:
+# 6번째 탭 (설정) — IUO / DSS / 듀얼
+if _is_dual and dual:
+    with tab6:
+        dual.render_settings_tab()
+elif _is_iuo and iuo:
     with tab6:
         iuo.render_settings_tab()
 elif _is_dss and dss:
