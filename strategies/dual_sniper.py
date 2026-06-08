@@ -802,7 +802,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         m1.metric("공격(분할/매수%)", f"{ds_p.ag_divisions} / {ds_p.ag_buy_pct:.0f}%")
         m2.metric("공격(매도α/보유α)", f"{ds_p.ag_sell_alpha} / {ds_p.ag_hold_alpha}")
         m3.metric("방어(분할/보유)", f"{ds_p.sf_divisions} / {ds_p.sf_hold}일")
-        m4.metric("방어(매수1/2/매도)", f"{ds_p.sf_buy_pct1}/{ds_p.sf_buy_pct2}/{ds_p.sf_sell}")
+        m4.metric("방어(매수1/2/매도)", f"{ds_p.sf_buy_pct1}/{ds_p.sf_buy_pct2}/{ds_p.sf_sell_pct}")
         m5.metric("모드(MA/천장/이탈)", f"{mode_rule['ma_weeks']}/{int(mode_rule['peak_thr'])}/{int(mode_rule['dn'])}")
         with st.expander("✏️ 파라미터 수정"):
             pc = _DS_PRESETS[0]
