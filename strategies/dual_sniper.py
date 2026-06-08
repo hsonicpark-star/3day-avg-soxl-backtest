@@ -1077,6 +1077,75 @@ def _render_norm_viz():
         st.caption("보유일 = 7 + 23 × (1−x)^(1/α),  x=(매수RSI−35)/30")
 
 
+def _render_mode_now(ma_weeks=36, peak_thr=66.0, dn=42.0):
+    """이번 주/지난 주 모드 판정 근거를 실제 수치·계산식으로 표시."""
+    from dual_sniper_engine import calc_rsi_wilder
+    try:
+        pxf = get_soxl_data()
+    except Exception as e:
+        st.caption(f"(데이터 로드 실패: {e})")
+        return
+    wc = pxf['close'].resample('W-FRI').last().dropna()
+    wv = wc.values.astype(float)
+    if len(wv) < ma_weeks + 3:
+        st.caption("(주봉 데이터 부족)")
+        return
+    wrsi = calc_rsi_wilder(wv, 14)
+    wma = pd.Series(wv).rolling(ma_weeks).mean().values
+
+    # 최근 6주 표
+    rows = []
+    for i in range(len(wv) - 6, len(wv)):
+        rows.append({"주말(금)": wc.index[i].strftime("%Y-%m-%d"),
+                     "주봉종가": f"${wv[i]:.2f}", f"{ma_weeks}주MA": f"${wma[i]:.2f}",
+                     "추세(종가>MA)": "✅ 상승" if wv[i] > wma[i] else "❌ 하락",
+                     "wRSI(14)": f"{wrsi[i]:.1f}"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    def _decide(v, vp, c, m):
+        trend_up = c > m
+        crash_lvl = v < dn
+        crash_top = (v < vp) and (vp > peak_thr)
+        if crash_lvl or crash_top:
+            mode = "🟦 방어"
+        elif trend_up:
+            mode = "🟥 공격"
+        else:
+            mode = "🟦 방어"
+        return mode, trend_up, crash_lvl, crash_top
+
+    # 이번 주(다가오는 세션): 지난주(-1)·지지난주(-2)
+    v1, vp1, c1, m1 = wrsi[-1], wrsi[-2], wv[-1], wma[-1]
+    d1 = wc.index[-1].strftime("%m/%d"); d2 = wc.index[-2].strftime("%m/%d")
+    mode1, t1, cl1, ct1 = _decide(v1, vp1, c1, m1)
+    # 지난 주: 지지난주(-2)·지지지난주(-3)
+    v2, vp2, c2, m2 = wrsi[-2], wrsi[-3], wv[-2], wma[-2]
+    d3 = wc.index[-3].strftime("%m/%d")
+    mode2, t2, cl2, ct2 = _decide(v2, vp2, c2, m2)
+
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown(f"**📅 이번 주(다가오는 세션) → {mode1}**")
+        st.markdown(f"""
+판단 데이터: 지난주({d1})·지지난주({d2}) 확정 주봉
+1. **추세필터**: 주봉종가 ${c1:.2f} {'>' if t1 else '≤'} {ma_weeks}주MA ${m1:.2f} → 추세상승 {'✅' if t1 else '❌'}
+2. **이탈 경보**(wRSI<{int(dn)}): {v1:.1f} < {int(dn)}? {'🔔 발동' if cl1 else '❌'}
+3. **천장 경보**(꺾임): wRSI {v1:.1f} < 직전 {vp1:.1f}(하락) **AND** {vp1:.1f} > {int(peak_thr)}? {'🔔 발동' if ct1 else '❌'}
+→ {'방어 경보 발동 → ' if (cl1 or ct1) else ('추세상승 → ' if t1 else '추세하락 → ')}**{mode1}**
+""")
+    with cc2:
+        st.markdown(f"**📅 지난 주 → {mode2}**")
+        st.markdown(f"""
+판단 데이터: {d2}·{d3} 확정 주봉
+1. **추세필터**: 주봉종가 ${c2:.2f} {'>' if t2 else '≤'} {ma_weeks}주MA ${m2:.2f} → 추세상승 {'✅' if t2 else '❌'}
+2. **이탈 경보**(wRSI<{int(dn)}): {v2:.1f} < {int(dn)}? {'🔔 발동' if cl2 else '❌'}
+3. **천장 경보**(꺾임): wRSI {v2:.1f} < 직전 {vp2:.1f}? **AND** {vp2:.1f} > {int(peak_thr)}? {'🔔 발동' if ct2 else '❌'}
+→ {'방어 경보 발동 → ' if (cl2 or ct2) else ('추세상승 → ' if t2 else '추세하락 → ')}**{mode2}**
+""")
+    st.caption("※ 룩어헤드 없음 — 각 주의 모드는 직전 확정 주봉(지난주/지지난주)만 사용. "
+               "백테스트는 추가로 1주 더 지연(전주 기준)되며, 실거래 주문표는 위 '이번 주' 값을 사용합니다.")
+
+
 def render_intro_tab(params=None):
     st.subheader("📖 Dual Sniper Pro — 전략 소개")
 
@@ -1138,17 +1207,30 @@ def render_intro_tab(params=None):
 
     with st.expander("🧭 모드 전환 규칙 (자체 하이브리드)", expanded=True):
         st.markdown("""
-원전략의 모드 전환 규칙은 **비공개**입니다. 대신 자체 설계·검증한 견고한 규칙을 기본 적용합니다.
+원전략의 모드 전환 규칙은 **비공개**라, 우리는 **두 개의 질문**으로 모드를 정하는 직관적 규칙을 씁니다.
+매주 금요일 주봉이 확정되면, 그 데이터로 다음 주 모드를 결정합니다 (룩어헤드 없음).
 
-**전주 확정 주봉 기준 (룩어헤드 없음):**
-1. **추세필터**: 주봉종가 > **36주 이동평균** → 공격 후보
-2. **방어 오버라이드(우선)**: wRSI < **42**(레벨 이탈) **또는** (wRSI 하락 **AND** 직전 wRSI > **66**)(천장 신호)
-3. 방어신호 우선 → 아니고 추세상승이면 공격 → 그 외 방어
+#### 🟥 언제 공격? — "추세가 살아있을 때"
+- 주간 종가가 **36주(약 9개월) 이동평균 위**에 있으면 = 큰 상승 추세 → **공격**
+- 비유: 강물(장기추세)이 위로 흐르면 배도 위로.
+
+#### 🟦 언제 방어? — "천장에서 꺾이거나, 바닥으로 무너질 때" (이게 우선!)
+방어는 **두 가지 경보** 중 하나만 울려도 발동합니다:
+1. **🔔 천장 경보**: 주간 RSI가 **고점(66 초과)에서 꺾여 내려오기 시작** → 과열 후 하락 전조
+2. **🔔 이탈 경보**: 주간 RSI가 **42 아래로 추락** → 추세 자체가 무너짐
+
+→ **방어 경보가 우선.** 추세가 아무리 좋아 보여도 천장에서 꺾이면 즉시 방어로 전환해 폭락을 피합니다.
+
+**왜 이렇게?** 공격은 "추세 추종"으로 큰 상승을 먹고, 방어는 "천장·붕괴 감지"로 큰 낙폭을 피합니다.
+방어를 우선시해 **MDD를 지키는 것**이 이 규칙의 핵심입니다.
 
 **백테스트(2016~)**: CAGR 76% / MDD -29% / **Calmar 2.64** · train≈test(2.68≈2.74)로 과최적화 없음.
 
-> 지표: MA(3)·일RSI(14)·wRSI(14) 모두 Wilder · 종가 = yfinance 미조정(raw)
+> 지표: 주간 RSI(14, Wilder) · 36주 단순이동평균 · 종가 = yfinance 미조정(raw)
 """)
+        st.markdown("---")
+        st.markdown("##### 🔍 지금 모드는 어떻게 정해졌나? (실시간 계산)")
+        _render_mode_now()
 
     with st.expander("⚠️ 유의사항 & 한계", expanded=True):
         st.markdown("""
