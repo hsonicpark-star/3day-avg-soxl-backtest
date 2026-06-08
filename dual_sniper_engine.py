@@ -312,7 +312,8 @@ def run_backtest(prices: pd.DataFrame,
                  start_date=None,
                  skip_buy_dates: set = None,
                  light: bool = False,
-                 return_trades: bool = False) -> pd.DataFrame:
+                 return_trades: bool = False,
+                 return_state: bool = False) -> pd.DataFrame:
     """Dual Sniper Pro 백테스트.
 
     Args:
@@ -574,6 +575,24 @@ def run_backtest(prices: pd.DataFrame,
         prev_fi = fi
         prev_ma5 = cur_ma5
 
+    if return_state:
+        last_close = float(closes[-1]) if n > 0 else None
+        state = {
+            'positions': positions,
+            'cash': cash,
+            'last_date': dates[-1] if n > 0 else None,
+            'last_close': last_close,
+            'c1': last_close,
+            'c2': float(closes[-2]) if n > 1 else None,
+            'prev_fi': prev_fi,
+            'last_ma5': float(ma5[-1]) if n > 0 and not np.isnan(ma5[-1]) else None,
+            'last_mode': mode_map.get(dates[-1], '방어') if n > 0 else '방어',
+            'cum_realized': cum_realized,
+            'total_asset': cash + sum(p.qty * last_close for p in positions) if n > 0 else cash,
+        }
+        log_df = pd.DataFrame(records)
+        return log_df, state
+
     if light:
         return pd.DataFrame(records, columns=['날짜', '총자산'])
     log_df = pd.DataFrame(records)
@@ -632,3 +651,162 @@ def compute_metrics(log_df: pd.DataFrame, trades_df: pd.DataFrame = None,
     else:
         m.update({'총매도횟수': 0, '승률(%)': 0, '평균손익': 0, '평균보유일': 0})
     return m
+
+
+# ──────────────────────────────────────────────
+# 7. 거래일 캘린더 + 내일 주문 생성 (주문표용)
+# ──────────────────────────────────────────────
+
+def _nth_weekday_of_month(year, month, weekday, n):
+    from datetime import date as _d, timedelta as _td
+    first = _d(year, month, 1)
+    off = (weekday - first.weekday()) % 7
+    return first + _td(days=off + 7 * (n - 1))
+
+
+def _last_weekday_of_month(year, month, weekday):
+    from datetime import date as _d, timedelta as _td
+    last = (_d(year + 1, 1, 1) if month == 12 else _d(year, month + 1, 1)) - _td(days=1)
+    off = (last.weekday() - weekday) % 7
+    return last - _td(days=off)
+
+
+def _easter_date(year):
+    from datetime import date as _d
+    a = year % 19; b, c = divmod(year, 100); d, e = divmod(b, 4)
+    f = (b + 8) // 25; g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30; i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    mth = (a + 11 * h + 22 * l) // 451
+    month, day = divmod(h + l - 7 * mth + 114, 31)
+    return _d(year, month, day + 1)
+
+
+def _us_holidays(year):
+    from datetime import date as _d, timedelta as _td
+    hs = {_d(year, 1, 1), _nth_weekday_of_month(year, 1, 0, 3),
+          _nth_weekday_of_month(year, 2, 0, 3), _easter_date(year) - _td(days=2),
+          _last_weekday_of_month(year, 5, 0), _d(year, 6, 19), _d(year, 7, 4),
+          _nth_weekday_of_month(year, 9, 0, 1), _nth_weekday_of_month(year, 11, 3, 4),
+          _d(year, 12, 25)}
+    obs = set()
+    for h in hs:
+        if h.weekday() == 5:
+            obs.add(h - _td(days=1))
+        elif h.weekday() == 6:
+            obs.add(h + _td(days=1))
+    return hs | obs
+
+
+def _is_trading_day(d):
+    d = d.date() if hasattr(d, 'date') else d
+    return d.weekday() < 5 and d not in _us_holidays(d.year)
+
+
+def next_trading_days(start_date, n_days):
+    """start_date 다음 영업일부터 n개의 NYSE 거래일."""
+    out = []
+    cur = pd.Timestamp(start_date) + pd.Timedelta(days=1)
+    safety = 0
+    while len(out) < n_days and safety < n_days * 3 + 40:
+        if _is_trading_day(cur):
+            out.append(cur)
+        cur += pd.Timedelta(days=1)
+        safety += 1
+    return pd.DatetimeIndex(out)
+
+
+def build_today_orders(prices, params, mode_map=None, start_date=None):
+    """백테스트 최종 상태 → 다음 거래일 LOC/MOC 주문표.
+
+    Returns dict: order_date, last_date, last_close, next_mode, cash, total_asset,
+                  n_pos, divisions, positions(list), orders(list).
+    orders 항목: {구분(매수/매도), 거래방법(LOC/MOC), 가격, 수량, 사유, 모드, 티어}
+    """
+    log, state = run_backtest(prices, params, mode_map=mode_map,
+                              start_date=start_date, return_state=True)
+    positions = state['positions']
+    last_date = state['last_date']
+    c1, c2 = state['c1'], state['c2']
+    prev_fi = state['prev_fi']
+    last_ma5 = state['last_ma5']
+    cash = state['cash']
+    mode = state['last_mode']           # 다음 세션 모드 (carry)
+
+    nd = next_trading_days(last_date, 1)
+    order_date = nd[0] if len(nd) else pd.Timestamp(last_date) + pd.Timedelta(days=1)
+
+    # 다음날 방어 MA 매도가 / 매수 K
+    sf_sell_price = sf_buy_K = None
+    if c1 is not None and c2 is not None:
+        prev_sum = c1 + c2
+        fs = 1 + params.sf_sell_pct / 100
+        f1 = 1 + params.sf_buy_pct1 / 100
+        sf_sell_price = (fs * prev_sum) / (params.sf_ma_base - fs)
+        cond1 = (f1 * prev_sum) / (params.sf_ma_base - f1)
+        cond2 = c1 * (1 + params.sf_buy_pct2 / 100)
+        sf_buy_K = round(min(cond1, cond2), 2)
+    # 다음날 공격 매수 K
+    ag_buy_K = None
+    if c1 is not None:
+        if prev_fi == '+':
+            ag_buy_K = math.floor(c1 * (1 + params.ag_buy_pct / 100) * 100) / 100
+        else:
+            ag_buy_K = math.floor(c1 * 0.999 * 100) / 100
+
+    def stop_of(p):
+        sd = next_trading_days(p.buy_date, p.hold_days)
+        return sd[-1] if len(sd) else pd.Timestamp(p.buy_date)
+
+    moc_today = any(order_date >= stop_of(p) for p in positions)
+    ag_hold_tier1 = (c1 is not None and last_ma5 is not None and c1 > last_ma5)
+
+    orders = []
+    pos_view = []
+    for p in positions:
+        sdt = stop_of(p)
+        pos_view.append({'모드': p.mode, '티어': p.tier, '매수일': pd.Timestamp(p.buy_date),
+                         '매수가': round(p.buy_price, 4), '수량': p.qty,
+                         '매도목표': round(p.sell_target, 2) if p.sell_target else None,
+                         '손절예정일': sdt})
+        if order_date >= sdt:
+            orders.append({'구분': '매도', '거래방법': 'MOC', '가격': None, '수량': p.qty,
+                           '사유': 'MOC', '모드': p.mode, '티어': p.tier})
+            continue
+        if moc_today:
+            continue                     # MOC 우선 → 다른 LOC 매도 보류
+        if p.mode == '공격' and p.sell_target is not None:
+            if ag_hold_tier1 and p.tier == 1:
+                continue                 # 1티어 보류
+            orders.append({'구분': '매도', '거래방법': 'LOC', '가격': round(p.sell_target, 2),
+                           '수량': p.qty, '사유': f'T{p.tier}', '모드': '공격', '티어': p.tier})
+    # 방어 그룹 MA 전량 매도 (MOC 없을 때)
+    if not moc_today and sf_sell_price is not None:
+        sf_qty = sum(p.qty for p in positions if p.mode == '방어')
+        if sf_qty > 0:
+            orders.append({'구분': '매도', '거래방법': 'LOC', '가격': round(sf_sell_price, 2),
+                           '수량': sf_qty, '사유': 'MA', '모드': '방어', '티어': None})
+
+    # 매수 주문 (빈 슬롯)
+    if mode == '공격':
+        divisions, K, wts = params.ag_divisions, ag_buy_K, [1] * params.ag_divisions
+    else:
+        divisions, K, wts = params.sf_divisions, sf_buy_K, list(params.sf_tier_weights)
+    occupied = set(p.tier for p in positions if p.mode == mode)
+    tier = next((t for t in range(1, divisions + 1) if t not in occupied), None)
+    if tier is not None and K and K > 0:
+        remaining = sum(wts[t - 1] for t in range(1, len(wts) + 1) if t not in occupied)
+        alloc = cash * (wts[tier - 1] / remaining) if remaining > 0 else 0
+        buy_qty = int(alloc / K)
+        if buy_qty > 0:
+            orders.append({'구분': '매수', '거래방법': 'LOC', '가격': round(K, 2), '수량': buy_qty,
+                           '사유': f'{"공" if mode == "공격" else "방"}T{tier}',
+                           '모드': mode, '티어': tier})
+
+    return {
+        'order_date': order_date, 'last_date': last_date, 'last_close': c1,
+        'next_mode': mode, 'cash': cash, 'total_asset': state['total_asset'],
+        'n_pos': len(positions), 'divisions': divisions,
+        'cum_realized': state['cum_realized'],
+        'positions': pos_view, 'orders': orders,
+    }

@@ -33,7 +33,7 @@ if _root_dir not in sys.path:
 
 from dual_sniper_engine import (
     DualSniperParams, run_backtest, compute_metrics,
-    load_price_data, build_auto_mode_map,
+    load_price_data, build_auto_mode_map, build_today_orders,
 )
 from common.config import _IS_CLOUD
 
@@ -635,46 +635,389 @@ def render_optimization_tab(params):
 
 
 # ══════════════════════════════════════════════
-# 탭3: 오늘의 주문표 (기본)
+# 탭3: 오늘의 주문표 & 계좌관리 (DSS 패턴)
 # ══════════════════════════════════════════════
+
+_DS_PRESETS = [
+    {"label": "⚖️ 기본 (권장)", "ag_div": 6, "ag_buy": 8.0, "ag_sell_alpha": 0.4,
+     "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
+     "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "6, 13, 20, 27, 34",
+     "help": "원전략 디폴트 · 하이브리드 자동모드 기준 CAGR 76% / MDD -29% / Calmar 2.64"},
+]
+
+
+def _ds_history_path(acct_name=""):
+    safe = (acct_name or "").replace(" ", "_").replace("/", "_").replace("\\", "_")
+    fn = f"history_SOXL_{safe}.csv" if safe else "history_SOXL.csv"
+    return os.path.join(_DS_CONFIG_DIR, fn)
+
+
+def _load_ds_history(acct_name=""):
+    path = _ds_history_path(acct_name)
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path, encoding="utf-8-sig")
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+def _save_ds_history(acct_name, snapshot_row):
+    """B방식: 기존 날짜 보존, 새 날짜만 추가. Cloud: gs_url 있으면 GSheets 동기화."""
+    os.makedirs(_DS_CONFIG_DIR, exist_ok=True)
+    new_df = pd.DataFrame([snapshot_row])
+    new_df["날짜"] = new_df["날짜"].astype(str)
+    path = _ds_history_path(acct_name)
+    if os.path.exists(path):
+        old = pd.read_csv(path, encoding="utf-8-sig")
+        old_dates = set(old["날짜"].astype(str))
+        add = new_df[~new_df["날짜"].astype(str).isin(old_dates)]
+        if not add.empty:
+            pd.concat([old, add], ignore_index=True).to_csv(path, index=False, encoding="utf-8-sig")
+    else:
+        new_df.to_csv(path, index=False, encoding="utf-8-sig")
+
+    cfg = _load_ds_config()
+    gs_url = cfg.get("gs_url", "")
+    if gs_url:
+        try:
+            import gspread as _gs
+            from common.config import _get_gspread_client
+            safe = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
+            ws_name = f"ds_{safe}_매매기록"
+            client = _get_gspread_client()
+            sh = client.open_by_url(gs_url)
+            try:
+                ws = sh.worksheet(ws_name)
+                cells = ws.get_all_values()
+                gs_dates = set()
+                if len(cells) > 1 and "날짜" in cells[0]:
+                    di = cells[0].index("날짜")
+                    gs_dates = {r[di] for r in cells[1:] if len(r) > di}
+                add_gs = new_df[~new_df["날짜"].astype(str).isin(gs_dates)]
+            except _gs.WorksheetNotFound:
+                ws = sh.add_worksheet(title=ws_name, rows=5000, cols=20)
+                ws.append_row(new_df.columns.tolist())
+                add_gs = new_df
+            if not add_gs.empty:
+                ws.append_rows([[str(v) for v in r] for r in add_gs.values.tolist()],
+                               value_input_option="RAW")
+                st.toast(f"📊 '{ws_name}' 동기화", icon="✅")
+        except Exception as _e:
+            st.warning(f"⚠️ GSheets 동기화 실패: {_e}")
+
+
+def _acct_params(acct_data, p):
+    """계좌 저장 파라미터(없으면 사이드바 p) → (DualSniperParams, mode_rule dict)."""
+    ap = acct_data.get("params", {})
+    def g(k, d):
+        return ap.get(k, p.get(k, d))
+    sf_w = g("sf_weights", "6, 13, 20, 27, 34")
+    try:
+        weights = tuple(float(x.strip()) for x in str(sf_w).split(",") if x.strip())
+    except Exception:
+        weights = (6, 13, 20, 27, 34)
+    sf_div = int(g("sf_div", 5))
+    if len(weights) != sf_div:
+        weights = tuple([6, 13, 20, 27, 34, 40, 46, 52][:sf_div])
+    ds_p = DualSniperParams(
+        ag_divisions=int(g("ag_div", 6)), ag_buy_pct=float(g("ag_buy", 8.0)),
+        ag_sell_alpha=float(g("ag_sell_alpha", 0.4)), ag_hold_alpha=float(g("ag_hold_alpha", 2.0)),
+        sf_divisions=sf_div, sf_buy_pct1=float(g("sf_buy1", -0.6)),
+        sf_buy_pct2=float(g("sf_buy2", 5.5)), sf_sell_pct=float(g("sf_sell", 0.7)),
+        sf_ma_base=int(g("sf_ma_base", 3)), sf_hold=int(g("sf_hold", 8)),
+        sf_tier_weights=weights,
+        initial_capital=10000.0, fee_rate=float(p.get("fee_rate", 0.0)) / 100, sec_fee_rate=0.0,
+        ag_buy_inclusive=False, sf_buy_inclusive=False)
+    mode_rule = {"ma_weeks": int(g("ma_weeks", p.get("ma_weeks", 36))),
+                 "peak_thr": float(g("peak_thr", p.get("peak_thr", 66.0))),
+                 "dn": float(g("dn", p.get("dn", 42.0)))}
+    return ds_p, mode_rule
+
 
 def render_ordersheet_tab(params):
     p = params
-    st.subheader("📋 오늘의 주문표")
-    st.caption("현재 보유 슬롯과 다음 거래일 LOC/MOC 주문 기준가를 산출합니다. (자동 모드 기준)")
+    cfg = _load_ds_config()
+    today_str = datetime.today().strftime("%Y-%m-%d")
+    st.subheader(f"📋 오늘의 주문표 — {today_str}")
+    st.caption("계좌별 포트폴리오를 추적하고, 다음 거래일 LOC/MOC 주문을 산출합니다. (자동 하이브리드 모드)")
 
-    if st.button("🔄 주문표 생성", type="primary", key="ds_os_run"):
-        try:
-            px_df = get_soxl_data()
-            mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
-                                           peak_thr=p["peak_thr"], dn=p["dn"])
-        except Exception as e:
-            st.error(f"데이터 로드 실패: {e}")
-            return
-        ds_p = _make_params(p)
-        log, trades = run_backtest(px_df, ds_p, mode_map=mode_map,
-                                   start_date=str(p["start_date"]), return_trades=True)
-        st.session_state["ds_os_log"] = log
-        last = log.iloc[-1]
-        st.session_state["ds_os_last"] = last
+    accounts = cfg.get("accounts", {})
 
-    if "ds_os_last" not in st.session_state:
-        st.info("👆 버튼을 눌러 주문표를 생성하세요.")
+    # ── 계좌 추가 ──
+    with st.expander("➕ 계좌 추가", expanded=(len(accounts) == 0)):
+        ac1, ac2 = st.columns(2)
+        add_name = ac1.text_input("계좌 이름", "", key="ds_add_name", placeholder="예: PJH, 연습용")
+        add_start = ac2.date_input("시작일", pd.to_datetime(p.get("start_date", "2016-01-04")),
+                                   key="ds_add_start")
+        ac3, _ = st.columns(2)
+        add_cap = ac3.number_input("시작 자본 ($)", value=10000.0, step=1000.0, key="ds_add_cap")
+        if st.button("✅ 계좌 등록", type="primary", key="ds_add_btn", use_container_width=True):
+            nm = add_name.strip()
+            if not nm:
+                st.error("계좌 이름을 입력하세요.")
+            elif nm in accounts:
+                st.error(f"'{nm}' 계좌가 이미 존재합니다.")
+            else:
+                accounts[nm] = {
+                    "params": {k: p.get(k) for k in (
+                        "ag_div", "ag_buy", "ag_sell_alpha", "ag_hold_alpha", "sf_div", "sf_hold",
+                        "sf_buy1", "sf_buy2", "sf_sell", "sf_ma_base", "sf_weights_str",
+                        "ma_weeks", "peak_thr", "dn")},
+                    "os_start": str(add_start), "os_capital": float(add_cap),
+                }
+                # sf_weights_str → sf_weights 키 정규화
+                accounts[nm]["params"]["sf_weights"] = p.get("sf_weights_str", "6, 13, 20, 27, 34")
+                cfg["accounts"] = accounts
+                _save_ds_config(cfg)
+                st.success(f"✅ '{nm}' 계좌 등록 완료.")
+                st.rerun()
+
+    keys = list(accounts.keys())
+    if not keys:
+        st.info("등록된 계좌가 없습니다. 위에서 계좌를 추가하세요.")
         return
 
-    last = st.session_state["ds_os_last"]
-    st.markdown(f"**기준일**: {pd.Timestamp(last['날짜']).strftime('%Y-%m-%d')} · "
-                f"**종가** ${last['종가']:.2f} · **모드** {last['모드']} · "
-                f"**보유수량** {int(last['보유수량']):,}주 · **현금** ${last['현금']:,.0f}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("총자산", f"${last['총자산']:,.0f}")
-    c2.metric("보유티어수", f"{int(last['보유티어수'])}")
-    c3.metric("현재 모드", last['모드'])
-    st.info("💡 v1: 현재 상태 요약. 슬롯별 매도목표가·계좌관리는 추후 추가 예정입니다.")
-    with st.expander("최근 20거래일 로그"):
-        log = st.session_state["ds_os_log"]
-        ld = log.tail(20).copy(); ld['날짜'] = pd.to_datetime(ld['날짜']).dt.strftime('%Y-%m-%d')
-        st.dataframe(ld, use_container_width=True, hide_index=True)
+    tabs = st.tabs([f"📊 {k}" for k in keys])
+    for i, (tab, key) in enumerate(zip(tabs, keys)):
+        with tab:
+            _render_ds_account(key, accounts[key], cfg, p, i)
+
+
+def _render_ds_account(acct_key, acct_data, cfg, p, idx):
+    sfx = f"a{idx}"
+    os_start = acct_data.get("os_start", "2016-01-04")
+    os_capital = float(acct_data.get("os_capital", 10000))
+    ds_p, mode_rule = _acct_params(acct_data, p)
+
+    # ── 1) 파라미터 표시 + 수정 ──
+    with st.container(border=True):
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("공격(분할/매수%)", f"{ds_p.ag_divisions} / {ds_p.ag_buy_pct:.0f}%")
+        m2.metric("공격(매도α/보유α)", f"{ds_p.ag_sell_alpha} / {ds_p.ag_hold_alpha}")
+        m3.metric("방어(분할/보유)", f"{ds_p.sf_divisions} / {ds_p.sf_hold}일")
+        m4.metric("방어(매수1/2/매도)", f"{ds_p.sf_buy_pct1}/{ds_p.sf_buy_pct2}/{ds_p.sf_sell}")
+        m5.metric("모드(MA/천장/이탈)", f"{mode_rule['ma_weeks']}/{int(mode_rule['peak_thr'])}/{int(mode_rule['dn'])}")
+        with st.expander("✏️ 파라미터 수정"):
+            pc = _DS_PRESETS[0]
+            if st.button(pc["label"], key=f"ds_preset_{sfx}", help=pc["help"]):
+                for k in ("ag_div", "ag_buy", "ag_sell_alpha", "ag_hold_alpha", "sf_div",
+                          "sf_hold", "sf_buy1", "sf_buy2", "sf_sell", "sf_ma_base", "sf_weights"):
+                    acct_data.setdefault("params", {})[k] = pc[k]
+                cfg["accounts"][acct_key] = acct_data
+                _save_ds_config(cfg)
+                st.rerun()
+            e1, e2, e3, e4 = st.columns(4)
+            v_agdiv = e1.number_input("공분할", 1, 12, ds_p.ag_divisions, key=f"ds_e_agdiv{sfx}")
+            v_agbuy = e2.number_input("공매수%", 0.0, 30.0, ds_p.ag_buy_pct, 0.5, key=f"ds_e_agbuy{sfx}")
+            v_agsa = e3.number_input("공매도α", 0.1, 3.0, ds_p.ag_sell_alpha, 0.1, key=f"ds_e_agsa{sfx}")
+            v_agha = e4.number_input("공보유α", 0.1, 5.0, ds_p.ag_hold_alpha, 0.1, key=f"ds_e_agha{sfx}")
+            f1, f2, f3, f4 = st.columns(4)
+            v_sfdiv = f1.number_input("방분할", 1, 12, ds_p.sf_divisions, key=f"ds_e_sfdiv{sfx}")
+            v_sfhold = f2.number_input("방보유", 1, 60, ds_p.sf_hold, key=f"ds_e_sfhold{sfx}")
+            v_sfb1 = f3.number_input("방매수1", -10.0, 10.0, ds_p.sf_buy_pct1, 0.1, key=f"ds_e_sfb1{sfx}")
+            v_sfb2 = f4.number_input("방매수2", 0.0, 30.0, ds_p.sf_buy_pct2, 0.1, key=f"ds_e_sfb2{sfx}")
+            g1, g2, g3 = st.columns(3)
+            v_sfsell = g1.number_input("방매도", 0.0, 10.0, ds_p.sf_sell_pct, 0.1, key=f"ds_e_sfsell{sfx}")
+            v_sfma = g2.number_input("MA기준", 2, 10, ds_p.sf_ma_base, key=f"ds_e_sfma{sfx}")
+            v_sfw = g3.text_input("티어비중%", ", ".join(str(int(x)) for x in ds_p.sf_tier_weights),
+                                  key=f"ds_e_sfw{sfx}")
+            h1, h2, h3 = st.columns(3)
+            v_ma = h1.number_input("추세MA(주)", 5, 60, mode_rule["ma_weeks"], key=f"ds_e_ma{sfx}")
+            v_pk = h2.number_input("천장wRSI", 50.0, 80.0, mode_rule["peak_thr"], 1.0, key=f"ds_e_pk{sfx}")
+            v_dn = h3.number_input("이탈wRSI", 30.0, 50.0, mode_rule["dn"], 1.0, key=f"ds_e_dn{sfx}")
+            if st.button("💾 파라미터 저장", type="primary", key=f"ds_save_p{sfx}"):
+                acct_data["params"] = {
+                    "ag_div": v_agdiv, "ag_buy": v_agbuy, "ag_sell_alpha": v_agsa, "ag_hold_alpha": v_agha,
+                    "sf_div": v_sfdiv, "sf_hold": v_sfhold, "sf_buy1": v_sfb1, "sf_buy2": v_sfb2,
+                    "sf_sell": v_sfsell, "sf_ma_base": v_sfma, "sf_weights": v_sfw,
+                    "ma_weeks": v_ma, "peak_thr": v_pk, "dn": v_dn}
+                cfg["accounts"][acct_key] = acct_data
+                _save_ds_config(cfg)
+                st.success("✅ 저장되었습니다.")
+                st.rerun()
+
+    # ── 2) 이름변경 / 삭제 ──
+    mg1, mg2, _ = st.columns([1, 1, 4])
+    if mg1.button("✏️ 이름 변경", key=f"ds_rn_btn{sfx}"):
+        st.session_state[f"ds_rn{sfx}"] = True
+    if mg2.button("🗑️ 계좌 삭제", key=f"ds_del_btn{sfx}"):
+        st.session_state[f"ds_del{sfx}"] = True
+    if st.session_state.get(f"ds_rn{sfx}"):
+        r1, r2, r3, _ = st.columns([2, 1, 1, 3])
+        new_nm = r1.text_input("새 이름", acct_key, key=f"ds_newnm{sfx}")
+        if r2.button("✅", key=f"ds_rn_ok{sfx}"):
+            nm = new_nm.strip()
+            if nm and nm not in cfg["accounts"]:
+                cfg["accounts"] = {(nm if k == acct_key else k): v for k, v in cfg["accounts"].items()}
+                _save_ds_config(cfg)
+                op, npth = _ds_history_path(acct_key), _ds_history_path(nm)
+                if os.path.exists(op):
+                    os.rename(op, npth)
+                st.session_state.pop(f"ds_rn{sfx}", None)
+                st.rerun()
+        if r3.button("❌", key=f"ds_rn_no{sfx}"):
+            st.session_state.pop(f"ds_rn{sfx}", None)
+            st.rerun()
+    if st.session_state.get(f"ds_del{sfx}"):
+        st.warning(f"⚠️ **{acct_key}** 계좌를 삭제하시겠습니까? (히스토리 포함)")
+        d1, d2, _ = st.columns([1, 1, 4])
+        if d1.button("✅ 삭제", type="primary", key=f"ds_del_ok{sfx}"):
+            del cfg["accounts"][acct_key]
+            _save_ds_config(cfg)
+            hp = _ds_history_path(acct_key)
+            if os.path.exists(hp):
+                os.remove(hp)
+            st.session_state.pop(f"ds_del{sfx}", None)
+            st.rerun()
+        if d2.button("❌ 취소", key=f"ds_del_no{sfx}"):
+            st.session_state.pop(f"ds_del{sfx}", None)
+            st.rerun()
+
+    # ── 3) 시작일 / 자본 ──
+    s1, s2, s3 = st.columns([2, 2, 1])
+    in_start = s1.date_input("시작일", pd.to_datetime(os_start).date(),
+                             min_value=datetime(2010, 3, 11).date(),
+                             max_value=datetime.today().date(), key=f"ds_start{sfx}")
+    in_cap = s2.number_input("시작 자본 ($)", value=os_capital, step=1000.0, key=f"ds_cap{sfx}")
+    if s3.button("💾 저장", key=f"ds_savesc{sfx}"):
+        acct_data["os_start"] = str(in_start)
+        acct_data["os_capital"] = float(in_cap)
+        cfg["accounts"][acct_key] = acct_data
+        _save_ds_config(cfg)
+        st.success("저장됨")
+        st.rerun()
+
+    # ── 4) 자본 조정 ──
+    from common.analysis import recalc_adj_history as _recalc
+    with st.expander("💰 자본 조정 (증액 / 감액)"):
+        st.caption("증액: 양수 · 감액: 음수. (v1: 조정 합계를 시작 자본에 반영)")
+        raw = acct_data.get("capital_adj_history", "[]")
+        try:
+            adj = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(adj, list):
+                adj = []
+        except Exception:
+            adj = []
+        ad1, ad2 = st.columns([2, 1])
+        adj_date = ad1.date_input("적용 날짜", datetime.today().date(), key=f"ds_adj_d{sfx}")
+        adj_amt = ad1.number_input("조정 금액 ($)", value=0.0, step=500.0, key=f"ds_adj_a{sfx}")
+        if ad2.button("💰 적용", key=f"ds_adj_btn{sfx}", disabled=(adj_amt == 0)):
+            adj.append({"날짜": adj_date.strftime("%Y-%m-%d"), "조정금액": float(adj_amt),
+                        "누적자본금": 0.0, "메모": "증액" if adj_amt > 0 else "감액"})
+            adj, _fc = _recalc(adj, os_capital)
+            acct_data["capital_adj_history"] = json.dumps(adj, ensure_ascii=False)
+            cfg["accounts"][acct_key] = acct_data
+            _save_ds_config(cfg)
+            st.rerun()
+        if adj:
+            dfa = pd.DataFrame(adj)
+            st.dataframe(dfa[["날짜", "조정금액", "메모"]], use_container_width=True, hide_index=True)
+
+    # 유효 자본 (v1: 시작자본 + today 이하 조정 합계)
+    net_adj = 0.0
+    raw = acct_data.get("capital_adj_history", "[]")
+    try:
+        for it in (json.loads(raw) if isinstance(raw, str) else raw):
+            if pd.Timestamp(it.get("날짜")) <= pd.Timestamp(datetime.today().date()):
+                net_adj += float(it.get("조정금액", 0))
+    except Exception:
+        pass
+    eff_capital = os_capital + net_adj
+    ds_p.initial_capital = eff_capital
+
+    # ── 5) 주문표 로드 ──
+    if st.button("📋 주문표 로드", type="primary", key=f"ds_load{sfx}", use_container_width=True):
+        try:
+            px_df = get_soxl_data()
+            mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
+                                           peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+            r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start))
+        except Exception as e:
+            st.error(f"주문표 생성 실패: {e}")
+            return
+        st.session_state[f"ds_os{sfx}"] = r
+
+    r = st.session_state.get(f"ds_os{sfx}")
+    if r is None:
+        st.info("👆 '주문표 로드'를 클릭하면 다음 거래일 주문이 생성됩니다.")
+        return
+
+    # ── 요약 ──
+    od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
+    ld = pd.Timestamp(r["last_date"]).strftime("%Y-%m-%d")
+    st.markdown(f"**주문일** {od} · **기준종가**({ld}) ${r['last_close']:.2f} · "
+                f"**모드** `{r['next_mode']}` · **보유** {r['n_pos']}/{r['divisions']}슬롯")
+    sm1, sm2, sm3, sm4 = st.columns(4)
+    sm1.metric("총자산", f"${r['total_asset']:,.0f}")
+    sm2.metric("현금", f"${r['cash']:,.0f}")
+    sm3.metric("누적실현", f"${r['cum_realized']:,.0f}")
+    sm4.metric("유효자본", f"${eff_capital:,.0f}", delta=f"{net_adj:+,.0f}" if net_adj else None)
+
+    # ── 내일 주문 ──
+    st.markdown("##### 📌 다음 거래일 주문")
+    if r["orders"]:
+        rows = []
+        for o in r["orders"]:
+            gubun = ("🔴 MOC매도" if o["거래방법"] == "MOC" else
+                     "🔵 LOC매도" if o["구분"] == "매도" else "🟠 LOC매수")
+            price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
+            amt = (o["수량"] * (o["가격"] or r["last_close"]))
+            rows.append({"구분": gubun, "사유": o["사유"], "주문가": price,
+                         "수량": f"{o['수량']:,}주", "예상금액": f"${amt:,.0f}"})
+
+        def _style(row):
+            s = [""] * len(row)
+            ix = list(row.index).index("구분")
+            v = row["구분"]
+            s[ix] = ("color:#C62828;font-weight:bold" if "MOC" in v else
+                     "color:#1565C0;font-weight:bold" if "매도" in v else
+                     "color:#E65100;font-weight:bold")
+            return s
+        st.dataframe(pd.DataFrame(rows).style.apply(_style, axis=1),
+                     use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
+        st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
+                   "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
+    else:
+        st.info("다음 거래일 주문 없음 (조건 미충족).")
+
+    # ── 보유 슬롯 ──
+    st.markdown("##### 📦 현재 보유 슬롯")
+    if r["positions"]:
+        pr = []
+        for pv in r["positions"]:
+            pnl = (r["last_close"] / pv["매수가"] - 1) * 100
+            pr.append({"모드": pv["모드"], "티어": f"T{pv['티어']}",
+                       "매수일": pd.Timestamp(pv["매수일"]).strftime("%Y-%m-%d"),
+                       "매수가": f"${pv['매수가']:.2f}", "수량": f"{pv['수량']:,}주",
+                       "매도목표": f"${pv['매도목표']:.2f}" if pv["매도목표"] else "MA청산",
+                       "손절예정일": pd.Timestamp(pv["손절예정일"]).strftime("%Y-%m-%d"),
+                       "평가손익": f"{pnl:+.1f}%"})
+        st.dataframe(pd.DataFrame(pr), use_container_width=True, hide_index=True,
+                     height=38 + 35 * len(pr))
+    else:
+        st.info("현재 보유 슬롯 없음 (전량 현금).")
+
+    # ── 히스토리 저장 ──
+    hc1, hc2 = st.columns([1, 3])
+    if hc1.button("💾 오늘 주문 기록 저장", key=f"ds_savehist{sfx}"):
+        n_buy = sum(1 for o in r["orders"] if o["구분"] == "매수")
+        n_sell = sum(1 for o in r["orders"] if o["구분"] == "매도")
+        snap = {"날짜": od, "기준종가": round(r["last_close"], 2), "모드": r["next_mode"],
+                "보유슬롯": r["n_pos"], "매수주문": n_buy, "매도주문": n_sell,
+                "현금": round(r["cash"]), "총자산": round(r["total_asset"]),
+                "누적실현": round(r["cum_realized"])}
+        _save_ds_history(acct_key, snap)
+        st.success(f"✅ {od} 기록 저장됨")
+
+    hist = _load_ds_history(acct_key)
+    if not hist.empty:
+        with st.expander(f"📋 누적 기록 ({len(hist)}건)"):
+            st.dataframe(hist.iloc[::-1].reset_index(drop=True), use_container_width=True,
+                         hide_index=True, height=min(38 + 35 * len(hist), 400))
+            st.download_button("📥 기록 CSV", hist.to_csv(index=False).encode("utf-8-sig"),
+                               f"dual_sniper_{acct_key}.csv", "text/csv", key=f"ds_dlhist{sfx}")
+
 
 
 # ══════════════════════════════════════════════
