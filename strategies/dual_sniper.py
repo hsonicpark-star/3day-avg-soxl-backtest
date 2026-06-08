@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import itertools
+import requests
 from datetime import datetime, timedelta
 
 _root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1573,45 +1574,156 @@ def render_db_tab(params=None):
 
 
 # ══════════════════════════════════════════════
-# 탭6: 개인 설정
+# 탭6: 개인 설정 (텔레그램 / 구글시트 — DSS 패턴)
 # ══════════════════════════════════════════════
+
+def _send_telegram(token, chat_id, text):
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+        return resp.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
+
+
+def _build_ds_order_text(r, acct_name=""):
+    """주문표 result → 텔레그램 메시지 텍스트."""
+    od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
+    lines = [f"<b>🎯 Dual Sniper — {acct_name}</b>",
+             f"주문일 {od} · 모드 <b>{r['next_mode']}</b> · 보유 {r['n_pos']}/{r['divisions']}슬롯",
+             f"기준종가 ${r['last_close']:.2f} · 총자산 ${r['total_asset']:,.0f}", ""]
+    if r["orders"]:
+        for o in r["orders"]:
+            price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
+            tag = "🔴매도" if o["거래방법"] == "MOC" else ("🔵매도" if o["구분"] == "매도" else "🟠매수")
+            lines.append(f"{tag} {o['거래방법']} {price} × {o['수량']:,}주 ({o['사유']})")
+    else:
+        lines.append("주문 없음")
+    return "\n".join(lines)
+
 
 def render_settings_tab():
     st.subheader("⚙️ 개인 설정")
     cfg = _load_ds_config()
 
-    st.markdown("##### 기본값 저장")
-    st.caption("사이드바 파라미터를 기본값으로 저장합니다.")
-    if st.button("💾 현재 사이드바 값 저장", key="ds_save_cfg"):
-        cfg["mode_rule"] = {
-            "ma_weeks": st.session_state.get("ds_ma", 36),
-            "peak_thr": st.session_state.get("ds_peak", 66.0),
-            "dn": st.session_state.get("ds_dn", 42.0),
-        }
-        cfg["strategy"] = {
-            "ag_div": st.session_state.get("ds_agdiv", 6),
-            "ag_buy": st.session_state.get("ds_agbuy", 8.0),
-            "ag_sell_alpha": st.session_state.get("ds_agsa", 0.4),
-            "ag_hold_alpha": st.session_state.get("ds_agha", 2.0),
-            "sf_div": st.session_state.get("ds_sfdiv", 5),
-            "sf_hold": st.session_state.get("ds_sfhold", 8),
-            "sf_buy1": st.session_state.get("ds_sfb1", -0.6),
-            "sf_buy2": st.session_state.get("ds_sfb2", 5.5),
-            "sf_sell": st.session_state.get("ds_sfsell", 0.7),
-            "sf_ma_base": st.session_state.get("ds_sfma", 3),
-            "sf_weights": st.session_state.get("ds_sfw", "6, 13, 20, 27, 34"),
-        }
-        cfg["initial_capital"] = st.session_state.get("ds_cap", 10000)
-        cfg["fee_rate"] = st.session_state.get("ds_fee", 0.0)
-        _save_ds_config(cfg)
-        st.success("✅ 저장되었습니다.")
+    if _IS_CLOUD:
+        if st.session_state.get("logged_in"):
+            st.success("☁️ **Streamlit Cloud 실행 중** — 설정이 Google Sheets에 영구 저장됩니다.")
+        else:
+            st.warning("☁️ **Streamlit Cloud 실행 중** — 로그인 후 설정이 영구 저장됩니다.")
+    else:
+        st.success(f"🖥️ **로컬 PC 실행 중** — 설정이 `{_DS_CONFIG_PATH}` 에 저장됩니다.")
 
-    st.markdown("---")
-    st.markdown("##### 데이터 캐시")
-    if st.button("🔄 가격/모드 캐시 초기화", key="ds_clear_cache"):
-        clear_ds_data_cache()
-        try:
-            get_auto_mode_map.clear()
-        except Exception:
-            pass
-        st.success("캐시를 초기화했습니다. 다음 실행 시 최신 데이터를 받습니다.")
+    # ── 텔레그램 알림 설정 ──
+    with st.container(border=True):
+        ct, ch = st.columns([3, 1])
+        with ct:
+            st.markdown("#### 💬 텔레그램 알림 설정")
+            st.caption("듀얼스나이퍼 주문표를 텔레그램으로 받을 수 있습니다.")
+        with ch:
+            with st.popover("❓ Chat ID & Bot Token 확인 방법", use_container_width=True):
+                st.markdown("""
+**1. Bot Token 생성** — 텔레그램에서 `@BotFather` → `/newbot` → 봇 이름/username 입력 → 발급된 **HTTP API Token**
+
+**2. 봇 시작 (필수)** — 내 봇 검색 → `/start` → 메시지 한 번 전송
+
+**3. Chat ID 확인**
+- 방법1: 봇에 메시지 후 브라우저에 `https://api.telegram.org/bot{토큰}/getUpdates` → JSON의 `"id"`
+- 방법2: `@userinfobot` 검색 → `/start` → Chat ID 확인
+
+**4. 테스트** — 아래 입력 후 '주문표 테스트 발송'으로 수신 확인 ✅
+""")
+        c1, c2 = st.columns(2)
+        tg_chat = c1.text_input("텔레그램 Chat ID", value=cfg.get("tg_chat_id", ""),
+                                placeholder="예: 1234567890", key="ds_tg_chat")
+        tg_tok = c2.text_input("Bot Token", value=cfg.get("tg_token", ""),
+                               placeholder="예: 123456789:AAF...", type="password", key="ds_tg_tok")
+        b1, b2, _ = st.columns([1, 1, 4])
+        if b1.button("📨 주문표 테스트 발송", use_container_width=True, key="ds_tg_test"):
+            if not tg_chat or not tg_tok:
+                st.warning("Chat ID와 Bot Token을 먼저 입력하세요.")
+            else:
+                accts = list(cfg.get("accounts", {}).keys())
+                sent = [(a, st.session_state.get(f"ds_osa{i}"))
+                        for i, a in enumerate(accts) if st.session_state.get(f"ds_osa{i}")]
+                if not sent:
+                    st.warning("⚠️ 주문표 탭에서 먼저 '주문표 로드'를 실행하세요.")
+                else:
+                    ok = 0
+                    for a, r in sent:
+                        if _send_telegram(tg_tok, tg_chat, _build_ds_order_text(r, a)).get("ok"):
+                            ok += 1
+                    st.success(f"✅ {ok}/{len(sent)}개 계좌 발송 완료")
+        if b2.button("💾 저장하기", use_container_width=True, key="ds_tg_save", type="primary"):
+            cfg["tg_chat_id"] = tg_chat
+            cfg["tg_token"] = tg_tok
+            _save_ds_config(cfg)
+            st.success("✅ 텔레그램 설정 저장 완료")
+
+    st.write("")
+
+    # ── 구글 스프레드시트 연동 ──
+    with st.container(border=True):
+        cg, cgh = st.columns([3, 1])
+        with cg:
+            st.markdown("#### 🗂️ 구글 스프레드시트 연동")
+            st.caption("주문 기록을 구글 스프레드시트로 동기화합니다. (계좌별 `ds_{계좌}_매매기록` 시트 자동 생성)")
+        with cgh:
+            with st.popover("❓ 구글 스프레드시트 설정 방법", use_container_width=True):
+                st.markdown("""
+1. [Google Sheets](https://sheets.google.com)에서 새 시트 생성
+2. 시트 URL을 아래에 입력
+3. **서비스 계정 이메일**을 해당 시트의 **편집자**로 공유
+   - (Cloud: 관리자가 설정한 서비스계정 / 로컬: `service_account.json`)
+4. '연결 테스트'로 확인 후 저장 → 주문표 기록 저장 시 자동 동기화됩니다.
+""")
+        gs_url = st.text_input("스프레드시트 URL", value=cfg.get("gs_url", ""),
+                               placeholder="https://docs.google.com/spreadsheets/d/...", key="ds_gs_url")
+        g1, g2, _ = st.columns([1, 1, 4])
+        if g1.button("🔗 시트 연결 테스트", use_container_width=True, key="ds_gs_test"):
+            if not gs_url:
+                st.warning("URL을 먼저 입력하세요.")
+            else:
+                try:
+                    from common.config import _get_gspread_client
+                    sh = _get_gspread_client().open_by_url(gs_url)
+                    st.success(f"✅ 연결 성공: **{sh.title}**")
+                except Exception as e:
+                    st.error(f"❌ 연결 실패: {e}")
+        if g2.button("💾 저장하기 ", use_container_width=True, key="ds_gs_save", type="primary"):
+            if not gs_url:
+                st.warning("URL을 입력하세요.")
+            else:
+                cfg["gs_url"] = gs_url
+                _save_ds_config(cfg)
+                st.success("✅ 구글 스프레드시트 설정 저장 완료")
+
+    st.write("")
+
+    # ── 기본값 / 캐시 ──
+    with st.container(border=True):
+        st.markdown("#### 🧰 파라미터 기본값 & 캐시")
+        bc1, bc2 = st.columns(2)
+        if bc1.button("💾 현재 사이드바 값을 기본값으로 저장", key="ds_save_cfg", use_container_width=True):
+            cfg["mode_rule"] = {"ma_weeks": st.session_state.get("ds_ma", 36),
+                                "peak_thr": st.session_state.get("ds_peak", 66.0),
+                                "dn": st.session_state.get("ds_dn", 42.0)}
+            cfg["strategy"] = {
+                "ag_div": st.session_state.get("ds_agdiv", 6), "ag_buy": st.session_state.get("ds_agbuy", 8.0),
+                "ag_sell_alpha": st.session_state.get("ds_agsa", 0.4), "ag_hold_alpha": st.session_state.get("ds_agha", 2.0),
+                "sf_div": st.session_state.get("ds_sfdiv", 5), "sf_hold": st.session_state.get("ds_sfhold", 8),
+                "sf_buy1": st.session_state.get("ds_sfb1", -0.6), "sf_buy2": st.session_state.get("ds_sfb2", 5.5),
+                "sf_sell": st.session_state.get("ds_sfsell", 0.7), "sf_ma_base": st.session_state.get("ds_sfma", 3),
+                "sf_weights": st.session_state.get("ds_sfw", "6, 13, 20, 27, 34")}
+            cfg["initial_capital"] = st.session_state.get("ds_cap", 10000)
+            cfg["fee_rate"] = st.session_state.get("ds_fee", 0.0)
+            _save_ds_config(cfg)
+            st.success("✅ 기본값 저장 완료")
+        if bc2.button("🔄 가격/모드 캐시 초기화", key="ds_clear_cache", use_container_width=True):
+            clear_ds_data_cache()
+            try:
+                get_auto_mode_map.clear()
+            except Exception:
+                pass
+            st.success("✅ 캐시 초기화 완료")
