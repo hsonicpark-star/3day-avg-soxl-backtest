@@ -614,13 +614,26 @@ def verify_dss_against_board(client, os_result: dict, verify_url: str,
 
 def parse_dss_verify_sheets(dss_cfg: dict) -> dict:
     """dss_config에서 계좌별 검증시트 매핑 반환.
-    구조: {"verify_url": "...", "verify_sheets": {계좌명: 탭이름}}
+    신구조: verify_sheets = {계좌명: {"url": ..., "sheet": ...}}
+    레거시: verify_url(공용) + verify_sheets = {계좌명: 탭이름(문자열)}
+    Returns: {계좌명: {"url": ..., "sheet": ...}}
     """
-    url = str(dss_cfg.get("verify_url", "")).strip()
-    sheets = dss_cfg.get("verify_sheets", {})
-    if not isinstance(sheets, dict):
-        sheets = {}
-    return {"url": url, "sheets": sheets}
+    legacy_url = str(dss_cfg.get("verify_url", "")).strip()
+    raw = dss_cfg.get("verify_sheets", {})
+    if not isinstance(raw, dict):
+        return {}
+    result = {}
+    for acct, val in raw.items():
+        if isinstance(val, dict):
+            url = str(val.get("url", "")).strip()
+            sheet = str(val.get("sheet", "")).strip()
+        else:
+            # 레거시: 값이 탭이름 문자열 → 공용 url 사용
+            url = legacy_url
+            sheet = str(val).strip()
+        if url and sheet:
+            result[acct] = {"url": url, "sheet": sheet}
+    return result
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1480,11 +1493,11 @@ def main():
                 _issues = sanity_check_dss(os_result, acct_name, acct_data)
                 user_warnings.extend([f"[DSS/{acct_name}] {m}" for m in _issues])
 
-                # 알고리C 원본 시트(BOARD)와 대조 검증
-                _vsheet = dss_verify["sheets"].get(acct_name, "")
-                if dss_verify["url"] and _vsheet:
+                # 알고리C 원본 시트(BOARD)와 대조 검증 (계좌별 URL)
+                _vinfo = dss_verify.get(acct_name)
+                if _vinfo:
                     _vissues = verify_dss_against_board(
-                        client, os_result, dss_verify["url"], _vsheet, acct_name)
+                        client, os_result, _vinfo["url"], _vinfo["sheet"], acct_name)
                     if _vissues:
                         user_warnings.extend(
                             [f"[DSS/{acct_name}📋시트대조] {m}" for m in _vissues])
