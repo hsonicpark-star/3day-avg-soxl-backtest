@@ -551,6 +551,22 @@ def parse_dss_config(user: dict) -> dict:
     return {}
 
 
+def _parse_sheet_number(val):
+    """시트 셀 값에서 숫자 추출 ('$188.56', '1,234', 188.56 등 → float).
+    실패 시 None."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip().replace("$", "").replace(",", "").replace("%", "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
 def verify_dss_against_board(client, os_result: dict, verify_url: str,
                              verify_sheet: str, acct_name: str = "") -> list:
     """앱 계산 주문표를 알고리C 원본 시트 BOARD 탭과 대조.
@@ -558,7 +574,8 @@ def verify_dss_against_board(client, os_result: dict, verify_url: str,
     BOARD 탭 고정 셀:
       B3  = 모드 ("공세모드"/"안전모드")
       B7  = 당일 매수가,  C7 = 매수 수량
-      B10 = 예약 매도가,  C10 = 매도 수량 (대표 1건)
+
+    매수가/수량은 '$188.56', '343' 등 문자열일 수 있어 _parse_sheet_number로 정규화.
 
     Returns: 불일치 메시지 리스트 (일치하면 빈 리스트)
     """
@@ -570,10 +587,9 @@ def verify_dss_against_board(client, os_result: dict, verify_url: str,
         except Exception:
             return [f"⚠️ 검증시트 탭 '{verify_sheet}' 없음"]
 
-        # B3, B7/C7 읽기 (1-indexed: row, col)
         board_mode_raw = str(ws.cell(3, 2).value or "").strip()
-        board_buy_price = ws.cell(7, 2).value
-        board_buy_qty = ws.cell(7, 3).value
+        board_buy_price = _parse_sheet_number(ws.cell(7, 2).value)
+        board_buy_qty = _parse_sheet_number(ws.cell(7, 3).value)
 
         # 시트 모드 → AG/SF 변환
         board_mode = "AG" if "공세" in board_mode_raw else ("SF" if "안전" in board_mode_raw else "?")
@@ -587,25 +603,19 @@ def verify_dss_against_board(client, os_result: dict, verify_url: str,
         # 2. 매수가 비교 (시트에 매수 주문이 있을 때만)
         app_buy = os_result.get("next_buy_order")
         can_buy = os_result.get("n_pos", 0) < os_result.get("cur_divisions", 0)
-        if board_buy_price is not None and can_buy:
-            try:
-                bp = round(float(board_buy_price), 2)
-                ap = round(float(app_buy), 2)
-                if abs(bp - ap) > 0.01:
-                    issues.append(f"매수가 불일치: 앱=${ap:.2f} vs 시트=${bp:.2f}")
-            except Exception:
-                pass
+        if board_buy_price is not None and can_buy and app_buy is not None:
+            bp = round(board_buy_price, 2)
+            ap = round(float(app_buy), 2)
+            if abs(bp - ap) > 0.01:
+                issues.append(f"매수가 불일치: 앱=${ap:.2f} vs 시트=${bp:.2f}")
 
         # 3. 매수 수량 비교
         app_qty = os_result.get("buy_qty_est")
-        if board_buy_qty is not None and can_buy:
-            try:
-                bq = int(float(board_buy_qty))
-                aq = int(app_qty)
-                if bq != aq:
-                    issues.append(f"매수수량 불일치: 앱={aq}주 vs 시트={bq}주")
-            except Exception:
-                pass
+        if board_buy_qty is not None and can_buy and app_qty is not None:
+            bq = int(board_buy_qty)
+            aq = int(app_qty)
+            if bq != aq:
+                issues.append(f"매수수량 불일치: 앱={aq}주 vs 시트={bq}주")
 
     except Exception as e:
         issues.append(f"검증 실패: {e}")
