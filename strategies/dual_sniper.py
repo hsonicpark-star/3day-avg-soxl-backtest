@@ -1036,6 +1036,47 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
 # 탭4: 전략 소개 & 성과 분석
 # ══════════════════════════════════════════════
 
+def _render_norm_viz():
+    """공격모드 매도조건/보유기간 정규화 — α 슬라이더 + 표 + 곡선 차트."""
+    s1, s2 = st.columns(2)
+    a_sell = s1.slider("매도조건 α", 0.2, 1.5, 0.4, 0.1, key="ds_viz_sa",
+                       help="작을수록 곡선이 가팔라짐 (저RSI에서 익절폭 급증)")
+    a_hold = s2.slider("보유기간 α", 0.5, 4.0, 2.0, 0.5, key="ds_viz_ha")
+
+    def _clip(r):
+        return max(0.0, min(1.0, (r - 35) / 30))
+    rs_sell = [65, 62, 59, 56, 53, 50, 47, 44, 41, 38, 35]
+    sell = [round(0.1 + 2.9 * (1 - _clip(r)) ** (1 / a_sell), 2) for r in rs_sell]
+    rs_hold = [70, 65, 60, 55, 50, 45, 40, 35]
+    hold = [int(round(7 + 23 * (1 - _clip(r)) ** (1 / a_hold))) for r in rs_hold]
+
+    g1, g2 = st.columns(2)
+    with g1:
+        st.caption(f"📈 매도조건 정규화 표 (α = {a_sell})")
+        fig = go.Figure(go.Scatter(x=rs_sell, y=sell, mode="lines+markers",
+                                   fill="tozeroy", line=dict(color="#4FC3F7", width=2),
+                                   marker=dict(size=7), fillcolor="rgba(79,195,247,0.15)"))
+        fig.update_layout(height=240, margin=dict(l=0, r=0, t=6, b=0),
+                          xaxis=dict(autorange="reversed", title="매수RSI", dtick=3),
+                          yaxis=dict(title="매도%", ticksuffix="%"))
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(pd.DataFrame({"매수RSI": rs_sell, "매도기준": [f"{v:.2f}%" for v in sell]}),
+                     hide_index=True, use_container_width=True, height=240)
+        st.caption("매도기준(%) = 0.1 + 2.9 × (1−x)^(1/α),  x=(매수RSI−35)/30")
+    with g2:
+        st.caption(f"📈 보유기간 정규화 표 (α = {a_hold})")
+        fig2 = go.Figure(go.Scatter(x=rs_hold, y=hold, mode="lines+markers",
+                                    fill="tozeroy", line=dict(color="#4FC3F7", width=2),
+                                    marker=dict(size=7), fillcolor="rgba(79,195,247,0.15)"))
+        fig2.update_layout(height=240, margin=dict(l=0, r=0, t=6, b=0),
+                           xaxis=dict(autorange="reversed", title="매수RSI", dtick=5),
+                           yaxis=dict(title="보유일", ticksuffix="일"))
+        st.plotly_chart(fig2, use_container_width=True)
+        st.dataframe(pd.DataFrame({"매수RSI": rs_hold, "보유일": [f"{v}일" for v in hold]}),
+                     hide_index=True, use_container_width=True, height=240)
+        st.caption("보유일 = 7 + 23 × (1−x)^(1/α),  x=(매수RSI−35)/30")
+
+
 def render_intro_tab(params=None):
     st.subheader("📖 Dual Sniper Pro — 전략 소개")
 
@@ -1061,21 +1102,11 @@ def render_intro_tab(params=None):
 - 전일 **하락**(FI≤0): `전일종가 × (1 − 0.1%)` → 신중 진입
 - 슬롯 6개, 가장 낮은 빈 슬롯을 채움
 
-**매도** — 슬롯별 독립 익절 (매수RSI 정규화)
-- `매도% = 0.1 + 2.9 × (1−x)^(1/0.4)`, x = (매수RSI−35)/30
-
-| 매수RSI | 65 | 59 | 53 | 50 | 47 | 44 | 41 | 38 | 35 |
-|---|---|---|---|---|---|---|---|---|---|
-| 익절폭 | 0.10% | 0.15% | 0.39% | 0.61% | 0.91% | 1.29% | 1.76% | 2.33% | 3.00% |
-
-→ RSI 낮은(공포) 구간 매수일수록 익절폭을 크게.
-
-**보유기간** — 매수RSI 정규화 (7~30일), 만기 시 MOC 청산
-- `보유일 = 7 + 23 × (1−x)^(1/2.0)`
-
-| 매수RSI | 70 | 65 | 60 | 55 | 50 | 45 | 40 | 35 |
-|---|---|---|---|---|---|---|---|---|
-| 보유일 | 7 | 16 | 19 | 22 | 24 | 26 | 28 | 30 |
+**매수RSI 정규화** — 매도 익절폭과 보유기간을 매수 시점 RSI로 연속 조절. **α를 바꾸면 곡선이 즉시 갱신**됩니다.
+""")
+        _render_norm_viz()
+        st.markdown("""
+→ RSI 낮은(공포) 구간 매수일수록 **익절폭을 크게, 보유를 길게**. (반등 여력이 크니 넉넉히 기다림)
 
 **1티어 보류** — 전일종가 > 전일 MA(5)면 슬롯1의 LOC 매도를 보류(MOC 제외) → 상승추세에서 첫 슬롯을 끌고 감.
 """)
