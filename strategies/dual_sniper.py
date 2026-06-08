@@ -197,9 +197,13 @@ def render_sidebar():
     fee_rate = b2.number_input("수수료%", 0.0, 1.0, float(cfg.get("fee_rate", 0.0)),
                                0.001, format="%.3f", key="ds_fee")
     g1, g2 = st.sidebar.columns(2)
+    _date_max = max(datetime.today().date(), datetime(2026, 12, 31).date())
     start_date = g1.date_input("투자시작일", value=pd.Timestamp(cfg.get("start_date", "2016-01-04")),
+                               min_value=datetime(2010, 3, 11).date(), max_value=_date_max,
                                key="ds_start")
-    end_date = g2.date_input("투자종료일", value=datetime.today().date(), key="ds_end")
+    end_date = g2.date_input("투자종료일", value=datetime.today().date(),
+                             min_value=datetime(2010, 3, 11).date(), max_value=_date_max,
+                             key="ds_end")
     st.sidebar.caption("⚠️ 2011~2015 포함 시 성과 하락(반도체 약세장). 2016 권장.")
 
     # 티어비중 파싱
@@ -748,7 +752,9 @@ def render_ordersheet_tab(params):
     with st.expander("➕ 계좌 추가", expanded=(len(accounts) == 0)):
         ac1, ac2 = st.columns(2)
         add_name = ac1.text_input("계좌 이름", "", key="ds_add_name", placeholder="예: PJH, 연습용")
+        _dmax = max(datetime.today().date(), datetime(2026, 12, 31).date())
         add_start = ac2.date_input("시작일", pd.to_datetime(p.get("start_date", "2016-01-04")),
+                                   min_value=datetime(2010, 3, 11).date(), max_value=_dmax,
                                    key="ds_add_start")
         ac3, _ = st.columns(2)
         add_cap = ac3.number_input("시작 자본 ($)", value=10000.0, step=1000.0, key="ds_add_cap")
@@ -878,7 +884,8 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     s1, s2, s3 = st.columns([2, 2, 1])
     in_start = s1.date_input("시작일", pd.to_datetime(os_start).date(),
                              min_value=datetime(2010, 3, 11).date(),
-                             max_value=datetime.today().date(), key=f"ds_start{sfx}")
+                             max_value=max(datetime.today().date(), datetime(2026, 12, 31).date()),
+                             key=f"ds_start{sfx}")
     in_cap = s2.number_input("시작 자본 ($)", value=os_capital, step=1000.0, key=f"ds_cap{sfx}")
     if s3.button("💾 저장", key=f"ds_savesc{sfx}"):
         acct_data["os_start"] = str(in_start)
@@ -900,7 +907,10 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         except Exception:
             adj = []
         ad1, ad2 = st.columns([2, 1])
-        adj_date = ad1.date_input("적용 날짜", datetime.today().date(), key=f"ds_adj_d{sfx}")
+        adj_date = ad1.date_input("적용 날짜", datetime.today().date(),
+                                  min_value=datetime(2010, 3, 11).date(),
+                                  max_value=max(datetime.today().date(), datetime(2026, 12, 31).date()),
+                                  key=f"ds_adj_d{sfx}")
         adj_amt = ad1.number_input("조정 금액 ($)", value=0.0, step=500.0, key=f"ds_adj_a{sfx}")
         if ad2.button("💰 적용", key=f"ds_adj_btn{sfx}", disabled=(adj_amt == 0)):
             adj.append({"날짜": adj_date.strftime("%Y-%m-%d"), "조정금액": float(adj_amt),
