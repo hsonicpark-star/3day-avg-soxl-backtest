@@ -340,151 +340,298 @@ def render_backtest_tab(params):
 
 
 # ══════════════════════════════════════════════
-# 탭2: 파라미터 최적화 (전략 파라미터 / 모드 규칙)
+# 탭2: 파라미터 최적화 (DSS 4종 방식 — 그리드/랜덤/워크포워드/베이지안)
 # ══════════════════════════════════════════════
+
+_OPT_METRICS = {
+    "Calmar Ratio (CAGR / MDD)": ("Calmar", False),
+    "CAGR (%)": ("CAGR(%)", False),
+    "총수익률 (%)": ("수익률(%)", False),
+    "MDD 최소화 (작을수록 좋음)": ("MDD(%)", False),
+    "Sharpe Ratio": ("Sharpe", False),
+}
+
+
+def _eval_dual(combo, px_df, mode_map, start, end, cap, fixed):
+    """combo=(공분할,공보유α,공매수%,공매도α,방분할,방보유,방매수1,방매수2,방매도) → 결과 dict or None."""
+    ag_div, ag_ha, ag_buy, ag_sa, sf_div, sf_hold, sf_b1, sf_b2, sf_sell = combo
+    sf_ma_base, sf_weights, fee_rate = fixed
+    w = sf_weights
+    if len(w) != sf_div:
+        base = [6, 13, 20, 27, 34, 40, 46, 52]
+        w = tuple(base[:sf_div]) if sf_div <= len(base) else tuple([round(100/sf_div, 1)] * sf_div)
+    ds_p = DualSniperParams(
+        ag_divisions=int(ag_div), ag_buy_pct=ag_buy, ag_sell_alpha=ag_sa, ag_hold_alpha=ag_ha,
+        sf_divisions=int(sf_div), sf_buy_pct1=sf_b1, sf_buy_pct2=sf_b2, sf_sell_pct=sf_sell,
+        sf_ma_base=int(sf_ma_base), sf_hold=int(sf_hold), sf_tier_weights=w,
+        initial_capital=cap, fee_rate=fee_rate / 100, sec_fee_rate=0.0,
+        ag_buy_inclusive=False, sf_buy_inclusive=False)
+    log = run_backtest(px_df, ds_p, mode_map=mode_map, start_date=start, light=True)
+    log = log[(log['날짜'] >= pd.Timestamp(start)) & (log['날짜'] <= pd.Timestamp(end))]
+    if len(log) < 50:
+        return None
+    m = compute_metrics(log, None, cap)
+    if not np.isfinite(m.get('Calmar', float('nan'))):
+        return None
+    return {'공분할': int(ag_div), '공보유α': ag_ha, '공매수%': ag_buy, '공매도α': ag_sa,
+            '방분할': int(sf_div), '방보유': int(sf_hold), '방매수1': sf_b1, '방매수2': sf_b2, '방매도': sf_sell,
+            'CAGR(%)': round(m['CAGR(%)'], 1), 'MDD(%)': round(m['MDD(%)'], 1),
+            '수익률(%)': round(m['총수익률(%)'], 1),
+            'Sharpe': round(m['Sharpe'], 2) if np.isfinite(m['Sharpe']) else 0.0,
+            'Calmar': round(m['Calmar'], 2), '최종자산': round(m['최종자산'])}
+
+
+def _show_ds_opt(res_df, sort_col, key_sfx):
+    st.success(f"완료: {len(res_df)}개 결과 (정렬: {sort_col})")
+    st.dataframe(res_df.head(25), use_container_width=True, hide_index=True)
+    fig = px.scatter(res_df, x="MDD(%)", y="CAGR(%)", color="Calmar",
+                     hover_data=['공매수%', '공매도α', '공보유α', '방매수1', '방매수2', '방매도'],
+                     color_continuous_scale="RdYlGn")
+    fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+    st.download_button("📥 결과 CSV", res_df.to_csv(index=False).encode('utf-8-sig'),
+                       f"dual_sniper_opt_{key_sfx}.csv", "text/csv", key=f"ds_dl_{key_sfx}")
+
 
 def render_optimization_tab(params):
     p = params
     st.subheader("🔍 파라미터 최적화")
-    target = st.radio("최적화 대상", ["🎯 전략 파라미터", "🧭 모드 규칙"],
-                      horizontal=True, key="ds_opt_target")
-    sort_col = st.selectbox("정렬 기준", ["Calmar", "CAGR(%)", "최종자산"], key="ds_opt_sort")
+    method = st.radio("최적화 방식",
+                      ["📊 그리드 탐색", "🎲 랜덤 탐색", "📈 워크포워드", "🧠 베이지안"],
+                      horizontal=True, key="ds_opt_method")
+    _desc = {
+        "📊 그리드 탐색": "모든 파라미터 조합을 완전 탐색합니다. 조합이 적을 때 가장 정확합니다.",
+        "🎲 랜덤 탐색": "무작위로 N개 조합을 샘플링합니다. 탐색 공간이 클 때 빠르게 좋은 값을 찾습니다.",
+        "📈 워크포워드": "전체 기간을 IS(최적화)·OOS(검증) 윈도우로 분할해 과적합을 방지합니다.",
+        "🧠 베이지안": "Optuna TPE로 적은 시도로 최적값에 빠르게 수렴합니다.",
+    }
+    st.caption(_desc[method] + "  ·  모드는 사이드바 규칙으로 고정 (전략 파라미터 탐색)")
 
-    if target == "🎯 전략 파라미터":
-        _opt_strategy_params(p, sort_col)
-    else:
-        _opt_mode_rule(p, sort_col)
+    # ── 파라미터 범위 ──
+    with st.expander("파라미터 범위 설정", expanded=True):
+        st.markdown("**🟥 공격모드**")
+        a1, a2, a3, a4 = st.columns(4)
+        agdv = a1.slider("분할수", 3, 10, (6, 6), key="dso_agdv")
+        agha = a2.slider("보유 α", 0.5, 4.0, (2.0, 2.0), 0.5, key="dso_agha")
+        agha_s = a2.number_input("보유α 간격", 0.5, 2.0, 1.0, 0.5, key="dso_agha_s")
+        agby = a3.slider("매수조건%", 0.0, 15.0, (6.0, 10.0), 0.5, key="dso_agby")
+        agby_s = a3.number_input("매수% 간격", 0.5, 5.0, 2.0, 0.5, key="dso_agby_s")
+        agsa = a4.slider("매도 α", 0.2, 1.5, (0.3, 0.5), 0.1, key="dso_agsa")
+        agsa_s = a4.number_input("매도α 간격", 0.1, 0.5, 0.1, 0.1, key="dso_agsa_s")
+        st.markdown("**🟦 방어모드**")
+        b1, b2, b3, b4, b5 = st.columns(5)
+        sfdv = b1.slider("분할수", 3, 8, (5, 5), key="dso_sfdv")
+        sfhd = b2.slider("보유기간", 4, 20, (8, 8), key="dso_sfhd")
+        sfb1 = b3.slider("매수1 MA%", -3.0, 1.0, (-1.0, 0.0), 0.1, key="dso_sfb1")
+        sfb1_s = b3.number_input("매수1 간격", 0.1, 1.0, 0.5, 0.1, key="dso_sfb1_s")
+        sfb2 = b4.slider("매수2 종가%", 1.0, 12.0, (4.0, 8.0), 0.5, key="dso_sfb2")
+        sfb2_s = b4.number_input("매수2 간격", 0.5, 3.0, 2.0, 0.5, key="dso_sfb2_s")
+        sfsl = b5.slider("매도 MA%", 0.1, 3.0, (0.5, 1.0), 0.1, key="dso_sfsl")
+        sfsl_s = b5.number_input("매도 간격", 0.1, 1.0, 0.5, 0.1, key="dso_sfsl_s")
+        metric_label = st.selectbox("최적화 기준 지표", list(_OPT_METRICS.keys()), key="ds_opt_metric")
+    sort_col, sort_asc = _OPT_METRICS[metric_label]
 
+    def _vint(rng, step=1):
+        return list(range(rng[0], rng[1] + 1, max(1, int(step))))
 
-def _opt_strategy_params(p, sort_col):
-    st.caption("공격/방어 매매 파라미터를 탐색합니다. 모드는 사이드바 규칙으로 고정. (랜덤 서치)")
-    st.markdown("**🟥 공격모드 범위**")
-    a1, a2, a3 = st.columns(3)
-    agbuy_r = a1.slider("매수조건(종가%)", 0.0, 15.0, (4.0, 10.0), 0.5, key="ds_o_agbuy")
-    agsa_r = a2.slider("매도 α", 0.2, 1.5, (0.3, 0.7), 0.1, key="ds_o_agsa")
-    agha_r = a3.slider("보유 α", 0.5, 4.0, (1.5, 3.0), 0.5, key="ds_o_agha")
-    st.markdown("**🟦 방어모드 범위**")
-    b1, b2, b3 = st.columns(3)
-    sfb1_r = b1.slider("매수조건1(MA%)", -3.0, 1.0, (-1.5, 0.0), 0.1, key="ds_o_sfb1")
-    sfb2_r = b2.slider("매수조건2(종가%)", 1.0, 12.0, (3.0, 8.0), 0.5, key="ds_o_sfb2")
-    sfsell_r = b3.slider("매도조건(MA%)", 0.1, 3.0, (0.4, 1.2), 0.1, key="ds_o_sfsell")
-    n_samples = st.slider("랜덤 샘플 수", 50, 800, 300, 50, key="ds_o_n")
+    def _vflt(rng, step):
+        n = int(round((rng[1] - rng[0]) / step)) if step > 0 else 0
+        return [round(rng[0] + k * step, 3) for k in range(n + 1)]
 
-    if st.button("🚀 최적화 실행", type="primary", key="ds_run_opt_sp", use_container_width=True):
+    AGDV, AGHA = _vint(agdv), _vflt(agha, agha_s)
+    AGBY, AGSA = _vflt(agby, agby_s), _vflt(agsa, agsa_s)
+    SFDV, SFHD = _vint(sfdv), _vint(sfhd)
+    SFB1, SFB2, SFSL = _vflt(sfb1, sfb1_s), _vflt(sfb2, sfb2_s), _vflt(sfsl, sfsl_s)
+    n_total = (len(AGDV) * len(AGHA) * len(AGBY) * len(AGSA) *
+               len(SFDV) * len(SFHD) * len(SFB1) * len(SFB2) * len(SFSL))
+
+    start, end = str(p["start_date"]), str(p["end_date"])
+    cap = float(p["initial_capital"])
+    fixed = (p["sf_ma_base"], p["sf_weights"], p["fee_rate"])
+
+    def _load():
+        px_df = get_soxl_data()
+        mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
+                                       peak_thr=p["peak_thr"], dn=p["dn"])
+        return px_df, mode_map
+
+    # ── ① 그리드 ──
+    if method == "📊 그리드 탐색":
+        msg = f"예상 조합 수: **{n_total:,}개**"
+        (st.error if n_total > 30000 else st.warning if n_total > 4000 else st.info)(msg)
+        if st.button("▶ 그리드 탐색 실행", type="primary", key="ds_grid",
+                     disabled=(n_total == 0 or n_total > 30000)):
+            px_df, mode_map = _load()
+            combos = list(itertools.product(AGDV, AGHA, AGBY, AGSA, SFDV, SFHD, SFB1, SFB2, SFSL))
+            prog = st.progress(0.0, text="그리드 탐색 중...")
+            rows = []
+            for i, c in enumerate(combos):
+                r = _eval_dual(c, px_df, mode_map, start, end, cap, fixed)
+                if r:
+                    rows.append(r)
+                if i % max(1, len(combos) // 50) == 0:
+                    prog.progress(min((i + 1) / len(combos), 1.0))
+            prog.progress(1.0)
+            if rows:
+                st.session_state["ds_opt_res"] = pd.DataFrame(rows).sort_values(
+                    sort_col, ascending=sort_asc).reset_index(drop=True)
+        if "ds_opt_res" in st.session_state:
+            _show_ds_opt(st.session_state["ds_opt_res"], sort_col, "grid")
+
+    # ── ② 랜덤 ──
+    elif method == "🎲 랜덤 탐색":
         import random
+        n_s = st.number_input("샘플 수", 50, 5000, 400, 50, key="ds_ns")
+        st.info(f"랜덤 **{int(n_s):,}개** 조합 샘플링 (그리드 {n_total:,}개 중 무작위)")
+        if st.button("▶ 랜덤 탐색 실행", type="primary", key="ds_rand"):
+            px_df, mode_map = _load()
+            random.seed(42)
+            prog = st.progress(0.0, text="랜덤 탐색 중...")
+            rows, seen = [], set()
+            for i in range(int(n_s)):
+                c = (random.choice(AGDV), random.choice(AGHA), random.choice(AGBY), random.choice(AGSA),
+                     random.choice(SFDV), random.choice(SFHD), random.choice(SFB1), random.choice(SFB2),
+                     random.choice(SFSL))
+                if c in seen:
+                    continue
+                seen.add(c)
+                r = _eval_dual(c, px_df, mode_map, start, end, cap, fixed)
+                if r:
+                    rows.append(r)
+                if i % max(1, int(n_s) // 50) == 0:
+                    prog.progress(min((i + 1) / int(n_s), 1.0))
+            prog.progress(1.0)
+            if rows:
+                st.session_state["ds_opt_res"] = pd.DataFrame(rows).sort_values(
+                    sort_col, ascending=sort_asc).reset_index(drop=True)
+        if "ds_opt_res" in st.session_state:
+            _show_ds_opt(st.session_state["ds_opt_res"], sort_col, "random")
+
+    # ── ③ 워크포워드 ──
+    elif method == "📈 워크포워드":
+        w1, w2 = st.columns(2)
+        is_y = w1.number_input("IS(최적화) 기간(년)", 1, 10, 3, key="ds_wf_is")
+        oos_y = w2.number_input("OOS(검증) 기간(년)", 1, 5, 1, key="ds_wf_oos")
+        st.info(f"IS **{is_y}년** 최적화 → OOS **{oos_y}년** 검증을 슬라이딩 반복. "
+                f"그리드 **{n_total:,}개** × 윈도우 수만큼 실행됩니다.")
+        if n_total > 2000:
+            st.warning(f"조합 {n_total:,}개로 많습니다. 범위/간격을 줄이면 빨라집니다.")
+        if st.button("▶ 워크포워드 실행", type="primary", key="ds_wf"):
+            px_df, mode_map = _load()
+            ts, te = pd.Timestamp(start).date(), pd.Timestamp(end).date()
+            wins, cur = [], ts
+            while True:
+                ie = cur + timedelta(days=int(is_y * 365.25))
+                oe = ie + timedelta(days=int(oos_y * 365.25))
+                if oe > te:
+                    break
+                wins.append((cur, ie, oe))
+                cur = ie
+            if not wins:
+                st.error("데이터 기간이 짧아 윈도우를 만들 수 없습니다.")
+            else:
+                combos = list(itertools.product(AGDV, AGHA, AGBY, AGSA, SFDV, SFHD, SFB1, SFB2, SFSL))
+                prog = st.progress(0.0, text="워크포워드 중...")
+                wrows, ccap = [], cap
+                for wi, (is_s, is_e, oos_e) in enumerate(wins):
+                    best = None
+                    for c in combos:
+                        r = _eval_dual(c, px_df, mode_map, str(is_s), str(is_e), cap, fixed)
+                        if r and (best is None or r[sort_col] > best[0]):
+                            best = (r[sort_col], c)
+                    prog.progress((wi + 0.5) / len(wins),
+                                  text=f"윈도우 {wi+1}/{len(wins)} OOS 검증 중...")
+                    if not best:
+                        continue
+                    oos = _eval_dual(best[1], px_df, mode_map, str(is_e), str(oos_e), ccap, fixed)
+                    if not oos:
+                        continue
+                    c = best[1]
+                    wrows.append({'윈도우': wi + 1, 'IS': f"{is_s}~{is_e}", 'OOS': f"{is_e}~{oos_e}",
+                                  '공(분/보α/매수/매도α)': f"{c[0]}/{c[1]}/{c[2]}/{c[3]}",
+                                  '방(분/보/매1/매2/매도)': f"{c[4]}/{c[5]}/{c[6]}/{c[7]}/{c[8]}",
+                                  f'IS {sort_col}': round(best[0], 2),
+                                  'OOS CAGR(%)': oos['CAGR(%)'], 'OOS MDD(%)': oos['MDD(%)'],
+                                  'OOS Calmar': oos['Calmar'],
+                                  '시작($)': round(ccap), '종료($)': oos['최종자산']})
+                    ccap = oos['최종자산']
+                prog.progress(1.0)
+                if not wrows:
+                    st.error("유효한 OOS 결과가 없습니다.")
+                else:
+                    wdf = pd.DataFrame(wrows)
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("시작 자본", f"${cap:,.0f}")
+                    m2.metric("최종 자본(OOS)", f"${ccap:,.0f}")
+                    m3.metric("OOS 총수익", f"{(ccap/cap-1)*100:+.1f}%")
+                    m4.metric("윈도우 수", f"{len(wrows)}개")
+                    st.dataframe(wdf, use_container_width=True, hide_index=True)
+                    figw = px.bar(wdf, x="윈도우", y="OOS CAGR(%)", color="OOS CAGR(%)",
+                                  color_continuous_scale="RdYlGn", text_auto=".0f")
+                    figw.add_hline(y=0, line_dash="dash", line_color="gray")
+                    figw.update_layout(height=380)
+                    st.plotly_chart(figw, use_container_width=True)
+                    st.download_button("📥 워크포워드 CSV", wdf.to_csv(index=False).encode('utf-8-sig'),
+                                       "dual_sniper_wfo.csv", "text/csv", key="ds_dl_wfo")
+
+    # ── ④ 베이지안 ──
+    else:
         try:
-            px_df = get_soxl_data()
-            mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
-                                           peak_thr=p["peak_thr"], dn=p["dn"])
-        except Exception as e:
-            st.error(f"데이터/모드 로드 실패: {e}")
-            return
-        start = str(p["start_date"]); end = str(p["end_date"]); cap = float(p["initial_capital"])
+            import optuna as _optuna
+            _ok = True
+        except ImportError:
+            _ok = False
+        if not _ok:
+            st.error("`optuna` 패키지가 없습니다. `pip install optuna` 후 재시작하세요.")
+        else:
+            n_t = st.number_input("탐색 횟수(trials)", 50, 2000, 300, 50, key="ds_nt")
+            st.info(f"Optuna TPE로 **{int(n_t)}회** 스마트 탐색합니다.")
+            if st.button("▶ 베이지안 최적화 실행", type="primary", key="ds_bayes"):
+                px_df, mode_map = _load()
+                _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+                prog = st.progress(0.0, text="베이지안 탐색 중...")
+                rows, tc = [], [0]
 
-        def rng(lo, hi, step):
-            n = int(round((hi - lo) / step))
-            return [round(lo + k * step, 3) for k in range(n + 1)]
-        AGB, AGS, AGH = rng(*agbuy_r, 0.5), rng(*agsa_r, 0.1), rng(*agha_r, 0.5)
-        SB1, SB2, SS = rng(*sfb1_r, 0.1), rng(*sfb2_r, 0.5), rng(*sfsell_r, 0.1)
+                def _obj(tr):
+                    c = (tr.suggest_int("공분할", agdv[0], agdv[1]),
+                         round(tr.suggest_float("공보유α", agha[0], agha[1]), 2),
+                         round(tr.suggest_float("공매수%", agby[0], agby[1]), 2),
+                         round(tr.suggest_float("공매도α", agsa[0], agsa[1]), 2),
+                         tr.suggest_int("방분할", sfdv[0], sfdv[1]),
+                         tr.suggest_int("방보유", sfhd[0], sfhd[1]),
+                         round(tr.suggest_float("방매수1", sfb1[0], sfb1[1]), 2),
+                         round(tr.suggest_float("방매수2", sfb2[0], sfb2[1]), 2),
+                         round(tr.suggest_float("방매도", sfsl[0], sfsl[1]), 2))
+                    r = _eval_dual(c, px_df, mode_map, start, end, cap, fixed)
+                    if not r:
+                        return -999.0
+                    rows.append(r)
+                    tc[0] += 1
+                    if tc[0] % max(1, int(n_t) // 50) == 0:
+                        prog.progress(min(tc[0] / int(n_t), 1.0), text=f"탐색 {tc[0]}/{int(n_t)}")
+                    return r[sort_col]
 
-        prog = st.progress(0)
-        results = []
-        seen = set()
-        for i in range(n_samples):
-            combo = (random.choice(AGB), random.choice(AGS), random.choice(AGH),
-                     random.choice(SB1), random.choice(SB2), random.choice(SS))
-            if combo in seen:
-                continue
-            seen.add(combo)
-            agb, ags, agh, sb1, sb2, ss = combo
-            ds_p = DualSniperParams(
-                ag_divisions=p["ag_div"], ag_buy_pct=agb,
-                ag_sell_alpha=ags, ag_hold_alpha=agh,
-                sf_divisions=p["sf_div"], sf_buy_pct1=sb1, sf_buy_pct2=sb2,
-                sf_sell_pct=ss, sf_ma_base=p["sf_ma_base"], sf_hold=p["sf_hold"],
-                sf_tier_weights=p["sf_weights"], initial_capital=cap,
-                fee_rate=p["fee_rate"] / 100, sec_fee_rate=0.0,
-                ag_buy_inclusive=False, sf_buy_inclusive=False)
-            log = run_backtest(px_df, ds_p, mode_map=mode_map, start_date=start, light=True)
-            log = log[(log['날짜'] >= pd.Timestamp(start)) & (log['날짜'] <= pd.Timestamp(end))]
-            if len(log) < 50:
-                continue
-            mm = compute_metrics(log, None, cap)
-            results.append({'매수%': agb, '매도α': ags, '보유α': agh,
-                            '방매수1': sb1, '방매수2': sb2, '방매도': ss,
-                            'CAGR(%)': round(mm['CAGR(%)'], 1), 'MDD(%)': round(mm['MDD(%)'], 1),
-                            'Calmar': round(mm['Calmar'], 2), '최종자산': round(mm['최종자산'])})
-            if i % max(1, n_samples // 20) == 0:
-                prog.progress(min((i + 1) / n_samples, 1.0))
-        prog.progress(1.0)
-        if results:
-            st.session_state["ds_opt_sp_res"] = pd.DataFrame(results).sort_values(
-                sort_col, ascending=False).reset_index(drop=True)
-
-    res = st.session_state.get("ds_opt_sp_res")
-    if res is None:
-        return
-    st.success(f"완료: {len(res)}개 결과 (정렬: {sort_col})")
-    st.dataframe(res.sort_values(sort_col, ascending=False).head(25),
-                 use_container_width=True, hide_index=True)
-    fig = px.scatter(res, x="MDD(%)", y="CAGR(%)", color="Calmar",
-                     hover_data=['매수%', '매도α', '보유α', '방매수1', '방매수2', '방매도'],
-                     color_continuous_scale="RdYlGn")
-    fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
-    st.download_button("📥 결과 CSV", res.to_csv(index=False).encode('utf-8-sig'),
-                       "dual_sniper_opt_strategy.csv", "text/csv", key="ds_dl_opt_sp")
-
-
-def _opt_mode_rule(p, sort_col):
-    st.caption("자체 하이브리드 모드 규칙의 추세MA·천장·이탈을 탐색합니다. 전략 파라미터는 사이드바 값 고정.")
-    col1, col2, col3 = st.columns(3)
-    ma_range = col1.slider("추세 MA(주)", 5, 52, (20, 40), 2, key="ds_opt_ma")
-    pk_range = col2.slider("천장 wRSI", 58, 74, (60, 70), 2, key="ds_opt_pk")
-    dn_range = col3.slider("이탈 wRSI", 38, 50, (40, 46), 1, key="ds_opt_dn")
-
-    if st.button("🚀 최적화 실행", type="primary", key="ds_run_opt", use_container_width=True):
-        try:
-            px_df = get_soxl_data()
-        except Exception as e:
-            st.error(f"데이터 로드 실패: {e}")
-            return
-        ds_p = _make_params(p)
-        start = str(p["start_date"]); end = str(p["end_date"]); cap = float(p["initial_capital"])
-        mas = list(range(ma_range[0], ma_range[1] + 1, 2))
-        pks = list(range(pk_range[0], pk_range[1] + 1, 2))
-        dns = list(range(dn_range[0], dn_range[1] + 1, 1))
-        combos = list(itertools.product(mas, pks, dns))
-        st.info(f"총 {len(combos)}개 조합 실행 중...")
-        prog = st.progress(0)
-        results = []
-        for i, (ma, pk, dn) in enumerate(combos):
-            mode_map = build_auto_mode_map(px_df, ma_weeks=ma, peak_thr=pk, dn=dn)
-            log = run_backtest(px_df, ds_p, mode_map=mode_map, start_date=start, light=True)
-            log = log[(log['날짜'] >= pd.Timestamp(start)) & (log['날짜'] <= pd.Timestamp(end))]
-            if len(log) < 50:
-                continue
-            mm = compute_metrics(log, None, cap)
-            results.append({'MA(주)': ma, '천장': pk, '이탈': dn,
-                            'CAGR(%)': round(mm['CAGR(%)'], 1), 'MDD(%)': round(mm['MDD(%)'], 1),
-                            'Calmar': round(mm['Calmar'], 2), '최종자산': round(mm['최종자산'])})
-            if i % max(1, len(combos) // 20) == 0:
-                prog.progress(min((i + 1) / len(combos), 1.0))
-        prog.progress(1.0)
-        if results:
-            st.session_state["ds_opt_results"] = pd.DataFrame(results).sort_values(
-                sort_col, ascending=False).reset_index(drop=True)
-
-    res = st.session_state.get("ds_opt_results")
-    if res is None:
-        return
-    st.success(f"완료: {len(res)}개 결과 (정렬: {sort_col})")
-    st.dataframe(res.sort_values(sort_col, ascending=False).head(25),
-                 use_container_width=True, hide_index=True)
-    fig = px.scatter(res, x="MDD(%)", y="CAGR(%)", color="Calmar",
-                     hover_data=["MA(주)", "천장", "이탈"], color_continuous_scale="RdYlGn")
-    fig.update_layout(height=400, margin=dict(l=0, r=0, t=30, b=0))
-    st.plotly_chart(fig, use_container_width=True)
+                study = _optuna.create_study(direction="maximize",
+                                             sampler=_optuna.samplers.TPESampler(seed=42))
+                study.optimize(_obj, n_trials=int(n_t))
+                prog.progress(1.0)
+                if not rows:
+                    st.error("유효한 결과가 없습니다.")
+                else:
+                    bp = study.best_params
+                    st.success(f"**최적:** 공(분{bp.get('공분할')}/보α{bp.get('공보유α',0):.2f}/"
+                               f"매수{bp.get('공매수%',0):.1f}%/매도α{bp.get('공매도α',0):.2f}) · "
+                               f"방(분{bp.get('방분할')}/보{bp.get('방보유')}/매1{bp.get('방매수1',0):.1f}/"
+                               f"매2{bp.get('방매수2',0):.1f}/매도{bp.get('방매도',0):.1f})")
+                    st.session_state["ds_opt_res"] = pd.DataFrame(rows).sort_values(
+                        sort_col, ascending=sort_asc).reset_index(drop=True)
+                    _show_ds_opt(st.session_state["ds_opt_res"], sort_col, "bayes")
+                    vals = [t.value for t in study.trials if t.value is not None and t.value > -900]
+                    bc = [max(vals[:i + 1]) for i in range(len(vals))]
+                    figc = px.line(y=bc, labels={"y": f"Best {sort_col}", "index": "Trial"},
+                                   title="베이지안 수렴 곡선")
+                    figc.update_layout(height=350)
+                    st.plotly_chart(figc, use_container_width=True)
 
 
 # ══════════════════════════════════════════════
