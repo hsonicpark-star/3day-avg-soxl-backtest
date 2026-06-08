@@ -1032,38 +1032,275 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
 
 
 # ══════════════════════════════════════════════
-# 탭4: 전략 소개
+# 탭4: 전략 소개 & 성과 분석
 # ══════════════════════════════════════════════
 
 def render_intro_tab(params=None):
     st.subheader("📖 Dual Sniper Pro — 전략 소개")
+
     st.markdown("""
-**SOXL 대상 공격/방어 2모드 슬롯(티어) 기반 그리드 매매 전략.**
-원전략 스프레드시트(10.5년)를 역설계하여 엔진을 구축했으며, **실제 모드 입력 시 원전략을
-사실상 완벽 재현**합니다 (CAGR 96.5% vs 96.86%, MDD -26.1% vs -26.14%, 매수티어 98.5% 일치).
+**SOXL** 대상 **공격/방어 2모드 슬롯(티어) 기반 그리드 매매 전략**입니다.
+원전략 스프레드시트(10.5년, 2,621거래일)와 PDF를 역설계하여 백테스트 엔진을 구축했고,
+**실제 모드를 입력하면 원전략을 사실상 완벽 재현**합니다.
 
-#### 🟥 공격모드 (추세 상승)
-- 슬롯 6개. 매일 1개 티어 LOC 매수 (전일 FI>0: 전일종가+8% / FI≤0: -0.1%)
-- 슬롯별 독립 익절: 매수RSI 정규화 (RSI 낮을수록 익절폭↑, 0.1~3.0%)
-- 보유기간: 매수RSI 정규화 (7~30일), 만기 MOC 청산
-- 1티어 보류: 전일종가>전일MA(5)면 슬롯1 익절 보류
-
-#### 🟦 방어모드 (추세 하락/횡보)
-- 슬롯 5개. 매수가 = min(MA조건, 종가조건) LOC
-- **역피라미딩 비중** (6→34%): 하락할수록 큰 물량
-- MA 돌파 시 **전량 청산**, 보유 8일 만기 MOC
-
-#### 🧭 모드 전환 (자체 하이브리드 규칙)
-원전략의 모드 전환 규칙은 **비공개**입니다. 대신 자체 설계한 견고한 규칙을 사용합니다:
-- 주봉종가 > **36주 이동평균** → 공격
-- wRSI < **42**(이탈) 또는 (wRSI 하락 & 직전 wRSI > **66**)(천장) → 방어
-- 백테스트(2016~): **CAGR 76% / MDD -29% / Calmar 2.64** (train≈test 견고, 과최적화 없음)
-
-#### ⚠️ 유의사항
-- 2011~2015(반도체 약세장) 포함 시 Calmar 1.1로 하락 — 레버리지 추세전략의 한계.
-- 최고 성과를 원하면 **수동 모드 입력**(원전략 시그널 추종)이 자동모드보다 우수합니다.
+| 검증 항목 | 엔진 | 원전략 |
+|---|---|---|
+| CAGR | 96.5% | 96.86% |
+| MDD | -26.1% | -26.14% |
+| 매수티어 일치 | 98.5% | — |
+| 매도사유 일치 | 97.1% | — |
 """)
-    st.caption("상세 로직: `08.듀얼스나이퍼/듀얼스나이퍼_로직정리.md` 참조")
+
+    with st.expander("🟥 공격모드 로직 (추세 상승 구간)", expanded=False):
+        st.markdown("""
+**컨셉**: 빈번한 소액 회전. 슬롯(티어)별 독립 관리.
+
+**매수** — 매일 1개 티어 LOC 매수주문 (전일 FI 부호로 분기)
+- 전일 **상승**(FI>0): `전일종가 × (1 + 8.0%)` → 8% 이내면 체결 (공격적)
+- 전일 **하락**(FI≤0): `전일종가 × (1 − 0.1%)` → 신중 진입
+- 슬롯 6개, 가장 낮은 빈 슬롯을 채움
+
+**매도** — 슬롯별 독립 익절 (매수RSI 정규화)
+- `매도% = 0.1 + 2.9 × (1−x)^(1/0.4)`, x = (매수RSI−35)/30
+
+| 매수RSI | 65 | 59 | 53 | 50 | 47 | 44 | 41 | 38 | 35 |
+|---|---|---|---|---|---|---|---|---|---|
+| 익절폭 | 0.10% | 0.15% | 0.39% | 0.61% | 0.91% | 1.29% | 1.76% | 2.33% | 3.00% |
+
+→ RSI 낮은(공포) 구간 매수일수록 익절폭을 크게.
+
+**보유기간** — 매수RSI 정규화 (7~30일), 만기 시 MOC 청산
+- `보유일 = 7 + 23 × (1−x)^(1/2.0)`
+
+| 매수RSI | 70 | 65 | 60 | 55 | 50 | 45 | 40 | 35 |
+|---|---|---|---|---|---|---|---|---|
+| 보유일 | 7 | 16 | 19 | 22 | 24 | 26 | 28 | 30 |
+
+**1티어 보류** — 전일종가 > 전일 MA(5)면 슬롯1의 LOC 매도를 보류(MOC 제외) → 상승추세에서 첫 슬롯을 끌고 감.
+""")
+
+    with st.expander("🟦 방어모드 로직 (추세 하락/횡보 구간)", expanded=False):
+        st.markdown("""
+**컨셉**: 보수적. **역피라미딩**(하락할수록 큰 물량) 후 MA 반등 시 전량 익절.
+
+**매수** — 두 조건 중 더 낮은 가격으로 LOC
+- 조건1(MA): `(0.994 × 직전 2일 종가합) / (3 − 0.994)`  *(MA −0.6%)*
+- 조건2(종가): `전일종가 × (1 + 5.5%)`
+- 슬롯 5개, **티어별 매수비중 6 → 13 → 20 → 27 → 34%**
+
+**매도** — MA 돌파 시 **전량 청산** (LOC)
+- `매도가 = (1.007 × 직전 2일 종가합) / (3 − 1.007)`  *(3일 MA +0.7%)*
+
+**보유기간** — 8거래일 고정, 만기 MOC 청산.
+""")
+
+    with st.expander("🧭 모드 전환 규칙 (자체 하이브리드)", expanded=False):
+        st.markdown("""
+원전략의 모드 전환 규칙은 **비공개**입니다. 대신 자체 설계·검증한 견고한 규칙을 기본 적용합니다.
+
+**전주 확정 주봉 기준 (룩어헤드 없음):**
+1. **추세필터**: 주봉종가 > **36주 이동평균** → 공격 후보
+2. **방어 오버라이드(우선)**: wRSI < **42**(레벨 이탈) **또는** (wRSI 하락 **AND** 직전 wRSI > **66**)(천장 신호)
+3. 방어신호 우선 → 아니고 추세상승이면 공격 → 그 외 방어
+
+**백테스트(2016~)**: CAGR 76% / MDD -29% / **Calmar 2.64** · train≈test(2.68≈2.74)로 과최적화 없음.
+
+> 지표: MA(3)·일RSI(14)·wRSI(14) 모두 Wilder · 종가 = yfinance 미조정(raw)
+""")
+
+    with st.expander("⚠️ 유의사항 & 한계", expanded=False):
+        st.markdown("""
+- **2011~2015(반도체 약세장) 포함 시 Calmar 1.1로 하락** — 좋은 숫자는 부분적으로 반도체 secular 강세장 덕. 레버리지 추세전략의 정직한 한계.
+- 원전략 실제모드(Calmar 3.69)의 진짜 강점은 **위기연도(2020 +143%, 2022 +124%) 정밀 타이밍** — 비공개 규칙의 고유 엣지. 자체 자동모드는 여기서 한발 늦음.
+- **최고 성과를 원하면 수동 모드 입력**(원전략 시그널 추종)이 자동모드보다 우수합니다.
+- 실거래 주문표의 '다음 세션 모드'는 가장 최근 확정 주봉(지난주/지지난주)으로 산출 — 백테스트의 1주 지연과는 분리.
+""")
+
+    st.divider()
+
+    # ══════════════════════════════════════════════
+    # 성과 분석
+    # ══════════════════════════════════════════════
+    st.subheader("📊 전략 성과 분석")
+    st.caption("사이드바의 파라미터·기간 설정 또는 기본 프리셋으로 종합 성과를 분석합니다.")
+
+    if params is None:
+        st.info("성과 분석은 사이드바에서 듀얼스나이퍼를 선택한 상태에서 이용하세요.")
+        return
+
+    src = st.radio("파라미터 소스", ["🧭 사이드바 설정값", "⚖️ 기본 (권장)"],
+                   horizontal=True, key="ds_intro_src")
+
+    if src == "⚖️ 기본 (권장)":
+        ds_p = DualSniperParams(
+            ag_buy_inclusive=False, sf_buy_inclusive=False,
+            fee_rate=float(params.get("fee_rate", 0.0)) / 100, sec_fee_rate=0.0)
+        mr = {"ma_weeks": 36, "peak_thr": 66.0, "dn": 42.0}
+        cap = float(params.get("initial_capital", 10000))
+        start, end = str(params.get("start_date", "2016-01-04")), str(params.get("end_date"))
+    else:
+        ds_p = _make_params(params)
+        mr = {"ma_weeks": params["ma_weeks"], "peak_thr": params["peak_thr"], "dn": params["dn"]}
+        cap = float(params["initial_capital"])
+        start, end = str(params["start_date"]), str(params["end_date"])
+
+    with st.expander("🔎 적용 파라미터 확인"):
+        st.markdown(f"""
+- **기간**: {start} ~ {end} · **초기자본** ${cap:,.0f}
+- **공격**: 분할 {ds_p.ag_divisions} · 매수 {ds_p.ag_buy_pct}% · 매도α {ds_p.ag_sell_alpha} · 보유α {ds_p.ag_hold_alpha}
+- **방어**: 분할 {ds_p.sf_divisions} · 보유 {ds_p.sf_hold}일 · 매수1 {ds_p.sf_buy_pct1}% · 매수2 {ds_p.sf_buy_pct2}% · 매도 {ds_p.sf_sell_pct}%
+- **티어비중**: {', '.join(str(int(x)) for x in ds_p.sf_tier_weights)}
+- **모드규칙**: 추세MA {mr['ma_weeks']}주 · 천장 {int(mr['peak_thr'])} · 이탈 {int(mr['dn'])}
+""")
+
+    if st.button("▶ 성과 분석 실행", type="primary", key="ds_intro_run", use_container_width=True):
+        try:
+            px_df = get_soxl_data()
+            mode_map = build_auto_mode_map(px_df, **mr)
+        except Exception as e:
+            st.error(f"데이터/모드 로드 실패: {e}")
+            return
+        with st.spinner("백테스트 실행 중..."):
+            log, trades = run_backtest(px_df, ds_p, mode_map=mode_map,
+                                       start_date=start, return_trades=True)
+        log = log[(log['날짜'] >= pd.Timestamp(start)) & (log['날짜'] <= pd.Timestamp(end))].reset_index(drop=True)
+        st.session_state["ds_intro_log"] = log
+        st.session_state["ds_intro_trades"] = trades
+        st.session_state["ds_intro_cap"] = cap
+        st.session_state["ds_intro_range"] = (start, end)
+
+    log = st.session_state.get("ds_intro_log")
+    if log is None or log.empty:
+        st.info("👆 '성과 분석 실행' 버튼을 클릭하면 종합 성과를 확인할 수 있습니다.")
+        return
+    trades = st.session_state["ds_intro_trades"]
+    cap = st.session_state["ds_intro_cap"]
+    start, end = st.session_state["ds_intro_range"]
+    _render_ds_performance(log, trades, cap, start, end)
+
+
+def _render_ds_performance(log, trades, cap, start, end):
+    from common.analysis import (compute_annual_stats, compute_monthly_pivot,
+                                  compute_sharpe_sortino, compute_rolling_perf, compute_bnh)
+    assets = log['총자산'].values.astype(float)
+    m = compute_metrics(log, trades, cap)
+    sharpe, sortino = compute_sharpe_sortino(assets)
+
+    # ── 핵심 지표 ──
+    st.markdown("##### 📈 핵심 지표")
+    c = st.columns(5)
+    c[0].metric("최종 자산", f"${m['최종자산']:,.0f}")
+    c[1].metric("총수익률", f"{m['총수익률(%)']:,.0f}%")
+    c[2].metric("CAGR", f"{m['CAGR(%)']:.1f}%")
+    c[3].metric("MDD", f"{m['MDD(%)']:.1f}%")
+    c[4].metric("Calmar", f"{m['Calmar']:.2f}")
+    c = st.columns(5)
+    c[0].metric("Sharpe", f"{sharpe:.2f}")
+    c[1].metric("Sortino", f"{sortino:.2f}")
+    c[2].metric("승률", f"{m['승률(%)']:.1f}%")
+    c[3].metric("매도횟수", f"{m['총매도횟수']:,}회")
+    c[4].metric("평균보유", f"{m['평균보유일']:.1f}일")
+
+    days = len(log)
+    ag_ratio = (log['모드'] == '공격').mean() * 100
+    bh_assets, bh_idx = compute_bnh(
+        get_soxl_data().rename(columns={'close': 'Close'}), start, end, cap)
+    c = st.columns(5)
+    c[0].metric("거래일수", f"{days:,}일")
+    c[1].metric("투자기간", f"{days/252:.1f}년")
+    c[2].metric("공격일 비중", f"{ag_ratio:.0f}%")
+    c[3].metric("평균손익/건", f"${m['평균손익']:,.0f}")
+    if len(bh_assets):
+        bh_ret = (bh_assets[-1] / cap - 1) * 100
+        c[4].metric("B&H 수익률", f"{bh_ret:,.0f}%",
+                    delta=f"{m['총수익률(%)']-bh_ret:+,.0f}%p")
+
+    # ── 자산 곡선 + B&H (로그) ──
+    st.markdown("##### 💰 자산 곡선 (로그 스케일)")
+    figA = go.Figure()
+    figA.add_trace(go.Scatter(x=log['날짜'], y=assets, name="전략 총자산",
+                              line=dict(color="#2E86C1", width=1.8)))
+    if len(bh_assets):
+        figA.add_trace(go.Scatter(x=bh_idx, y=bh_assets, name="B&H (SOXL)",
+                                  line=dict(color="gray", dash="dot", width=1.2)))
+    figA.update_layout(height=380, yaxis_type="log", hovermode="x unified",
+                       margin=dict(l=0, r=0, t=20, b=0), legend=dict(orientation="h", y=1.02))
+    st.plotly_chart(figA, use_container_width=True)
+
+    # ── 드로다운 ──
+    peak = np.maximum.accumulate(assets)
+    dd = (assets - peak) / peak * 100
+    st.markdown("##### 📉 드로다운")
+    figD = go.Figure(go.Scatter(x=log['날짜'], y=dd, fill="tozeroy",
+                                line=dict(color="#E74C3C", width=1)))
+    figD.update_layout(height=230, margin=dict(l=0, r=0, t=10, b=0),
+                       yaxis_title="DD (%)", hovermode="x unified")
+    st.plotly_chart(figD, use_container_width=True)
+
+    # ── 연도별 ──
+    hist = log[['날짜', '총자산']].rename(columns={'총자산': '총자산($)'})
+    st.markdown("##### 📅 연도별 성과")
+    annual = compute_annual_stats(hist, cap)
+    # 연도별 공격일 비중 추가
+    lg = log.copy(); lg['연도'] = lg['날짜'].dt.year
+    agy = lg.groupby('연도').apply(lambda g: round((g['모드'] == '공격').mean() * 100)).to_dict()
+    annual['공격일(%)'] = annual['연도'].map(agy)
+    ca1, ca2 = st.columns([1, 1])
+    ca1.dataframe(annual, use_container_width=True, hide_index=True, height=min(38+35*len(annual), 430))
+    figY = px.bar(annual, x="연도", y="연간수익률(%)", color="연간수익률(%)",
+                  color_continuous_scale="RdYlGn", text_auto=".0f")
+    figY.add_hline(y=0, line_dash="dash", line_color="gray")
+    figY.update_layout(height=min(38+35*len(annual), 430), margin=dict(l=0, r=0, t=10, b=0),
+                       showlegend=False)
+    ca2.plotly_chart(figY, use_container_width=True)
+
+    # ── 월별 히트맵 ──
+    st.markdown("##### 🗓️ 월별 수익률 (%)")
+    try:
+        pivot = compute_monthly_pivot(hist, cap)
+        figM = px.imshow(pivot, text_auto=".1f", aspect="auto",
+                         color_continuous_scale="RdYlGn", color_continuous_midpoint=0)
+        figM.update_layout(height=min(60+30*len(pivot), 480), margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(figM, use_container_width=True)
+    except Exception:
+        st.caption("월별 데이터 부족")
+
+    # ── 롤링 1년 ──
+    if days > 260:
+        st.markdown("##### 🔄 롤링 1년 (252거래일) CAGR / MDD")
+        rc, rm = compute_rolling_perf(assets, 252)
+        figR = make_subplots(specs=[[{"secondary_y": True}]])
+        figR.add_trace(go.Scatter(x=log['날짜'], y=rc, name="롤링 CAGR(%)",
+                                  line=dict(color="#27AE60")), secondary_y=False)
+        figR.add_trace(go.Scatter(x=log['날짜'], y=rm, name="롤링 MDD(%)",
+                                  line=dict(color="#E74C3C")), secondary_y=True)
+        figR.update_layout(height=300, hovermode="x unified", margin=dict(l=0, r=0, t=10, b=0),
+                           legend=dict(orientation="h", y=1.02))
+        st.plotly_chart(figR, use_container_width=True)
+
+    # ── 거래 통계 ──
+    if len(trades):
+        st.markdown("##### 🧾 거래 통계")
+        wins = trades[trades['실현손익'] > 0]
+        losses = trades[trades['실현손익'] <= 0]
+        ag_tr = trades[trades['모드'] == '공격']
+        sf_tr = trades[trades['모드'] == '방어']
+        t = st.columns(4)
+        t[0].metric("익절 / 손절", f"{len(wins)} / {len(losses)}")
+        t[1].metric("평균 익절 / 손절",
+                    f"${wins['실현손익'].mean():,.0f} / ${losses['실현손익'].mean():,.0f}"
+                    if len(wins) and len(losses) else "-")
+        t[2].metric("공격 거래", f"{len(ag_tr):,}건")
+        t[3].metric("방어 거래", f"{len(sf_tr):,}건")
+        with st.expander(f"📋 전체 거래 기록 ({len(trades):,}건)"):
+            td = trades.copy()
+            td['매수일'] = pd.to_datetime(td['매수일']).dt.strftime('%Y-%m-%d')
+            td['매도일'] = pd.to_datetime(td['매도일']).dt.strftime('%Y-%m-%d')
+            st.dataframe(td, use_container_width=True, hide_index=True, height=400)
+            st.download_button("📥 거래기록 CSV", td.to_csv(index=False).encode('utf-8-sig'),
+                               "dual_sniper_perf_trades.csv", "text/csv", key="ds_intro_dl")
+
+
 
 
 # ══════════════════════════════════════════════
