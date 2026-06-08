@@ -282,7 +282,8 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     """DSS 계좌 1개의 주문표 데이터 계산."""
     try:
         from dss_engine import (DSSParams, run_backtest, build_weekly_rsi_series,
-                                build_mode_series, get_week_mode_map)
+                                build_mode_series, get_week_mode_map,
+                                get_current_week_mode, next_us_trading_days)
     except ImportError as e:
         print(f"    ⚠️ dss_engine import 실패: {e}")
         return None
@@ -343,8 +344,15 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     # yfinance float32 정밀도 차이로 매수주문가 1¢ 어긋남 방지
     prev_close = round(float(soxl.iloc[-1]['Close']), 2)
     last_date = soxl.index[-1]
+    # 다음 거래일(오늘의 주문 적용일) 모드 결정.
+    # mode_map에 있으면 그 값, 없으면(새 주 시작) 2주치 RSI로 직접 판정.
+    _next_td = next_us_trading_days(last_date, 1)
+    _next_date = _next_td[0] if len(_next_td) > 0 else last_date
     mode_map = get_week_mode_map(mode_series_df, soxl.index)
-    last_mode = mode_map.get(last_date, "AG")
+    if _next_date in mode_map:
+        last_mode = mode_map[_next_date]
+    else:
+        last_mode = get_current_week_mode(mode_series_df)
 
     if last_mode == "AG":
         cur_div = ag_div; cur_buy_pct = ag_buy / 100; cur_sell_pct = ag_sell / 100; cur_hold = ag_hold

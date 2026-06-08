@@ -398,6 +398,23 @@ def get_week_mode_map(mode_series: pd.DataFrame, trading_days: pd.DatetimeIndex)
     return mode_map
 
 
+def get_current_week_mode(mode_series: pd.DataFrame) -> str:
+    """진행 중인 주(아직 RSI 미확정 주)에 적용할 모드를 계산.
+
+    모드 판정은 '2주 전(RR)'과 '1주 전(R)' RSI로 결정되며, 이 두 값은
+    이미 확정된 과거값이므로 진행 중인 주의 RSI 없이도 판정 가능.
+
+    예: 6/8주 모드 = RR(5/29) + R(6/5) + 직전주(6/5주) 모드 로 determine_mode.
+    주문표가 '다음 거래일' 모드를 정확히 계산하기 위해 사용.
+    """
+    if mode_series is None or len(mode_series) < 2:
+        return mode_series.iloc[-1]['mode'] if len(mode_series) > 0 else "AG"
+    rr = float(mode_series.iloc[-2]['rsi'])   # 2주 전
+    r = float(mode_series.iloc[-1]['rsi'])    # 1주 전 (가장 최근 확정 주)
+    prev_mode = mode_series.iloc[-1]['mode']  # 직전 주 모드
+    return determine_mode(rr, r, prev_mode)
+
+
 def run_backtest(params: DSSParams,
                  soxl_daily: pd.DataFrame,
                  mode_series: pd.DataFrame,

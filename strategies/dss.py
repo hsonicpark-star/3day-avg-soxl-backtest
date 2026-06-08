@@ -40,7 +40,7 @@ if _root_dir not in sys.path:
 from dss_engine import (
     load_price_data, get_weekly_closes, calc_weekly_rsi,
     build_weekly_rsi_series, build_mode_series, determine_mode,
-    get_week_mode_map,
+    get_week_mode_map, get_current_week_mode,
     run_backtest, run_backtest_fast, DSSParams,
     next_us_trading_days,
 )
@@ -1292,7 +1292,21 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
     last = bt_df.iloc[-1]
     prev_close = float(last['종가'])
     last_date = pd.Timestamp(last['날짜'])
-    last_mode = last['모드']
+
+    # 오늘의 주문에 적용할 모드 = '다음 거래일' 모드.
+    # bt_df의 마지막 행 모드(last_date 기준)가 아니라, 다음 거래일(주문 적용일)
+    # 모드를 RR/R RSI로 판정. 새 주로 넘어가며 AG↔SF 전환 시 매수가 정확.
+    try:
+        _ms_df = build_mode_series(build_weekly_rsi_series(qqq))
+        _next_td = next_us_trading_days(last_date, 1)
+        _next_date = _next_td[0] if len(_next_td) > 0 else last_date
+        _mode_map = get_week_mode_map(_ms_df, pd.DatetimeIndex([last_date, _next_date]))
+        if _next_date in _mode_map:
+            last_mode = _mode_map[_next_date]
+        else:
+            last_mode = get_current_week_mode(_ms_df)
+    except Exception:
+        last_mode = last['모드']  # 실패 시 기존 방식 fallback
 
     n_pos = int(last['보유포지션수'])
     total_asset = float(last['총자산'])
@@ -1398,8 +1412,16 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
     prev_close = float(soxl.iloc[-1]['Close'])
     last_date = soxl.index[-1]
 
+    # 다음 거래일(오늘의 주문 적용일) 모드 결정.
+    # 다음 거래일이 mode_map에 있으면 그 값, 없으면(새 주 시작) 2주치 RSI로 판정.
+    _next_td = next_us_trading_days(last_date, 1)
+    _next_date = _next_td[0] if len(_next_td) > 0 else last_date
     mode_map = get_week_mode_map(mode_series_df, soxl.index)
-    last_mode = mode_map.get(last_date, "AG")
+    if _next_date in mode_map:
+        last_mode = mode_map[_next_date]
+    else:
+        # 진행 중인 새 주 → RR(2주전)/R(1주전) RSI로 직접 판정
+        last_mode = get_current_week_mode(mode_series_df)
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
