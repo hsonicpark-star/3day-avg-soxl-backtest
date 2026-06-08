@@ -1624,16 +1624,104 @@ def render_settings_tab():
         with ch:
             with st.popover("❓ Chat ID & Bot Token 확인 방법", use_container_width=True):
                 st.markdown("""
-**1. Bot Token 생성** — 텔레그램에서 `@BotFather` → `/newbot` → 봇 이름/username 입력 → 발급된 **HTTP API Token**
+<style>
+.tg-help-section { margin-bottom: 20px; }
+.tg-help-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px;
+}
+.tg-help-badge {
+    background: #4A90D9; color: white;
+    border-radius: 50%; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.tg-help-box {
+    background: #EEF4FB; border-radius: 10px;
+    padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.tg-help-box ol { margin: 0; padding-left: 20px; }
+.tg-tag {
+    background: #D0E8FF; color: #1a5fa8;
+    border-radius: 5px; padding: 1px 7px;
+    font-family: monospace; font-size: 13px;
+}
+.tg-code-box {
+    background: #1e2533; color: #7dd3fc;
+    border-radius: 8px; padding: 10px 14px; margin-top: 8px;
+    font-family: monospace; font-size: 12px; word-break: break-all;
+    line-height: 1.7;
+}
+.tg-example-box {
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 12px 16px; margin-top: 10px; font-size: 13px; color: #555;
+}
+.tg-example-val { color: #4A90D9; font-family: monospace; font-size: 13px; }
+.tg-warn-box {
+    background: #FFFBEB; border: 1px solid #F59E0B;
+    border-radius: 10px; padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.tg-warn-title { font-weight: 700; color: #92400E; margin-bottom: 4px; }
+.tg-sub-title { font-weight: 700; color: #1a5fa8; margin: 10px 0 4px 0; }
+.tg-tip-box {
+    background: #F0FDF4; border: 1px solid #86EFAC;
+    border-radius: 8px; padding: 10px 14px; margin-top: 8px;
+    font-size: 13px; color: #166534;
+}
+</style>
 
-**2. 봇 시작 (필수)** — 내 봇 검색 → `/start` → 메시지 한 번 전송
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">1</span> Bot Token 생성하기</div>
+  <div class="tg-help-box">
+    <ol>
+      <li>텔레그램 앱에서 <span class="tg-tag">@BotFather</span> 를 검색합니다.</li>
+      <li><span class="tg-tag">/start</span> → <span class="tg-tag">/newbot</span> 입력</li>
+      <li><strong>봇 표시 이름</strong> 입력 (예: <span class="tg-tag">듀얼스나이퍼 알림봇</span>)</li>
+      <li><strong>봇 username</strong> 입력 — 영문+숫자, <span class="tg-tag">bot</span> 으로 끝나야 함 (예: <span class="tg-tag">dual_sniper_bot</span>)</li>
+      <li>성공 시 <strong>HTTP API Token</strong> 발급 → 이것이 <strong>Bot Token</strong></li>
+    </ol>
+    <div class="tg-example-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">Bot Token 예시:</div>
+      <div class="tg-example-val">1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ</div>
+    </div>
+  </div>
+</div>
 
-**3. Chat ID 확인**
-- 방법1: 봇에 메시지 후 브라우저에 `https://api.telegram.org/bot{토큰}/getUpdates` → JSON의 `"id"`
-- 방법2: `@userinfobot` 검색 → `/start` → Chat ID 확인
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">2</span> 내 봇 시작하기 (필수!)</div>
+  <div class="tg-warn-box">
+    <div class="tg-warn-title">⚠ 봇을 먼저 시작해야 Chat ID를 확인하고 메시지를 받을 수 있습니다!</div>
+    <ol>
+      <li>텔레그램에서 내 봇 username 검색 (예: <span class="tg-tag">@dual_sniper_bot</span>)</li>
+      <li><span class="tg-tag">/start</span> 클릭 → 아무 메시지 보내기</li>
+    </ol>
+  </div>
+</div>
 
-**4. 테스트** — 아래 입력 후 '주문표 테스트 발송'으로 수신 확인 ✅
-""")
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">3</span> Chat ID 확인하기</div>
+  <div class="tg-help-box">
+    <div class="tg-sub-title">✅ 방법 1: getUpdates API</div>
+    <ol>
+      <li>봇에게 메시지 보낸 후 브라우저에 입력:</li>
+    </ol>
+    <div class="tg-code-box">https://api.telegram.org/bot<span style="color:#fde047;">{토큰값}</span>/getUpdates</div>
+    <ol start="2">
+      <li>JSON 응답에서 <span class="tg-tag">"id"</span> 값 = <strong>Chat ID</strong></li>
+    </ol>
+    <div class="tg-sub-title">방법 2: @userinfobot 사용</div>
+    <ol><li><span class="tg-tag">@userinfobot</span> 검색 → <span class="tg-tag">/start</span> → Chat ID 확인</li></ol>
+  </div>
+</div>
+
+<div class="tg-help-section">
+  <div class="tg-help-title"><span class="tg-help-badge">4</span> 연결 테스트</div>
+  <div class="tg-tip-box">
+    💡 Bot Token과 Chat ID를 입력한 후 <strong>📨 주문표 테스트 발송</strong> 버튼을 눌러보세요.<br>
+    메시지가 정상적으로 수신되면 설정 완료입니다! ✅
+  </div>
+</div>
+""", unsafe_allow_html=True)
         c1, c2 = st.columns(2)
         tg_chat = c1.text_input("텔레그램 Chat ID", value=cfg.get("tg_chat_id", ""),
                                 placeholder="예: 1234567890", key="ds_tg_chat")
@@ -1672,14 +1760,83 @@ def render_settings_tab():
         with cgh:
             with st.popover("❓ 구글 스프레드시트 설정 방법", use_container_width=True):
                 st.markdown("""
-1. [Google Sheets](https://sheets.google.com)에서 새 시트 생성
-2. 시트 URL을 아래에 입력
-3. **서비스 계정 이메일**을 해당 시트의 **편집자**로 공유
-   - (Cloud: 관리자가 설정한 서비스계정 / 로컬: `service_account.json`)
-4. '연결 테스트'로 확인 후 저장 → 주문표 기록 저장 시 자동 동기화됩니다.
-""")
+<style>
+.gs-help-section { margin-bottom: 20px; }
+.gs-help-title {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; font-weight: 700; color: #1a1a2e; margin-bottom: 10px;
+}
+.gs-help-badge {
+    background: #2EAA5E; color: white;
+    border-radius: 50%; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+}
+.gs-help-box {
+    background: #EDF7F0; border-radius: 10px;
+    padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.gs-help-box ol { margin: 0; padding-left: 20px; }
+.gs-tag {
+    background: #D4EFE0; color: #1a6e3c;
+    border-radius: 5px; padding: 1px 7px;
+    font-family: monospace; font-size: 13px;
+}
+.gs-example-box {
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 12px 16px; margin-top: 10px; font-size: 13px; color: #555;
+}
+.gs-example-val { color: #2EAA5E; font-family: monospace; font-size: 13px; }
+.gs-warn-box {
+    background: #FFFBEB; border: 1px solid #F59E0B;
+    border-radius: 10px; padding: 14px 18px; font-size: 14px; line-height: 2;
+}
+.gs-warn-title { font-weight: 700; color: #92400E; margin-bottom: 6px; }
+.gs-email-box {
+    background: white; border: 1px solid #CBD5E1; border-radius: 8px;
+    padding: 10px 14px; margin: 8px 0 12px 0; font-size: 13px; color: #555;
+}
+.gs-email-val { color: #2EAA5E; font-family: monospace; font-size: 13px; font-weight: 700; }
+</style>
+
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">1</span> 새 스프레드시트 만들기</div>
+  <div class="gs-help-box">
+    <ol>
+      <li><a href="https://sheets.google.com" target="_blank">Google Sheets</a>에서 새 시트 생성</li>
+      <li>시트 이름 지정 (예: 듀얼스나이퍼 포트폴리오)</li>
+    </ol>
+  </div>
+</div>
+
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">2</span> URL 복사</div>
+  <div class="gs-help-box">
+    <div>브라우저 주소창의 URL을 복사합니다.</div>
+    <div class="gs-example-box">
+      <div class="gs-example-val">https://docs.google.com/spreadsheets/d/1ABC...XYZ/edit</div>
+    </div>
+  </div>
+</div>
+
+<div class="gs-help-section">
+  <div class="gs-help-title"><span class="gs-help-badge">3</span> 서비스 계정 권한 부여 (중요!)</div>
+  <div class="gs-warn-box">
+    <div class="gs-warn-title">⚠ 아래 이메일에 편집 권한을 부여해야 합니다.</div>
+    <div class="gs-email-box">
+      <div style="color:#888; font-size:12px; margin-bottom:4px;">서비스 계정 이메일:</div>
+      <div class="gs-email-val">connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com</div>
+    </div>
+    <ol>
+      <li>스프레드시트 우측 상단 <span class="gs-tag">공유</span> 클릭</li>
+      <li>위 이메일을 <span class="gs-tag">편집자</span> 로 추가</li>
+    </ol>
+  </div>
+</div>
+""", unsafe_allow_html=True)
         gs_url = st.text_input("스프레드시트 URL", value=cfg.get("gs_url", ""),
                                placeholder="https://docs.google.com/spreadsheets/d/...", key="ds_gs_url")
+        st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
         g1, g2, _ = st.columns([1, 1, 4])
         if g1.button("🔗 시트 연결 테스트", use_container_width=True, key="ds_gs_test"):
             if not gs_url:
