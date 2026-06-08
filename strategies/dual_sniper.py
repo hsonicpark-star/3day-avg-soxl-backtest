@@ -1168,6 +1168,8 @@ def render_intro_tab(params=None):
         st.session_state["ds_intro_trades"] = trades
         st.session_state["ds_intro_cap"] = cap
         st.session_state["ds_intro_range"] = (start, end)
+        st.session_state["ds_intro_dsp"] = ds_p
+        st.session_state["ds_intro_mr"] = mr
 
     log = st.session_state.get("ds_intro_log")
     if log is None or log.empty:
@@ -1176,10 +1178,12 @@ def render_intro_tab(params=None):
     trades = st.session_state["ds_intro_trades"]
     cap = st.session_state["ds_intro_cap"]
     start, end = st.session_state["ds_intro_range"]
-    _render_ds_performance(log, trades, cap, start, end)
+    _render_ds_performance(log, trades, cap, start, end,
+                           st.session_state.get("ds_intro_dsp"),
+                           st.session_state.get("ds_intro_mr"))
 
 
-def _render_ds_performance(log, trades, cap, start, end):
+def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
     from common.analysis import (compute_annual_stats, compute_monthly_pivot,
                                   compute_sharpe_sortino, compute_rolling_perf, compute_bnh)
     assets = log['총자산'].values.astype(float)
@@ -1299,6 +1303,261 @@ def _render_ds_performance(log, trades, cap, start, end):
             st.dataframe(td, use_container_width=True, hide_index=True, height=400)
             st.download_button("📥 거래기록 CSV", td.to_csv(index=False).encode('utf-8-sig'),
                                "dual_sniper_perf_trades.csv", "text/csv", key="ds_intro_dl")
+
+    dates = pd.to_datetime(log['날짜']).tolist()
+
+    # ── 회복력 분석 (10% 이상 하락 에피소드) ──
+    st.divider()
+    st.markdown("##### 🛡️ 회복력 분석 (10% 이상 하락 에피소드)")
+    st.caption("고점 대비 10% 이상 하락한 구간별로, 어디까지 빠지고 얼마 만에 회복했는지 분석합니다.")
+    rec = []
+    pv = float(assets[0]); pi = 0; indd = False; tv = pv; ti = 0
+    for i in range(1, len(assets)):
+        cur = float(assets[i]); ddp = (cur - pv) / pv * 100
+        if not indd:
+            if cur > pv:
+                pv, pi = cur, i
+            elif ddp <= -10:
+                indd = True; tv, ti = cur, i
+        else:
+            if cur < tv:
+                tv, ti = cur, i
+            if cur >= pv:
+                rec.append({"고점": str(dates[pi].date()), "고점 자산": f"${pv:,.0f}",
+                            "최대하락 시점": str(dates[ti].date()), "저점 자산": f"${tv:,.0f}",
+                            "하락율": f"{(tv-pv)/pv*100:.1f}%", "회복 시점": str(dates[i].date()),
+                            "기간(일)": (dates[i]-dates[pi]).days})
+                indd = False; pv, pi = cur, i; tv, ti = cur, i
+    if indd:
+        rec.append({"고점": str(dates[pi].date()), "고점 자산": f"${pv:,.0f}",
+                    "최대하락 시점": str(dates[ti].date()), "저점 자산": f"${tv:,.0f}",
+                    "하락율": f"{(tv-pv)/pv*100:.1f}%", "회복 시점": "미회복 ⏳",
+                    "기간(일)": (dates[-1]-dates[pi]).days})
+    if rec:
+        def _clr(v):
+            s = str(v)
+            return "color:#C62828;font-weight:bold" if (("%" in s and s.startswith("-")) or "미회복" in s) else ""
+        st.dataframe(pd.DataFrame(rec).style.map(_clr), hide_index=True, use_container_width=True)
+    else:
+        st.info("10% 이상 하락 에피소드가 없습니다.")
+
+    # ── Top 5 최대 낙폭 구간 ──
+    peak2 = np.maximum.accumulate(assets)
+    dd_s = pd.Series((assets - peak2) / peak2 * 100, index=pd.to_datetime(log['날짜']))
+    indd2 = False; st2 = None; pers = []
+    for dt2, dv2 in dd_s.items():
+        if dv2 < 0 and not indd2:
+            indd2 = True; st2 = dt2
+        elif dv2 == 0 and indd2:
+            indd2 = False
+            sub = dd_s[st2:dt2]
+            pers.append({"시작일": str(st2.date()), "회복일": str(dt2.date()),
+                         "기간(일)": (dt2 - st2).days, "최대낙폭(%)": round(float(sub.min()), 2)})
+    if pers:
+        ddf = pd.DataFrame(pers).nsmallest(5, "최대낙폭(%)").reset_index(drop=True)
+        ddf.index += 1
+        st.markdown("**Top 5 최대 낙폭 구간**")
+        st.dataframe(ddf.style.format({"최대낙폭(%)": "{:.2f}%"}), use_container_width=True)
+
+    # ── 롤링 성과 (1/2/3년) ──
+    st.divider()
+    st.markdown("##### 🔄 롤링 성과 분석")
+    st.caption("구간별 성과 추이. 특정 시기에만 좋은 게 아닌지 검증합니다.")
+    rtabs = st.tabs(["1년 롤링", "2년 롤링", "3년 롤링"])
+    for win, rt in zip([252, 504, 756], rtabs):
+        with rt:
+            if len(assets) > win:
+                rc = np.full(len(assets), np.nan); rm = np.full(len(assets), np.nan)
+                yrs = win / 252
+                for ri in range(win, len(assets)):
+                    seg = assets[ri-win:ri+1]
+                    rc[ri] = ((seg[-1]/seg[0])**(1/yrs)-1)*100
+                    sp = np.maximum.accumulate(seg)
+                    rm[ri] = float(((seg-sp)/sp).min())*100
+                vmask = ~np.isnan(rc)
+                figr = make_subplots(specs=[[{"secondary_y": True}]])
+                figr.add_trace(go.Scatter(x=log['날짜'][vmask], y=rc[vmask], name="롤링 CAGR(%)",
+                                          line=dict(color="#1565C0", width=2)), secondary_y=False)
+                figr.add_trace(go.Scatter(x=log['날짜'][vmask], y=rm[vmask], name="롤링 MDD(%)",
+                                          line=dict(color="#EF5350", width=1.5, dash="dot")), secondary_y=True)
+                figr.add_hline(y=0, line_dash="dash", line_color="#aaa")
+                figr.update_layout(height=320, legend=dict(orientation="h", y=1.1),
+                                   margin=dict(l=0, r=0, t=10, b=0))
+                st.plotly_chart(figr, use_container_width=True)
+                rr = st.columns(3)
+                rr[0].metric("평균 CAGR", f"{np.nanmean(rc):+.1f}%")
+                rr[1].metric("최고 CAGR", f"{np.nanmax(rc):+.1f}%")
+                rr[2].metric("최저 CAGR", f"{np.nanmin(rc):+.1f}%")
+            else:
+                st.info(f"분석 기간이 {win//252}년보다 짧습니다.")
+
+    # ── 모드별 성과 & 손익률 분포 ──
+    if len(trades):
+        st.divider()
+        st.markdown("##### 🔄 공격 vs 방어 매매 성과")
+        def _ms(df, nm):
+            if not len(df):
+                return {"모드": nm, "매도 횟수": 0, "승률": "-", "평균손익": "-", "총손익": "-"}
+            w = (df['실현손익'] > 0).mean()*100
+            return {"모드": nm, "매도 횟수": len(df), "승률": f"{w:.1f}%",
+                    "평균손익": f"${df['실현손익'].mean():+,.0f}", "총손익": f"${df['실현손익'].sum():+,.0f}"}
+        agt = trades[trades['모드'] == '공격']; sft = trades[trades['모드'] == '방어']
+        st.dataframe(pd.DataFrame([_ms(agt, "🟥 공격"), _ms(sft, "🟦 방어"), _ms(trades, "📊 전체")]),
+                     hide_index=True, use_container_width=True)
+        # 손익률 분포 (왜도/첨도)
+        st.markdown("##### 📊 매도 수익률 분포")
+        pr = trades['수익률(%)'].values.astype(float)
+        sk = float(pd.Series(pr).skew()); ku = float(pd.Series(pr).kurtosis())
+        figh = go.Figure(go.Histogram(x=pr.tolist(), nbinsx=40,
+                                      marker_color="#3498DB"))
+        figh.add_vline(x=0, line_dash="dash", line_color="#333")
+        figh.add_vline(x=float(np.mean(pr)), line_dash="dot", line_color="#1565C0",
+                       annotation_text=f"평균 {np.mean(pr):+.2f}%")
+        figh.update_layout(height=300, xaxis_title="수익률(%)", yaxis_title="빈도(회)",
+                           margin=dict(l=0, r=0, t=10, b=0))
+        st.plotly_chart(figh, use_container_width=True)
+        pq = st.columns(4)
+        pq[0].metric("평균 수익률", f"{np.mean(pr):+.2f}%")
+        pq[1].metric("중앙값", f"{np.median(pr):+.2f}%")
+        pq[2].metric("왜도(Skew)", f"{sk:.2f}", help="양수=가끔 큰 수익")
+        pq[3].metric("첨도(Kurt)", f"{ku:.2f}", help="높을수록 극단값 빈번")
+
+    # ── 현금 활용률 ──
+    if '현금' in log.columns:
+        st.divider()
+        st.markdown("##### 💵 현금 활용률 (투자 비율)")
+        cash = log['현금'].values.astype(float)
+        invr = np.clip((1 - cash/assets)*100, 0, 100)
+        cu = st.columns(3)
+        cu[0].metric("평균 투자비율", f"{np.mean(invr):.1f}%")
+        cu[1].metric("최대 투자비율", f"{np.max(invr):.1f}%")
+        cu[2].metric("평균 현금비율", f"{100-np.mean(invr):.1f}%")
+        figc = go.Figure(go.Scatter(x=log['날짜'], y=invr, fill="tozeroy",
+                                    line=dict(color="rgba(255,179,0,0.9)", width=1),
+                                    fillcolor="rgba(255,179,0,0.4)"))
+        figc.update_layout(height=240, yaxis=dict(range=[0, 100], title="투자비율(%)"),
+                           margin=dict(l=0, r=0, t=10, b=0), hovermode="x unified")
+        st.plotly_chart(figc, use_container_width=True)
+
+    # ── 파라미터 민감도 분석 ──
+    if ds_p is not None and mr is not None:
+        st.divider()
+        st.markdown("##### 🎛️ 파라미터 민감도 분석")
+        st.caption("현재 매수/매도 조건 주변의 Calmar 분포. 과최적화 여부를 확인합니다.")
+        with st.expander("🔍 민감도 히트맵 보기 (클릭하여 실행)"):
+            smode = st.radio("분석 대상 모드", ["🟦 방어모드", "🟥 공격모드"], horizontal=True,
+                             key="ds_sens_mode")
+            if st.button("▶ 민감도 분석 실행 (25회)", key="ds_sens_run"):
+                try:
+                    pxf = get_soxl_data()
+                    mm = build_auto_mode_map(pxf, **mr)
+                except Exception as e:
+                    st.error(f"데이터 로드 실패: {e}")
+                else:
+                    if smode == "🟦 방어모드":
+                        bc, sc = ds_p.sf_buy_pct2, ds_p.sf_sell_pct
+                        brange = np.round(np.linspace(max(0.5, bc-3), bc+3, 5), 2)
+                        srange = np.round(np.linspace(max(0.1, sc-0.6), sc+0.6, 5), 2)
+                    else:
+                        bc, sc = ds_p.ag_buy_pct, ds_p.ag_sell_alpha
+                        brange = np.round(np.linspace(max(1.0, bc-4), bc+4, 5), 2)
+                        srange = np.round(np.linspace(max(0.2, sc-0.2), sc+0.2, 5), 2)
+                    heat = np.zeros((5, 5))
+                    prog = st.progress(0.0)
+                    for bi, bv in enumerate(brange):
+                        for si, sv in enumerate(srange):
+                            import copy as _copy
+                            pp = _copy.copy(ds_p)
+                            if smode == "🟦 방어모드":
+                                pp.sf_buy_pct2 = float(bv); pp.sf_sell_pct = float(sv)
+                            else:
+                                pp.ag_buy_pct = float(bv); pp.ag_sell_alpha = float(sv)
+                            lg = run_backtest(pxf, pp, mode_map=mm, start_date=start, light=True)
+                            lg = lg[(lg['날짜'] >= pd.Timestamp(start)) & (lg['날짜'] <= pd.Timestamp(end))]
+                            if len(lg) > 10:
+                                mm2 = compute_metrics(lg, None, cap)
+                                heat[bi][si] = mm2['Calmar'] if np.isfinite(mm2['Calmar']) else 0
+                            prog.progress(min((bi*5+si+1)/25, 1.0))
+                    st.session_state["ds_sens"] = (heat, brange, srange, smode, bc, sc)
+            sd = st.session_state.get("ds_sens")
+            if sd:
+                heat, brange, srange, smode, bc, sc = sd
+                fh = px.imshow(heat, x=[f"{v}" for v in srange], y=[f"{v}" for v in brange],
+                               color_continuous_scale="RdYlGn", text_auto=".2f", aspect="auto",
+                               labels={"x": "매도조건", "y": "매수조건", "color": "Calmar"},
+                               title=f"Calmar 히트맵 — {smode}")
+                fh.update_layout(height=380)
+                st.plotly_chart(fh, use_container_width=True)
+                st.caption("현재값(매수≈%.2f, 매도≈%.2f) 주변이 고르게 녹색이면 과최적화 위험이 낮습니다." % (bc, sc))
+
+    # ── 무작위 기간 강건성 분석 ──
+    if ds_p is not None and mr is not None:
+        st.divider()
+        st.markdown("##### 🎲 무작위 기간 강건성 분석")
+        st.caption("2011~현재 1년(252거래일) 구간 100개를 무작위 추출해 전략 vs B&H를 반복 검증합니다.")
+        with st.expander("🔍 강건성 분석 실행 (클릭)"):
+            if st.button("▶ 무작위 100구간 분석 시작", key="ds_mc_run"):
+                import random
+                try:
+                    pxf = get_soxl_data()
+                    mm = build_auto_mode_map(pxf, **mr)
+                except Exception as e:
+                    st.error(f"데이터 로드 실패: {e}")
+                else:
+                    closes = pxf['close'].dropna()
+                    idx = closes.index
+                    WIN = 252
+                    base = idx[idx >= pd.Timestamp("2011-01-01")]
+                    valid = [i for i in range(len(idx)) if idx[i] in set(base) and i + WIN < len(idx)]
+                    if len(valid) < 100:
+                        st.warning("데이터가 100구간에 부족합니다.")
+                    else:
+                        random.seed(7)
+                        chosen = random.sample(valid, 100)
+                        sr = []; sm = []; br = []; bm = []
+                        prog = st.progress(0.0)
+                        for ci, si in enumerate(chosen):
+                            sdt = str(idx[si].date()); edt = str(idx[si+WIN-1].date())
+                            lg = run_backtest(pxf, ds_p, mode_map=mm, start_date=sdt, light=True)
+                            lg = lg[(lg['날짜'] >= pd.Timestamp(sdt)) & (lg['날짜'] <= pd.Timestamp(edt))]
+                            if len(lg) > 50:
+                                a = lg['총자산'].values.astype(float)
+                                sr.append((a[-1]/a[0]-1)*100)
+                                pk = np.maximum.accumulate(a); sm.append(abs(((a-pk)/pk).min())*100)
+                                bp = closes.loc[pd.Timestamp(sdt):pd.Timestamp(edt)].values.astype(float)
+                                ba = cap/bp[0]*bp
+                                br.append((ba[-1]/ba[0]-1)*100)
+                                bpk = np.maximum.accumulate(ba); bm.append(abs(((ba-bpk)/bpk).min())*100)
+                            prog.progress(min((ci+1)/100, 1.0))
+                        st.session_state["ds_mc"] = (np.array(sr), np.array(sm), np.array(br), np.array(bm))
+            mc = st.session_state.get("ds_mc")
+            if mc:
+                sr, sm, br, bm = mc
+                def _ms2(a, lbl, pos=True):
+                    d = {"구분": lbl, "평균": f"{np.mean(a):+.1f}%", "중앙값": f"{np.median(a):+.1f}%",
+                         "표준편차": f"{np.std(a):.1f}%", "최솟값": f"{np.min(a):+.1f}%",
+                         "최댓값": f"{np.max(a):+.1f}%", "양(+) 비율": f"{(a>0).mean()*100:.0f}%" if pos else "-"}
+                    return d
+                st.markdown(f"**📋 요약 통계 (n={len(sr)})**")
+                st.dataframe(pd.DataFrame([
+                    _ms2(sr, "전략 (1년 수익률)"), _ms2(br, "SOXL B&H (1년 수익률)"),
+                    _ms2(sm, "전략 (MDD)", False), _ms2(bm, "SOXL B&H (MDD)", False)]),
+                    hide_index=True, use_container_width=True)
+                figm = make_subplots(rows=1, cols=2, subplot_titles=["수익률 분포(1년)", "MDD 분포"],
+                                     horizontal_spacing=0.12)
+                figm.add_trace(go.Histogram(x=br.tolist(), nbinsx=20, name="SOXL B&H",
+                                            opacity=0.55, marker_color="#FB8C00"), row=1, col=1)
+                figm.add_trace(go.Histogram(x=sr.tolist(), nbinsx=20, name="전략",
+                                            opacity=0.6, marker_color="#1565C0"), row=1, col=1)
+                figm.add_trace(go.Histogram(x=bm.tolist(), nbinsx=20, name="SOXL B&H",
+                                            opacity=0.55, marker_color="#FB8C00", showlegend=False), row=1, col=2)
+                figm.add_trace(go.Histogram(x=sm.tolist(), nbinsx=20, name="전략",
+                                            opacity=0.6, marker_color="#1565C0", showlegend=False), row=1, col=2)
+                figm.update_layout(height=380, barmode="overlay", margin=dict(r=120),
+                                   legend=dict(orientation="v", x=1.02, y=1.0))
+                st.plotly_chart(figm, use_container_width=True)
+                st.caption("전략 수익률 분포가 오른쪽에 모이고 MDD 분포가 왼쪽(낮은 손실)에 모일수록 강건합니다.")
+
 
 
 
