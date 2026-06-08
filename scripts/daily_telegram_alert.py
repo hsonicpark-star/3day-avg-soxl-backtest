@@ -551,6 +551,78 @@ def parse_dss_config(user: dict) -> dict:
     return {}
 
 
+def verify_dss_against_board(client, os_result: dict, verify_url: str,
+                             verify_sheet: str, acct_name: str = "") -> list:
+    """앱 계산 주문표를 알고리C 원본 시트 BOARD 탭과 대조.
+
+    BOARD 탭 고정 셀:
+      B3  = 모드 ("공세모드"/"안전모드")
+      B7  = 당일 매수가,  C7 = 매수 수량
+      B10 = 예약 매도가,  C10 = 매도 수량 (대표 1건)
+
+    Returns: 불일치 메시지 리스트 (일치하면 빈 리스트)
+    """
+    issues = []
+    try:
+        sh = client.open_by_url(verify_url)
+        try:
+            ws = sh.worksheet(verify_sheet)
+        except Exception:
+            return [f"⚠️ 검증시트 탭 '{verify_sheet}' 없음"]
+
+        # B3, B7/C7 읽기 (1-indexed: row, col)
+        board_mode_raw = str(ws.cell(3, 2).value or "").strip()
+        board_buy_price = ws.cell(7, 2).value
+        board_buy_qty = ws.cell(7, 3).value
+
+        # 시트 모드 → AG/SF 변환
+        board_mode = "AG" if "공세" in board_mode_raw else ("SF" if "안전" in board_mode_raw else "?")
+        app_mode = os_result.get("last_mode", "?")
+
+        # 1. 모드 비교
+        if board_mode in ("AG", "SF") and app_mode != board_mode:
+            issues.append(
+                f"모드 불일치: 앱={app_mode} vs 시트={board_mode}({board_mode_raw})")
+
+        # 2. 매수가 비교 (시트에 매수 주문이 있을 때만)
+        app_buy = os_result.get("next_buy_order")
+        can_buy = os_result.get("n_pos", 0) < os_result.get("cur_divisions", 0)
+        if board_buy_price is not None and can_buy:
+            try:
+                bp = round(float(board_buy_price), 2)
+                ap = round(float(app_buy), 2)
+                if abs(bp - ap) > 0.01:
+                    issues.append(f"매수가 불일치: 앱=${ap:.2f} vs 시트=${bp:.2f}")
+            except Exception:
+                pass
+
+        # 3. 매수 수량 비교
+        app_qty = os_result.get("buy_qty_est")
+        if board_buy_qty is not None and can_buy:
+            try:
+                bq = int(float(board_buy_qty))
+                aq = int(app_qty)
+                if bq != aq:
+                    issues.append(f"매수수량 불일치: 앱={aq}주 vs 시트={bq}주")
+            except Exception:
+                pass
+
+    except Exception as e:
+        issues.append(f"검증 실패: {e}")
+    return issues
+
+
+def parse_dss_verify_sheets(dss_cfg: dict) -> dict:
+    """dss_config에서 계좌별 검증시트 매핑 반환.
+    구조: {"verify_url": "...", "verify_sheets": {계좌명: 탭이름}}
+    """
+    url = str(dss_cfg.get("verify_url", "")).strip()
+    sheets = dss_cfg.get("verify_sheets", {})
+    if not isinstance(sheets, dict):
+        sheets = {}
+    return {"url": url, "sheets": sheets}
+
+
 # ══════════════════════════════════════════════════════════════
 # Sigma매매법 관련
 # ══════════════════════════════════════════════════════════════
@@ -1372,6 +1444,8 @@ def main():
         if not isinstance(dss_gs_sheets, dict):
             dss_gs_sheets = {}
         dss_gs_sheet_legacy = str(dss_cfg.get("gs_sheet", "")).strip()
+        # 검증용 알고리C 시트 (verify_url + 계좌별 verify_sheets)
+        dss_verify = parse_dss_verify_sheets(dss_cfg)
 
         if dss_chat_id and dss_token and dss_accounts:
             print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
@@ -1405,6 +1479,16 @@ def main():
                 # 이상치 감지 (DSS는 중점 체크)
                 _issues = sanity_check_dss(os_result, acct_name, acct_data)
                 user_warnings.extend([f"[DSS/{acct_name}] {m}" for m in _issues])
+
+                # 알고리C 원본 시트(BOARD)와 대조 검증
+                _vsheet = dss_verify["sheets"].get(acct_name, "")
+                if dss_verify["url"] and _vsheet:
+                    _vissues = verify_dss_against_board(
+                        client, os_result, dss_verify["url"], _vsheet, acct_name)
+                    if _vissues:
+                        user_warnings.extend(
+                            [f"[DSS/{acct_name}📋시트대조] {m}" for m in _vissues])
+                        print(f"    ⚠️ [DSS/{acct_name}] 시트 불일치 {len(_vissues)}건")
 
                 msg = build_dss_message(os_result, acct_name)
                 ok, resp = send_telegram(dss_chat_id, dss_token, msg, parse_mode="HTML")

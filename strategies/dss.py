@@ -4230,6 +4230,73 @@ def render_settings_tab():
 
     st.write("")
 
+    # ── 검증용 알고리C 원본 시트 대조 설정 ──────────────────────
+    with st.container(border=True):
+        st.markdown("#### 🔍 알고리C 시트 자동 대조 (선택)")
+        st.caption("매일 발송 시 앱 계산값을 알고리C 원본 시트(BOARD 탭)와 자동 비교하여 "
+                   "불일치 시 텔레그램으로 알려줍니다. (모드 / 매수가 / 수량)")
+        st.caption(f"⚠️ 알고리C 시트를 서비스 계정(읽기 권한)에 공유해야 합니다: "
+                   f"`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com`")
+
+        _verify_url = st.text_input(
+            "검증용 알고리C 스프레드시트 URL",
+            value=_cfg_s.get("verify_url", ""),
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            key="dss_verify_url",
+        )
+
+        _accounts_v = _cfg_s.get("accounts", {})
+        _acct_names_v = list(_accounts_v.keys())
+        _verify_sheets_saved = dict(_cfg_s.get("verify_sheets", {}))
+
+        _verify_inputs = {}
+        if _acct_names_v:
+            st.caption("각 계좌에 대응하는 알고리C 시트의 BOARD 탭 이름을 지정하세요.")
+            for _an in _acct_names_v:
+                _verify_inputs[_an] = st.text_input(
+                    f"🔍 {_an} → BOARD 탭",
+                    value=_verify_sheets_saved.get(_an, "BOARD"),
+                    placeholder="예: BOARD",
+                    key=f"dss_verify_sheet_{_an}",
+                )
+        else:
+            st.info("등록된 계좌가 없습니다.")
+
+        _vc1, _vc2 = st.columns(2)
+        with _vc1:
+            if st.button("🔗 검증시트 연결 테스트", use_container_width=True,
+                         key="dss_verify_test"):
+                if not _verify_url:
+                    st.warning("검증용 URL을 입력해주세요.")
+                else:
+                    try:
+                        gc = _get_gspread_client()
+                        sh = gc.open_by_url(_verify_url)
+                        st.success(f"✅ 연결 성공: **{sh.title}**")
+                        # BOARD 탭 B3/B7 미리보기 (첫 계좌)
+                        if _verify_inputs:
+                            _first = list(_verify_inputs.values())[0]
+                            try:
+                                _ws = sh.worksheet(_first)
+                                _m = _ws.cell(3, 2).value
+                                _bp = _ws.cell(7, 2).value
+                                st.caption(f"📋 '{_first}' B3(모드)={_m}, B7(매수가)={_bp}")
+                            except Exception as _e:
+                                st.caption(f"⚠️ '{_first}' 탭 읽기 실패: {_e}")
+                    except Exception as e:
+                        st.error(f"❌ 연결 실패: {e}")
+        with _vc2:
+            if st.button("💾 검증 설정 저장", use_container_width=True,
+                         key="dss_verify_save", type="primary"):
+                _cfg_s["verify_url"] = _verify_url.strip()
+                _cfg_s["verify_sheets"] = {
+                    _an: _sh.strip() for _an, _sh in _verify_inputs.items() if _sh.strip()
+                }
+                _save_dss_config(_cfg_s)
+                st.success(f"✅ 검증 설정 저장 완료 ({len(_cfg_s['verify_sheets'])}개 계좌)")
+
+    st.write("")
+
     # ── 파라미터 프리셋 내보내기/가져오기 ──────────────────────
     with st.container(border=True):
         st.markdown("#### 📋 파라미터 설정 관리")
