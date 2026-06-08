@@ -67,8 +67,11 @@ if _is_iuo:
 dual = None
 if _is_dual:
     try:
-        from strategies import dual_sniper as dual
         import importlib
+        # 엔진 모듈 먼저 reload (build_today_orders 등 신규 심볼 stale 캐시 방지)
+        import dual_sniper_engine as _ds_engine
+        importlib.reload(_ds_engine)
+        from strategies import dual_sniper as dual
         importlib.reload(dual)
     except Exception as _dual_err:
         st.error(f"⚠️ 듀얼스나이퍼 모듈 로드 실패: {_dual_err}")
