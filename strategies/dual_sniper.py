@@ -35,7 +35,7 @@ if _root_dir not in sys.path:
 from dual_sniper_engine import (
     DualSniperParams, run_backtest, compute_metrics,
     load_price_data, build_auto_mode_map, build_today_orders,
-    build_original_mode_map, load_original_modes,
+    build_original_mode_map, load_original_modes, next_trading_days,
 )
 from common.config import _IS_CLOUD
 
@@ -934,7 +934,7 @@ def render_ordersheet_tab(params):
     _last_bundle = (str(_orig['date'].iloc[-1].date()), _orig['mode'].iloc[-1]) if len(_orig) else (None, None)
     if _shared:
         _ld = sorted(_shared.keys())[-1]
-        st.info(f"📢 **오늘 원전략 모드: `{_shared[_ld]}`** (공유 기준일 {_ld}) — "
+        st.info(f"📢 **원전략 모드: `{_shared[_ld]}`** (적용 거래일 {_ld}) — "
                 f"원전략을 따라가려면 계좌 모드 소스를 '수동: {_shared[_ld]}'로 두면 됩니다.")
     elif _last_bundle[0]:
         st.caption(f"📜 원전략 실제모드 번들: {_orig['date'].iloc[0].date()} ~ {_last_bundle[0]} "
@@ -1169,7 +1169,9 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             else:
                 extra = dict(_load_shared_modes())   # 공유 일별 모드 (번들 이후)
                 if shared_today:
-                    extra[str(pd.Timestamp(px_df.index[-1]).date())] = shared_today
+                    _nd = next_trading_days(px_df.index[-1], 1)
+                    _kd = (_nd[0] if len(_nd) else px_df.index[-1]).date()
+                    extra[str(_kd)] = shared_today
                 mode_map = build_original_mode_map(px_df, extra_modes=extra)
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
                                    mode_rule=mode_rule, forced_mode=forced)

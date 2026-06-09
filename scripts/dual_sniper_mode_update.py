@@ -27,6 +27,54 @@ import pandas as pd
 
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+
+def _nth_weekday(y, mo, wd, n):
+    from datetime import date as D, timedelta as T
+    first = D(y, mo, 1)
+    return first + T(days=(wd - first.weekday()) % 7 + 7 * (n - 1))
+
+
+def _last_weekday(y, mo, wd):
+    from datetime import date as D, timedelta as T
+    last = (D(y + 1, 1, 1) if mo == 12 else D(y, mo + 1, 1)) - T(days=1)
+    return last - T(days=(last.weekday() - wd) % 7)
+
+
+def _easter(y):
+    from datetime import date as D
+    a = y % 19; b, c = divmod(y, 100); d, e = divmod(b, 4)
+    f = (b + 8) // 25; g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30; i, k = divmod(c, 4)
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    mo, da = divmod(h + l - 7 * m + 114, 31)
+    return D(y, mo, da + 1)
+
+
+def _us_holidays(y):
+    from datetime import date as D, timedelta as T
+    hs = {D(y, 1, 1), _nth_weekday(y, 1, 0, 3), _nth_weekday(y, 2, 0, 3),
+          _easter(y) - T(days=2), _last_weekday(y, 5, 0), D(y, 6, 19), D(y, 7, 4),
+          _nth_weekday(y, 9, 0, 1), _nth_weekday(y, 11, 3, 4), D(y, 12, 25)}
+    obs = set()
+    for h in hs:
+        if h.weekday() == 5:
+            obs.add(h - T(days=1))
+        elif h.weekday() == 6:
+            obs.add(h + T(days=1))
+    return hs | obs
+
+
+def _next_trading_day(d):
+    """d 다음 NYSE 거래일."""
+    from datetime import timedelta as T
+    cur = d + T(days=1)
+    for _ in range(15):
+        if cur.weekday() < 5 and cur not in _us_holidays(cur.year):
+            return cur
+        cur += T(days=1)
+    return cur
+
 # 원전략 기본 파라미터 (모드 역산용 — 표준 듀얼스나이퍼 값)
 AG_BUY_PCT = 8.0
 SF_BUY1 = -0.6
@@ -122,11 +170,13 @@ def main():
     print(f"원본 주문: {rows}")
     c1, c2, last_date = _soxl_last2()
     mode, detail = _infer_mode(rows, c1, c2)
-    print(f"전일종가 {c1:.2f} / {c2:.2f} (기준일 {last_date}) → 모드={mode} 근거={detail}")
+    apply_date = _next_trading_day(last_date)   # 모드가 적용되는 다음 거래일
+    print(f"종가기준일 {last_date} (종가 {c1:.2f}/{c2:.2f}) → 적용거래일 {apply_date} "
+          f"모드={mode} 근거={detail}")
     if mode is None:
         print("[error] 모드 역산 실패")
         sys.exit(2)
-    _append_shared(gc, share_url, share_tab, str(last_date), mode)
+    _append_shared(gc, share_url, share_tab, str(apply_date), mode)
 
 
 if __name__ == "__main__":
