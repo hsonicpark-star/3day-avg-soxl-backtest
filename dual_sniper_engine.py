@@ -378,7 +378,8 @@ def run_backtest(prices: pd.DataFrame,
                  skip_buy_dates: set = None,
                  light: bool = False,
                  return_trades: bool = False,
-                 return_state: bool = False) -> pd.DataFrame:
+                 return_state: bool = False,
+                 liquidate_at_end: bool = True) -> pd.DataFrame:
     """Dual Sniper Pro 백테스트.
 
     Args:
@@ -587,7 +588,9 @@ def run_backtest(prices: pd.DataFrame,
                         else:
                             sell_target = None  # MA 그룹청산
                             hd = params.sf_hold
-                        stop_idx = min(i + hd, n - 1)
+                        # 끝에서 강제청산(MOC)할지: 성과 백테스트=True(마지막날 평가청산),
+                        # 현재 보유상태 carry(build_today_orders)=False → 미만기 포지션 유지
+                        stop_idx = min(i + hd, n - 1) if liquidate_at_end else (i + hd)
                         p = Position(
                             mode=mode, tier=tier, buy_date=date,
                             buy_price=close, order_price=order_price, qty=qty,
@@ -795,7 +798,8 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
     orders 항목: {구분(매수/매도), 거래방법(LOC/MOC), 가격, 수량, 사유, 모드, 티어}
     """
     log, state = run_backtest(prices, params, mode_map=mode_map,
-                              start_date=start_date, return_state=True)
+                              start_date=start_date, return_state=True,
+                              liquidate_at_end=False)
     positions = state['positions']
     last_date = state['last_date']
     c1, c2 = state['c1'], state['c2']
