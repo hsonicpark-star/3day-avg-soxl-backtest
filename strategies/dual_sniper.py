@@ -731,10 +731,13 @@ def render_optimization_tab(params):
 # ══════════════════════════════════════════════
 
 _DS_PRESETS = [
-    {"label": "⚖️ 기본 (권장)", "ag_div": 6, "ag_buy": 8.0, "ag_sell_alpha": 0.4,
+    {"label": "🚀 로케트셋 (원전략 기본)", "ag_div": 6, "ag_buy": 8.0, "ag_sell_alpha": 0.4,
      "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
      "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "6, 13, 20, 27, 34",
-     "help": "원전략 디폴트 · 하이브리드 자동모드 기준 CAGR 76% / MDD -29% / Calmar 2.64"},
+     "help": ("원전략(로케트셋) 기본 파라미터\n"
+              "공격: 분할6 · 매수8.0% · 매도α0.4 · 보유α2.0\n"
+              "방어: 분할5 · 보유8일 · 매수1 -0.6% · 매수2 5.5% · 매도0.7% · MA3 · 비중6/13/20/27/34\n"
+              "원전략 실제모드 기준 CAGR 96.8% / MDD -26.1% / Calmar 3.70")},
 ]
 
 
@@ -1016,14 +1019,18 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         m4.metric("방어(매수1/2/매도)", f"{ds_p.sf_buy_pct1}/{ds_p.sf_buy_pct2}/{ds_p.sf_sell_pct}")
         m5.metric("모드(MA/천장/이탈)", f"{mode_rule['ma_weeks']}/{int(mode_rule['peak_thr'])}/{int(mode_rule['dn'])}")
         with st.expander("✏️ 파라미터 수정"):
-            pc = _DS_PRESETS[0]
-            if st.button(pc["label"], key=f"ds_preset_{sfx}", help=pc["help"]):
-                for k in ("ag_div", "ag_buy", "ag_sell_alpha", "ag_hold_alpha", "sf_div",
-                          "sf_hold", "sf_buy1", "sf_buy2", "sf_sell", "sf_ma_base", "sf_weights"):
-                    acct_data.setdefault("params", {})[k] = pc[k]
-                cfg["accounts"][acct_key] = acct_data
-                _save_ds_config(cfg)
-                st.rerun()
+            st.caption("💡 프리셋 — 버튼에 마우스를 올리면 파라미터/성과를 볼 수 있습니다.")
+            _pcols = st.columns(max(len(_DS_PRESETS), 2))
+            for _pi, pc in enumerate(_DS_PRESETS):
+                if _pcols[_pi].button(pc["label"], key=f"ds_preset_{_pi}{sfx}", help=pc["help"],
+                                      use_container_width=True):
+                    for k in ("ag_div", "ag_buy", "ag_sell_alpha", "ag_hold_alpha", "sf_div",
+                              "sf_hold", "sf_buy1", "sf_buy2", "sf_sell", "sf_ma_base", "sf_weights"):
+                        acct_data.setdefault("params", {})[k] = pc[k]
+                    cfg["accounts"][acct_key] = acct_data
+                    _save_ds_config(cfg)
+                    st.success(f"✅ '{pc['label']}' 적용됨")
+                    st.rerun()
             e1, e2, e3, e4 = st.columns(4)
             v_agdiv = e1.number_input("공분할", 1, 12, ds_p.ag_divisions, key=f"ds_e_agdiv{sfx}")
             v_agbuy = e2.number_input("공매수%", 0.0, 30.0, ds_p.ag_buy_pct, 0.5, key=f"ds_e_agbuy{sfx}")
