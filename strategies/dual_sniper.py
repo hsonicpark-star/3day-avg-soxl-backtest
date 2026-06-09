@@ -712,6 +712,59 @@ def _save_ds_history(acct_name, snapshot_row):
             st.warning(f"⚠️ GSheets 동기화 실패: {_e}")
 
 
+def _read_algoc_orders(url, tab="Rocket"):
+    """원본(알고리C/ASTRA) 시트 L4:O 주문 영역 읽기 → [(구분,거래방법,가격,수량), ...]."""
+    from common.config import _get_gspread_client
+    gc = _get_gspread_client()
+    ws = gc.open_by_url(url).worksheet(tab)
+    vals = ws.get_all_values()
+    rows = []
+    for r in range(3, min(len(vals), 20)):       # 4행(인덱스3)부터
+        row = vals[r]
+        g = row[11].strip() if len(row) > 11 else ""   # L
+        m = row[12].strip() if len(row) > 12 else ""   # M
+        pr = row[13].strip() if len(row) > 13 else ""  # N
+        q = row[14].strip() if len(row) > 14 else ""   # O
+        if g in ("매수", "매도"):
+            rows.append((g, m, pr, q))
+    return rows
+
+
+def _infer_mode_from_orders(rows, c1, c2, ds_p):
+    """원본 주문가 → 모드 역산. c1=전일종가, c2=전전일종가."""
+    import math
+    def _f(x):
+        try:
+            return float(str(x).replace(",", ""))
+        except Exception:
+            return None
+    buys = [_f(p) for (g, m, p, q) in rows if g == "매수" and m != "MOC" and _f(p)]
+    sells = [_f(p) for (g, m, p, q) in rows if g == "매도" and m != "MOC" and _f(p)]
+    # 후보 매수가
+    ag_plus = math.floor(c1 * (1 + ds_p.ag_buy_pct / 100) * 100) / 100
+    ag_minus = math.floor(c1 * 0.999 * 100) / 100
+    f1 = 1 + ds_p.sf_buy_pct1 / 100
+    cond1 = (f1 * (c1 + c2)) / (ds_p.sf_ma_base - f1)
+    cond2 = c1 * (1 + ds_p.sf_buy_pct2 / 100)
+    sf_k = round(min(cond1, cond2), 2)
+    detail = {"원본매수가": buys[0] if buys else None,
+              "후보_공격FI+": ag_plus, "후보_공격FI-": ag_minus, "후보_방어": sf_k}
+    if buys:
+        bp = buys[0]
+        cands = [("공격", ag_plus), ("공격", ag_minus), ("방어", sf_k)]
+        best = min(cands, key=lambda c: abs(c[1] - bp))
+        if abs(best[1] - bp) < 0.15:
+            return best[0], detail
+    # 매수 없으면 매도가 균일성으로 판정 (방어=동일 MA가, 공격=슬롯별 상이)
+    if len(sells) >= 2:
+        return ("방어" if (max(sells) - min(sells) < 0.02) else "공격"), detail
+    if len(sells) == 1:
+        fs = 1 + ds_p.sf_sell_pct / 100
+        sf_sell = (fs * (c1 + c2)) / (ds_p.sf_ma_base - fs)
+        return ("방어" if abs(sells[0] - sf_sell) < 0.15 else "공격"), detail
+    return None, detail
+
+
 def _acct_params(acct_data, p):
     """계좌 저장 파라미터(없으면 사이드바 p) → (DualSniperParams, mode_rule dict)."""
     ap = acct_data.get("params", {})
@@ -938,11 +991,31 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     ds_p.initial_capital = eff_capital
 
     # ── 5) 모드 소스 + 주문표 로드 ──
-    msrc = st.radio("🧭 모드 소스", ["자동 (하이브리드)", "수동: 🟥 공격", "수동: 🟦 방어"],
+    msrc = st.radio("🧭 모드 소스",
+                    ["자동 (하이브리드)", "🔗 원본시트 자동", "수동: 🟥 공격", "수동: 🟦 방어"],
                     horizontal=True, key=f"ds_msrc{sfx}",
-                    help="원전략을 그대로 따라가려면 매주 원전략의 모드(공격/방어)를 수동으로 지정하세요. "
-                         "엔진이 그 모드로 원전략과 동일하게 주문을 산출합니다.")
+                    help="원전략을 따라가려면 '원본시트 자동'(매일 9시 원본 주문에서 모드 역산) 또는 "
+                         "수동으로 모드를 지정하세요. 엔진이 그 모드로 원전략과 동일하게 주문을 산출합니다.")
     forced = "공격" if "공격" in msrc else ("방어" if "방어" in msrc else None)
+    use_algoc = (msrc == "🔗 원본시트 자동")
+    if use_algoc:
+        au1, au2 = st.columns([3, 1])
+        algoc_url = au1.text_input("원본 시트 URL (ASTRA/Rocket)",
+                                   value=acct_data.get("algoc_url", ""),
+                                   placeholder="https://docs.google.com/spreadsheets/d/...",
+                                   key=f"ds_au{sfx}")
+        algoc_tab = au2.text_input("탭 이름", value=acct_data.get("algoc_tab", "Rocket"),
+                                   key=f"ds_at{sfx}")
+        st.caption("⚠️ 원본 시트를 서비스 계정(읽기)에 공유: "
+                   "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com` · "
+                   "매일 9시경 들어오는 원본 주문가로 공격/방어 모드를 자동 역산합니다.")
+        if st.button("💾 원본시트 설정 저장", key=f"ds_ausave{sfx}"):
+            acct_data["algoc_url"] = algoc_url.strip()
+            acct_data["algoc_tab"] = algoc_tab.strip() or "Rocket"
+            cfg["accounts"][acct_key] = acct_data
+            _save_ds_config(cfg)
+            st.success("저장됨")
+            st.rerun()
     if forced:
         st.caption(f"✋ 수동 모드 **{forced}** 적용 — 다음 세션 신규 매수가 {forced} 규칙으로 계산됩니다. "
                    "(기존 보유 슬롯은 매수 당시 모드로 계속 관리)")
@@ -951,8 +1024,24 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             px_df = get_soxl_data()
             mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
                                            peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+            algoc_info = None
+            if use_algoc:
+                au = st.session_state.get(f"ds_au{sfx}", "").strip() or acct_data.get("algoc_url", "")
+                at = st.session_state.get(f"ds_at{sfx}", "Rocket").strip() or "Rocket"
+                if not au:
+                    st.error("원본 시트 URL을 입력 후 저장하세요.")
+                    return
+                rows = _read_algoc_orders(au, at)
+                c1 = float(px_df['close'].iloc[-1]); c2 = float(px_df['close'].iloc[-2])
+                m_inf, det = _infer_mode_from_orders(rows, c1, c2, ds_p)
+                if m_inf is None:
+                    st.error(f"모드 역산 실패 — 원본 주문: {rows}")
+                    return
+                forced = m_inf
+                algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
                                    mode_rule=mode_rule, forced_mode=forced)
+            r["algoc"] = algoc_info
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
             return
@@ -963,11 +1052,23 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         st.info("👆 '주문표 로드'를 클릭하면 다음 거래일 주문이 생성됩니다.")
         return
 
+    # ── 원본시트 모드 역산 결과 ──
+    ai = r.get("algoc")
+    if ai:
+        d = ai["detail"]
+        st.success(f"🔗 **원본시트 자동 모드 = {ai['mode']}** "
+                   f"(원본 매수가 ${d.get('원본매수가')} ↔ 방어후보 ${d.get('후보_방어')} / "
+                   f"공격후보 ${d.get('후보_공격FI+')}·${d.get('후보_공격FI-')})")
+        with st.expander("📥 원본 시트에서 읽은 주문"):
+            st.dataframe(pd.DataFrame(ai["orders"], columns=["구분", "거래방법", "가격", "수량"]),
+                         hide_index=True, use_container_width=True)
+
     # ── 요약 ──
     od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
     ld = pd.Timestamp(r["last_date"]).strftime("%Y-%m-%d")
+    _src = "🔗원본시트" if ai else st.session_state.get(f"ds_msrc{sfx}", "자동")
     st.markdown(f"**주문일** {od} · **기준종가**({ld}) ${r['last_close']:.2f} · "
-                f"**모드** `{r['next_mode']}` · **보유** {r['n_pos']}/{r['divisions']}슬롯")
+                f"**모드** `{r['next_mode']}` ({_src}) · **보유** {r['n_pos']}/{r['divisions']}슬롯")
     sm1, sm2, sm3, sm4 = st.columns(4)
     sm1.metric("총자산", f"${r['total_asset']:,.0f}")
     sm2.metric("현금", f"${r['cash']:,.0f}")
@@ -1025,6 +1126,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         n_buy = sum(1 for o in r["orders"] if o["구분"] == "매수")
         n_sell = sum(1 for o in r["orders"] if o["구분"] == "매도")
         snap = {"날짜": od, "기준종가": round(r["last_close"], 2), "모드": r["next_mode"],
+                "모드소스": "원본시트" if r.get("algoc") else st.session_state.get(f"ds_msrc{sfx}", "자동"),
                 "보유슬롯": r["n_pos"], "매수주문": n_buy, "매도주문": n_sell,
                 "현금": round(r["cash"]), "총자산": round(r["total_asset"]),
                 "누적실현": round(r["cum_realized"])}
