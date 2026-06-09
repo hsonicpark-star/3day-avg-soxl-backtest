@@ -491,7 +491,10 @@ def render_optimization_tab(params):
         "📈 워크포워드": "전체 기간을 IS(최적화)·OOS(검증) 윈도우로 분할해 과적합을 방지합니다.",
         "🧠 베이지안": "Optuna TPE로 적은 시도로 최적값에 빠르게 수렴합니다.",
     }
-    st.caption(_desc[method] + "  ·  모드는 사이드바 규칙으로 고정 (전략 파라미터 탐색)")
+    _msrc = _normalize_src(p.get("mode_source", "자동"))
+    _mode_label = ("원전략 실제모드(2016~) 고정" if _msrc != "자동"
+                   else "자동 하이브리드 규칙 고정")
+    st.caption(_desc[method] + f"  ·  모드는 **{_mode_label}** (전략 파라미터만 탐색)")
 
     # ── 파라미터 범위 ──
     with st.expander("파라미터 범위 설정", expanded=True):
@@ -537,8 +540,11 @@ def render_optimization_tab(params):
 
     def _load():
         px_df = get_soxl_data()
-        mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
-                                       peak_thr=p["peak_thr"], dn=p["dn"])
+        if _msrc == "자동":
+            mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
+                                           peak_thr=p["peak_thr"], dn=p["dn"])
+        else:
+            mode_map = build_original_mode_map(px_df, extra_modes=dict(_load_shared_modes()))
         return px_df, mode_map
 
     # ── ① 그리드 ──
@@ -1564,6 +1570,7 @@ def render_intro_tab(params=None):
         st.session_state["ds_intro_range"] = (start, end)
         st.session_state["ds_intro_dsp"] = ds_p
         st.session_state["ds_intro_mr"] = mr
+        st.session_state["ds_intro_orig"] = use_orig_modes
 
     log = st.session_state.get("ds_intro_log")
     if log is None or log.empty:
@@ -1574,10 +1581,11 @@ def render_intro_tab(params=None):
     start, end = st.session_state["ds_intro_range"]
     _render_ds_performance(log, trades, cap, start, end,
                            st.session_state.get("ds_intro_dsp"),
-                           st.session_state.get("ds_intro_mr"))
+                           st.session_state.get("ds_intro_mr"),
+                           st.session_state.get("ds_intro_orig", False))
 
 
-def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
+def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None, use_orig=False):
     from common.analysis import (compute_annual_stats, compute_monthly_pivot,
                                   compute_sharpe_sortino, compute_rolling_perf, compute_bnh)
     assets = log['총자산'].values.astype(float)
@@ -1844,7 +1852,8 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
             if st.button("▶ 민감도 분석 실행 (25회)", key="ds_sens_run"):
                 try:
                     pxf = get_soxl_data()
-                    mm = build_auto_mode_map(pxf, **mr)
+                    mm = (build_original_mode_map(pxf, extra_modes=dict(_load_shared_modes()))
+                          if use_orig else build_auto_mode_map(pxf, **mr))
                 except Exception as e:
                     st.error(f"데이터 로드 실패: {e}")
                 else:
@@ -1894,7 +1903,8 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
                 import random
                 try:
                     pxf = get_soxl_data()
-                    mm = build_auto_mode_map(pxf, **mr)
+                    mm = (build_original_mode_map(pxf, extra_modes=dict(_load_shared_modes()))
+                          if use_orig else build_auto_mode_map(pxf, **mr))
                 except Exception as e:
                     st.error(f"데이터 로드 실패: {e}")
                 else:
