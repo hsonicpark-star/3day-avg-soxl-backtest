@@ -207,9 +207,10 @@ def render_sidebar():
     sp = dict(cfg.get("strategy", {}))
     mr = dict(cfg.get("mode_rule", {}))
 
-    # 로케트셋 불러오기 요청 시: 위젯 키 비우고 기본값 소스를 로케트셋으로 덮어씀 (경고 없이 리셋)
-    if st.session_state.pop("_ds_force_rocket", False):
-        _rk = _DS_PRESETS[0]
+    # 프리셋 불러오기 요청 시: 위젯 키 비우고 기본값 소스를 프리셋으로 덮어씀 (경고 없이 리셋)
+    _fp = st.session_state.pop("_ds_force_preset", None)
+    if _fp is not None and 0 <= _fp < len(_DS_PRESETS):
+        _rk = _DS_PRESETS[_fp]
         sp = {"ag_div": _rk["ag_div"], "ag_buy": _rk["ag_buy"],
               "ag_sell_alpha": _rk["ag_sell_alpha"], "ag_hold_alpha": _rk["ag_hold_alpha"],
               "sf_div": _rk["sf_div"], "sf_hold": _rk["sf_hold"], "sf_buy1": _rk["sf_buy1"],
@@ -238,16 +239,23 @@ def render_sidebar():
                                             "수동=직접 지정. 계좌 추가 시 이 값이 기본값으로 들어갑니다.")
     st.sidebar.caption("↳ 계좌별로 따로 저장됩니다. 주문표 탭에서 계좌마다 변경 가능.")
 
-    # ══ 로케트셋 기본값 불러오기 ══
-    def _load_rocket():
+    # ══ 파라미터 프리셋 불러오기 ══
+    _preset_labels = [pc["label"] for pc in _DS_PRESETS]
+    _pcol1, _pcol2 = st.sidebar.columns([3, 2])
+    _sel_preset = _pcol1.selectbox("📦 프리셋", _preset_labels, key="ds_preset_sel",
+                                   label_visibility="collapsed",
+                                   help="\n\n".join(f"• {pc['label']}:\n{pc['help']}"
+                                                    for pc in _DS_PRESETS))
+
+    def _load_preset():
         for _k in ("ds_agdiv", "ds_agbuy", "ds_agsa", "ds_agha", "ds_sfdiv", "ds_sfhold",
                    "ds_sfb1", "ds_sfb2", "ds_sfsell", "ds_sfma", "ds_sfw",
                    "ds_ma", "ds_peak", "ds_dn"):
             st.session_state.pop(_k, None)     # 위젯 키 비움 → value= 기본값이 적용됨
-        st.session_state["_ds_force_rocket"] = True
-    st.sidebar.button("🚀 로케트셋 기본값 불러오기", on_click=_load_rocket,
-                      use_container_width=True,
-                      help="공격/방어 파라미터 + 모드규칙을 원전략(로케트셋) 기본값으로 일괄 초기화")
+        st.session_state["_ds_force_preset"] = _preset_labels.index(
+            st.session_state.get("ds_preset_sel", _preset_labels[0]))
+    _pcol2.button("📥 불러오기", on_click=_load_preset, use_container_width=True,
+                  help="선택한 프리셋으로 공격/방어 파라미터 + 모드규칙을 일괄 적용")
 
     # ══ 공격모드 (원전략 패널과 동일 레이아웃) ══
     st.sidebar.markdown("#### 🟥 공격모드")
@@ -759,6 +767,13 @@ _DS_PRESETS = [
               "공격: 분할6 · 매수8.0% · 매도α0.4 · 보유α2.0\n"
               "방어: 분할5 · 보유8일 · 매수1 -0.6% · 매수2 5.5% · 매도0.7% · MA3 · 비중6/13/20/27/34\n"
               "원전략 실제모드 기준 CAGR 96.8% / MDD -26.1% / Calmar 3.70")},
+    {"label": "🛡️ 전차셋 (저변동)", "ag_div": 5, "ag_buy": 0.5, "ag_sell_alpha": 0.4,
+     "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
+     "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "6, 13, 20, 27, 34",
+     "help": ("전차셋 — 공격 매수조건을 0.5%로 낮춰 진입을 보수적으로 (분할5)\n"
+              "공격: 분할5 · 매수0.5% · 매도α0.4 · 보유α2.0\n"
+              "방어: 로케트셋과 동일\n"
+              "원전략 실제모드 기준 CAGR 85.1% / MDD -23.4% / Calmar 3.63 (MDD 더 낮음)")},
 ]
 
 
