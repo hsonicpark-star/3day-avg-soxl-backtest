@@ -207,16 +207,23 @@ def render_sidebar():
     sp = dict(cfg.get("strategy", {}))
     mr = dict(cfg.get("mode_rule", {}))
 
-    # 프리셋 불러오기 요청 시: 위젯 키 비우고 기본값 소스를 프리셋으로 덮어씀 (경고 없이 리셋)
-    _fp = st.session_state.pop("_ds_force_preset", None)
-    if _fp is not None and 0 <= _fp < len(_DS_PRESETS):
-        _rk = _DS_PRESETS[_fp]
-        sp = {"ag_div": _rk["ag_div"], "ag_buy": _rk["ag_buy"],
-              "ag_sell_alpha": _rk["ag_sell_alpha"], "ag_hold_alpha": _rk["ag_hold_alpha"],
-              "sf_div": _rk["sf_div"], "sf_hold": _rk["sf_hold"], "sf_buy1": _rk["sf_buy1"],
-              "sf_buy2": _rk["sf_buy2"], "sf_sell": _rk["sf_sell"], "sf_ma_base": _rk["sf_ma_base"],
-              "sf_weights": _rk["sf_weights"]}
-        mr = {"ma_weeks": 36, "peak_thr": 66.0, "dn": 42.0}
+    # 위젯 session_state 1회 시드 (config → 위젯). 위젯은 key 만 쓰고 value= 미지정 →
+    # 프리셋 버튼이 session_state 를 직접 덮어쓰면 즉시 반영됨 (경고 없음).
+    for _k, _v in (("ds_ma", int(mr.get("ma_weeks", 36))),
+                   ("ds_peak", float(mr.get("peak_thr", 66.0))),
+                   ("ds_dn", float(mr.get("dn", 42.0))),
+                   ("ds_agdiv", int(sp.get("ag_div", 6))),
+                   ("ds_agha", float(sp.get("ag_hold_alpha", 2.0))),
+                   ("ds_agbuy", float(sp.get("ag_buy", 8.0))),
+                   ("ds_agsa", float(sp.get("ag_sell_alpha", 0.4))),
+                   ("ds_sfdiv", int(sp.get("sf_div", 5))),
+                   ("ds_sfhold", int(sp.get("sf_hold", 8))),
+                   ("ds_sfb1", float(sp.get("sf_buy1", -0.6))),
+                   ("ds_sfb2", float(sp.get("sf_buy2", 5.5))),
+                   ("ds_sfsell", float(sp.get("sf_sell", 0.7))),
+                   ("ds_sfma", int(sp.get("sf_ma_base", 3))),
+                   ("ds_sfw", str(sp.get("sf_weights", "6, 13, 20, 27, 34")))):
+        st.session_state.setdefault(_k, _v)
 
     st.sidebar.markdown("### 🎯 Dual Sniper Pro")
     st.sidebar.caption("SOXL · 공격/방어 2모드 슬롯 그리드")
@@ -224,9 +231,9 @@ def render_sidebar():
     # ── 모드 규칙 (자체 하이브리드) ──
     with st.sidebar.expander("🧭 모드 규칙 (자동)", expanded=False):
         st.caption("주봉 > N주MA → 공격, 천장하락/이탈 → 방어")
-        ma_weeks = st.number_input("추세 MA(주)", 5, 60, int(mr.get("ma_weeks", 36)), 1, key="ds_ma")
-        peak_thr = st.number_input("천장 wRSI", 50.0, 80.0, float(mr.get("peak_thr", 66.0)), 1.0, key="ds_peak")
-        dn = st.number_input("방어 이탈 wRSI", 30.0, 50.0, float(mr.get("dn", 42.0)), 1.0, key="ds_dn")
+        ma_weeks = st.number_input("추세 MA(주)", min_value=5, max_value=60, step=1, key="ds_ma")
+        peak_thr = st.number_input("천장 wRSI", min_value=50.0, max_value=80.0, step=1.0, key="ds_peak")
+        dn = st.number_input("방어 이탈 wRSI", min_value=30.0, max_value=50.0, step=1.0, key="ds_dn")
         st.caption("기본값: 36 / 66 / 42 (Calmar 2.64)")
 
     # ══ 모드 소스 (원전략 따라가기 vs 자동) ══
@@ -248,46 +255,55 @@ def render_sidebar():
                                                     for pc in _DS_PRESETS))
 
     def _load_preset():
-        for _k in ("ds_agdiv", "ds_agbuy", "ds_agsa", "ds_agha", "ds_sfdiv", "ds_sfhold",
-                   "ds_sfb1", "ds_sfb2", "ds_sfsell", "ds_sfma", "ds_sfw",
-                   "ds_ma", "ds_peak", "ds_dn"):
-            st.session_state.pop(_k, None)     # 위젯 키 비움 → value= 기본값이 적용됨
-        st.session_state["_ds_force_preset"] = _preset_labels.index(
-            st.session_state.get("ds_preset_sel", _preset_labels[0]))
+        _i = _preset_labels.index(st.session_state.get("ds_preset_sel", _preset_labels[0]))
+        _pk = _DS_PRESETS[_i]
+        st.session_state["ds_agdiv"] = int(_pk["ag_div"])
+        st.session_state["ds_agbuy"] = float(_pk["ag_buy"])
+        st.session_state["ds_agsa"] = float(_pk["ag_sell_alpha"])
+        st.session_state["ds_agha"] = float(_pk["ag_hold_alpha"])
+        st.session_state["ds_sfdiv"] = int(_pk["sf_div"])
+        st.session_state["ds_sfhold"] = int(_pk["sf_hold"])
+        st.session_state["ds_sfb1"] = float(_pk["sf_buy1"])
+        st.session_state["ds_sfb2"] = float(_pk["sf_buy2"])
+        st.session_state["ds_sfsell"] = float(_pk["sf_sell"])
+        st.session_state["ds_sfma"] = int(_pk["sf_ma_base"])
+        st.session_state["ds_sfw"] = str(_pk["sf_weights"])
+        st.session_state["ds_ma"] = 36
+        st.session_state["ds_peak"] = 66.0
+        st.session_state["ds_dn"] = 42.0
     _pcol2.button("📥 불러오기", on_click=_load_preset, use_container_width=True,
                   help="선택한 프리셋으로 공격/방어 파라미터 + 모드규칙을 일괄 적용")
 
     # ══ 공격모드 (원전략 패널과 동일 레이아웃) ══
     st.sidebar.markdown("#### 🟥 공격모드")
     c1, c2 = st.sidebar.columns(2)
-    ag_div = c1.number_input("공격 분할수", 1, 12, int(sp.get("ag_div", 6)), 1, key="ds_agdiv")
-    ag_ha = c2.number_input("보유기간(정규화 α)", 0.1, 5.0,
-                            float(sp.get("ag_hold_alpha", 2.0)), 0.1, key="ds_agha")
+    ag_div = c1.number_input("공격 분할수", min_value=1, max_value=12, step=1, key="ds_agdiv")
+    ag_ha = c2.number_input("보유기간(정규화 α)", min_value=0.1, max_value=5.0,
+                            step=0.1, key="ds_agha")
     c3, c4 = st.sidebar.columns(2)
-    ag_buy = c3.number_input("매수조건(종가%)", 0.0, 30.0,
-                             float(sp.get("ag_buy", 8.0)), 0.5, key="ds_agbuy")
-    ag_sa = c4.number_input("매도조건(정규화 α)", 0.1, 3.0,
-                            float(sp.get("ag_sell_alpha", 0.4)), 0.1, key="ds_agsa")
+    ag_buy = c3.number_input("매수조건(종가%)", min_value=0.0, max_value=30.0,
+                             step=0.5, key="ds_agbuy")
+    ag_sa = c4.number_input("매도조건(정규화 α)", min_value=0.1, max_value=3.0,
+                            step=0.1, key="ds_agsa")
     with st.sidebar.expander("📊 자세히 (정규화 표 · FI 규칙)"):
         _render_norm_tables(ag_ha, ag_sa, ag_buy)
 
     # ══ 방어모드 (원전략 패널과 동일 레이아웃) ══
     st.sidebar.markdown("#### 🟦 방어모드")
     d1, d2 = st.sidebar.columns(2)
-    sf_div = d1.number_input("방어 분할수", 1, 12, int(sp.get("sf_div", 5)), 1, key="ds_sfdiv")
-    sf_hold = d2.number_input("보유기간", 1, 60, int(sp.get("sf_hold", 8)), 1, key="ds_sfhold")
+    sf_div = d1.number_input("방어 분할수", min_value=1, max_value=12, step=1, key="ds_sfdiv")
+    sf_hold = d2.number_input("보유기간", min_value=1, max_value=60, step=1, key="ds_sfhold")
     e1, e2 = st.sidebar.columns(2)
-    sf_b1 = e1.number_input("매수조건1(MA%)", -10.0, 10.0,
-                            float(sp.get("sf_buy1", -0.6)), 0.1, key="ds_sfb1")
-    sf_b2 = e2.number_input("매수조건2(종가%)", 0.0, 30.0,
-                            float(sp.get("sf_buy2", 5.5)), 0.1, key="ds_sfb2")
+    sf_b1 = e1.number_input("매수조건1(MA%)", min_value=-10.0, max_value=10.0,
+                            step=0.1, key="ds_sfb1")
+    sf_b2 = e2.number_input("매수조건2(종가%)", min_value=0.0, max_value=30.0,
+                            step=0.1, key="ds_sfb2")
     st.sidebar.caption("↳ 매수조건 1, 2 중에 낮은 값")
     f1, f2 = st.sidebar.columns(2)
-    sf_sell = f1.number_input("매도조건(MA%)", 0.0, 10.0,
-                              float(sp.get("sf_sell", 0.7)), 0.1, key="ds_sfsell")
-    sf_ma = f2.number_input("MA기준", 2, 10, int(sp.get("sf_ma_base", 3)), 1, key="ds_sfma")
-    sf_w = st.sidebar.text_input("티어별 매수비중(%)",
-                                 sp.get("sf_weights", "6, 13, 20, 27, 34"), key="ds_sfw")
+    sf_sell = f1.number_input("매도조건(MA%)", min_value=0.0, max_value=10.0,
+                              step=0.1, key="ds_sfsell")
+    sf_ma = f2.number_input("MA기준", min_value=2, max_value=10, step=1, key="ds_sfma")
+    sf_w = st.sidebar.text_input("티어별 매수비중(%)", key="ds_sfw")
     st.sidebar.caption("↳ 오름차순(등차수열) 권장 · 합계 100")
 
     st.sidebar.markdown("### ⚙️ 백테스트 설정")
