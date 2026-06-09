@@ -246,13 +246,8 @@ def render_sidebar():
                                             "수동=직접 지정. 계좌 추가 시 이 값이 기본값으로 들어갑니다.")
     st.sidebar.caption("↳ 계좌별로 따로 저장됩니다. 주문표 탭에서 계좌마다 변경 가능.")
 
-    # ══ 파라미터 프리셋 불러오기 ══
+    # ══ 파라미터 프리셋 (선택 즉시 적용) ══
     _preset_labels = [pc["label"] for pc in _DS_PRESETS]
-    _pcol1, _pcol2 = st.sidebar.columns([3, 2])
-    _sel_preset = _pcol1.selectbox("📦 프리셋", _preset_labels, key="ds_preset_sel",
-                                   label_visibility="collapsed",
-                                   help="\n\n".join(f"• {pc['label']}:\n{pc['help']}"
-                                                    for pc in _DS_PRESETS))
 
     def _load_preset():
         _i = _preset_labels.index(st.session_state.get("ds_preset_sel", _preset_labels[0]))
@@ -271,8 +266,11 @@ def render_sidebar():
         st.session_state["ds_ma"] = 36
         st.session_state["ds_peak"] = 66.0
         st.session_state["ds_dn"] = 42.0
-    _pcol2.button("📥 불러오기", on_click=_load_preset, use_container_width=True,
-                  help="선택한 프리셋으로 공격/방어 파라미터 + 모드규칙을 일괄 적용")
+
+    _sel_preset = st.sidebar.selectbox("📦 프리셋 (선택 즉시 적용)", _preset_labels,
+                                       key="ds_preset_sel", on_change=_load_preset,
+                                       help="\n\n".join(f"• {pc['label']}:\n{pc['help']}"
+                                                        for pc in _DS_PRESETS))
 
     # ══ 공격모드 (원전략 패널과 동일 레이아웃) ══
     st.sidebar.markdown("#### 🟥 공격모드")
