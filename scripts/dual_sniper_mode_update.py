@@ -156,6 +156,27 @@ def _append_shared(gc, url, tab, date_str, mode):
     return True
 
 
+def _append_bundle_csv(date_str, mode):
+    """로컬 번들 CSV(dual_sniper_modes.csv)에 (날짜,모드) 누적 → 2016~오늘 연속 연결 유지.
+    중복 날짜면 skip. 정렬 보장."""
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "dual_sniper_modes.csv")
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        df = pd.DataFrame(columns=["date", "mode"])
+    if (df["date"].astype(str) == date_str).any():
+        print(f"[bundle skip] {date_str} 이미 번들에 있음")
+        return False
+    df = pd.concat([df, pd.DataFrame([{"date": date_str, "mode": mode}])], ignore_index=True)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date").drop_duplicates("date", keep="last")
+    df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+    df.to_csv(csv_path, index=False)
+    print(f"[bundle ok] {date_str} → {mode} 번들 CSV 누적 (총 {len(df)}행)")
+    return True
+
+
 def main():
     origin_url = os.environ.get("DS_ORIGIN_SHEET_URL", "").strip()
     origin_tab = os.environ.get("DS_ORIGIN_TAB", "Rocket").strip() or "Rocket"
@@ -177,6 +198,7 @@ def main():
         print("[error] 모드 역산 실패")
         sys.exit(2)
     _append_shared(gc, share_url, share_tab, str(apply_date), mode)
+    _append_bundle_csv(str(apply_date), mode)   # 로컬 번들 CSV에도 누적 (2016~오늘 연속)
 
 
 if __name__ == "__main__":
