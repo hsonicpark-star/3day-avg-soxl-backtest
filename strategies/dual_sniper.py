@@ -158,6 +158,16 @@ def render_sidebar():
         dn = st.number_input("방어 이탈 wRSI", 30.0, 50.0, float(mr.get("dn", 42.0)), 1.0, key="ds_dn")
         st.caption("기본값: 36 / 66 / 42 (Calmar 2.64)")
 
+    # ══ 모드 소스 (원전략 따라가기 vs 자동) ══
+    _SRC_OPTS = ["🤖 자동 (하이브리드)", "🔗 원본시트 자동", "✋ 수동 공격", "✋ 수동 방어"]
+    _src_saved = cfg.get("mode_source", _SRC_OPTS[0])
+    _src_idx = _SRC_OPTS.index(_src_saved) if _src_saved in _SRC_OPTS else 0
+    mode_source = st.sidebar.selectbox("🧭 모드 소스 (운용 방식)", _SRC_OPTS, index=_src_idx,
+                                       key="ds_mode_source",
+                                       help="자동=우리 하이브리드 규칙 / 원본시트=원전략 구글시트에서 모드 역산 / "
+                                            "수동=직접 지정. 계좌 추가 시 이 값이 기본값으로 들어갑니다.")
+    st.sidebar.caption("↳ 계좌별로 따로 저장됩니다. 주문표 탭에서 계좌마다 변경 가능.")
+
     # ══ 공격모드 (원전략 패널과 동일 레이아웃) ══
     st.sidebar.markdown("#### 🟥 공격모드")
     c1, c2 = st.sidebar.columns(2)
@@ -228,6 +238,7 @@ def render_sidebar():
         "sf_buy1": float(sf_b1), "sf_buy2": float(sf_b2),
         "sf_sell": float(sf_sell), "sf_ma_base": int(sf_ma),
         "sf_weights": weights, "sf_weights_str": sf_w,
+        "mode_source": mode_source,
     }
 
 
@@ -765,6 +776,63 @@ def _infer_mode_from_orders(rows, c1, c2, ds_p):
     return None, detail
 
 
+_SRC_VALS = ["자동", "원본시트", "공격", "방어"]
+_SRC_LBL = {"자동": "🤖 자동 (하이브리드)", "원본시트": "🔗 원본시트 자동",
+            "공격": "✋ 수동 공격", "방어": "✋ 수동 방어"}
+
+
+def _normalize_src(s):
+    """사이드바 라벨/내부값 → 내부값."""
+    s = str(s)
+    if s in _SRC_VALS:
+        return s
+    for v, lbl in _SRC_LBL.items():       # 정확 라벨 매칭 우선
+        if s == lbl:
+            return v
+    if "원본" in s:                        # 키워드 (구체적인 것 먼저)
+        return "원본시트"
+    if "공격" in s:
+        return "공격"
+    if "방어" in s:
+        return "방어"
+    return "자동"
+
+
+def _render_ds_source_box(acct_key, acct_data, cfg, sfx):
+    """계좌별 모드 소스 선택 + 저장 (원본시트 URL/탭 포함). 저장된 내부값 반환."""
+    cur = _normalize_src(acct_data.get("mode_source", "자동"))
+    with st.container(border=True):
+        st.markdown("##### 🧭 모드 소스 (운용 방식)")
+        sel = st.selectbox("소스 선택", _SRC_VALS,
+                           index=_SRC_VALS.index(cur), format_func=lambda x: _SRC_LBL[x],
+                           key=f"ds_src{sfx}", label_visibility="collapsed")
+        au = acct_data.get("algoc_url", "")
+        at = acct_data.get("algoc_tab", "Rocket")
+        if sel == "원본시트":
+            a1, a2 = st.columns([3, 1])
+            au = a1.text_input("원본 시트 URL (ASTRA/Rocket)", value=au,
+                               placeholder="https://docs.google.com/spreadsheets/d/...",
+                               key=f"ds_au{sfx}")
+            at = a2.text_input("탭 이름", value=at, key=f"ds_at{sfx}")
+            st.caption("⚠️ 원본 시트를 서비스 계정(읽기)에 공유: "
+                       "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com` · "
+                       "매일 9시경 원본 주문가로 공격/방어 모드를 자동 역산합니다.")
+        elif sel in ("공격", "방어"):
+            st.caption(f"✋ 항상 **{sel}** 모드로 주문을 산출합니다. (원전략 모드를 직접 확인하며 변경)")
+        else:
+            st.caption("🤖 자체 하이브리드 규칙(36주MA + 천장방어)으로 모드를 자동 판정합니다.")
+        if st.button("💾 모드 소스 저장", key=f"ds_srcsave{sfx}", use_container_width=True):
+            acct_data["mode_source"] = sel
+            if sel == "원본시트":
+                acct_data["algoc_url"] = au.strip()
+                acct_data["algoc_tab"] = (at.strip() or "Rocket")
+            cfg["accounts"][acct_key] = acct_data
+            _save_ds_config(cfg)
+            st.success(f"✅ 모드 소스 '{_SRC_LBL[sel]}' 저장됨")
+            st.rerun()
+    return _normalize_src(acct_data.get("mode_source", "자동"))
+
+
 def _acct_params(acct_data, p):
     """계좌 저장 파라미터(없으면 사이드바 p) → (DualSniperParams, mode_rule dict)."""
     ap = acct_data.get("params", {})
@@ -825,6 +893,7 @@ def render_ordersheet_tab(params):
                         "sf_buy1", "sf_buy2", "sf_sell", "sf_ma_base", "sf_weights_str",
                         "ma_weeks", "peak_thr", "dn")},
                     "os_start": str(add_start), "os_capital": float(add_cap),
+                    "mode_source": _normalize_src(p.get("mode_source", "자동")),
                 }
                 # sf_weights_str → sf_weights 키 정규화
                 accounts[nm]["params"]["sf_weights"] = p.get("sf_weights_str", "6, 13, 20, 27, 34")
@@ -896,6 +965,9 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                 _save_ds_config(cfg)
                 st.success("✅ 저장되었습니다.")
                 st.rerun()
+
+    # ── 1.5) 모드 소스 (계좌별 저장) ──
+    saved_src = _render_ds_source_box(acct_key, acct_data, cfg, sfx)
 
     # ── 2) 이름변경 / 삭제 ──
     mg1, mg2, _ = st.columns([1, 1, 4])
@@ -990,35 +1062,11 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     eff_capital = os_capital + net_adj
     ds_p.initial_capital = eff_capital
 
-    # ── 5) 모드 소스 + 주문표 로드 ──
-    msrc = st.radio("🧭 모드 소스",
-                    ["자동 (하이브리드)", "🔗 원본시트 자동", "수동: 🟥 공격", "수동: 🟦 방어"],
-                    horizontal=True, key=f"ds_msrc{sfx}",
-                    help="원전략을 따라가려면 '원본시트 자동'(매일 9시 원본 주문에서 모드 역산) 또는 "
-                         "수동으로 모드를 지정하세요. 엔진이 그 모드로 원전략과 동일하게 주문을 산출합니다.")
-    forced = "공격" if "공격" in msrc else ("방어" if "방어" in msrc else None)
-    use_algoc = (msrc == "🔗 원본시트 자동")
-    if use_algoc:
-        au1, au2 = st.columns([3, 1])
-        algoc_url = au1.text_input("원본 시트 URL (ASTRA/Rocket)",
-                                   value=acct_data.get("algoc_url", ""),
-                                   placeholder="https://docs.google.com/spreadsheets/d/...",
-                                   key=f"ds_au{sfx}")
-        algoc_tab = au2.text_input("탭 이름", value=acct_data.get("algoc_tab", "Rocket"),
-                                   key=f"ds_at{sfx}")
-        st.caption("⚠️ 원본 시트를 서비스 계정(읽기)에 공유: "
-                   "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com` · "
-                   "매일 9시경 들어오는 원본 주문가로 공격/방어 모드를 자동 역산합니다.")
-        if st.button("💾 원본시트 설정 저장", key=f"ds_ausave{sfx}"):
-            acct_data["algoc_url"] = algoc_url.strip()
-            acct_data["algoc_tab"] = algoc_tab.strip() or "Rocket"
-            cfg["accounts"][acct_key] = acct_data
-            _save_ds_config(cfg)
-            st.success("저장됨")
-            st.rerun()
-    if forced:
-        st.caption(f"✋ 수동 모드 **{forced}** 적용 — 다음 세션 신규 매수가 {forced} 규칙으로 계산됩니다. "
-                   "(기존 보유 슬롯은 매수 당시 모드로 계속 관리)")
+    # ── 5) 주문표 로드 (저장된 모드 소스 사용) ──
+    forced = saved_src if saved_src in ("공격", "방어") else None
+    use_algoc = (saved_src == "원본시트")
+    st.markdown(f"**현재 모드 소스**: {_SRC_LBL[saved_src]}"
+                + (f" · 원본탭 `{acct_data.get('algoc_tab','Rocket')}`" if use_algoc else ""))
     if st.button("📋 주문표 로드", type="primary", key=f"ds_load{sfx}", use_container_width=True):
         try:
             px_df = get_soxl_data()
@@ -1026,10 +1074,10 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                                            peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
             algoc_info = None
             if use_algoc:
-                au = st.session_state.get(f"ds_au{sfx}", "").strip() or acct_data.get("algoc_url", "")
-                at = st.session_state.get(f"ds_at{sfx}", "Rocket").strip() or "Rocket"
+                au = acct_data.get("algoc_url", "").strip()
+                at = (acct_data.get("algoc_tab", "Rocket") or "Rocket").strip()
                 if not au:
-                    st.error("원본 시트 URL을 입력 후 저장하세요.")
+                    st.error("원본 시트 URL을 모드 소스 박스에서 입력·저장하세요.")
                     return
                 rows = _read_algoc_orders(au, at)
                 c1 = float(px_df['close'].iloc[-1]); c2 = float(px_df['close'].iloc[-2])
@@ -1066,7 +1114,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     # ── 요약 ──
     od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
     ld = pd.Timestamp(r["last_date"]).strftime("%Y-%m-%d")
-    _src = "🔗원본시트" if ai else st.session_state.get(f"ds_msrc{sfx}", "자동")
+    _src = _SRC_LBL.get(saved_src, saved_src)
     st.markdown(f"**주문일** {od} · **기준종가**({ld}) ${r['last_close']:.2f} · "
                 f"**모드** `{r['next_mode']}` ({_src}) · **보유** {r['n_pos']}/{r['divisions']}슬롯")
     sm1, sm2, sm3, sm4 = st.columns(4)
@@ -1126,7 +1174,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         n_buy = sum(1 for o in r["orders"] if o["구분"] == "매수")
         n_sell = sum(1 for o in r["orders"] if o["구분"] == "매도")
         snap = {"날짜": od, "기준종가": round(r["last_close"], 2), "모드": r["next_mode"],
-                "모드소스": "원본시트" if r.get("algoc") else st.session_state.get(f"ds_msrc{sfx}", "자동"),
+                "모드소스": saved_src,
                 "보유슬롯": r["n_pos"], "매수주문": n_buy, "매도주문": n_sell,
                 "현금": round(r["cash"]), "총자산": round(r["total_asset"]),
                 "누적실현": round(r["cum_realized"])}
