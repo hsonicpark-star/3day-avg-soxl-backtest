@@ -1076,17 +1076,46 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     # ── 1) 파라미터 표시 + 수정 ──
     with st.container(border=True):
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("공격(분할/매수%)", f"{ds_p.ag_divisions} / {ds_p.ag_buy_pct:.0f}%")
+        m1.metric("공격(분할/매수%)", f"{ds_p.ag_divisions} / {ds_p.ag_buy_pct:g}%")
         m2.metric("공격(매도α/보유α)", f"{ds_p.ag_sell_alpha} / {ds_p.ag_hold_alpha}")
         m3.metric("방어(분할/보유)", f"{ds_p.sf_divisions} / {ds_p.sf_hold}일")
         m4.metric("방어(매수1/2/매도)", f"{ds_p.sf_buy_pct1}/{ds_p.sf_buy_pct2}/{ds_p.sf_sell_pct}")
         m5.metric("모드(MA/천장/이탈)", f"{mode_rule['ma_weeks']}/{int(mode_rule['peak_thr'])}/{int(mode_rule['dn'])}")
         with st.expander("✏️ 파라미터 수정"):
+            # 위젯 session_state 1회 시드 (저장값 → 위젯). 위젯은 key 만 쓰고 value= 미지정.
+            for _k, _v in ((f"ds_e_agdiv{sfx}", int(ds_p.ag_divisions)),
+                           (f"ds_e_agbuy{sfx}", float(ds_p.ag_buy_pct)),
+                           (f"ds_e_agsa{sfx}", float(ds_p.ag_sell_alpha)),
+                           (f"ds_e_agha{sfx}", float(ds_p.ag_hold_alpha)),
+                           (f"ds_e_sfdiv{sfx}", int(ds_p.sf_divisions)),
+                           (f"ds_e_sfhold{sfx}", int(ds_p.sf_hold)),
+                           (f"ds_e_sfb1{sfx}", float(ds_p.sf_buy_pct1)),
+                           (f"ds_e_sfb2{sfx}", float(ds_p.sf_buy_pct2)),
+                           (f"ds_e_sfsell{sfx}", float(ds_p.sf_sell_pct)),
+                           (f"ds_e_sfma{sfx}", int(ds_p.sf_ma_base)),
+                           (f"ds_e_sfw{sfx}", ", ".join(str(int(x)) for x in ds_p.sf_tier_weights)),
+                           (f"ds_e_ma{sfx}", int(mode_rule["ma_weeks"])),
+                           (f"ds_e_pk{sfx}", float(mode_rule["peak_thr"])),
+                           (f"ds_e_dn{sfx}", float(mode_rule["dn"]))):
+                st.session_state.setdefault(_k, _v)
+
             st.caption("💡 프리셋 — 버튼에 마우스를 올리면 파라미터/성과를 볼 수 있습니다.")
             _pcols = st.columns(max(len(_DS_PRESETS), 2))
             for _pi, pc in enumerate(_DS_PRESETS):
                 if _pcols[_pi].button(pc["label"], key=f"ds_preset_{_pi}{sfx}", help=pc["help"],
                                       use_container_width=True):
+                    # 위젯 session_state 직접 갱신 → 입력칸 즉시 반영
+                    st.session_state[f"ds_e_agdiv{sfx}"] = int(pc["ag_div"])
+                    st.session_state[f"ds_e_agbuy{sfx}"] = float(pc["ag_buy"])
+                    st.session_state[f"ds_e_agsa{sfx}"] = float(pc["ag_sell_alpha"])
+                    st.session_state[f"ds_e_agha{sfx}"] = float(pc["ag_hold_alpha"])
+                    st.session_state[f"ds_e_sfdiv{sfx}"] = int(pc["sf_div"])
+                    st.session_state[f"ds_e_sfhold{sfx}"] = int(pc["sf_hold"])
+                    st.session_state[f"ds_e_sfb1{sfx}"] = float(pc["sf_buy1"])
+                    st.session_state[f"ds_e_sfb2{sfx}"] = float(pc["sf_buy2"])
+                    st.session_state[f"ds_e_sfsell{sfx}"] = float(pc["sf_sell"])
+                    st.session_state[f"ds_e_sfma{sfx}"] = int(pc["sf_ma_base"])
+                    st.session_state[f"ds_e_sfw{sfx}"] = str(pc["sf_weights"])
                     for k in ("ag_div", "ag_buy", "ag_sell_alpha", "ag_hold_alpha", "sf_div",
                               "sf_hold", "sf_buy1", "sf_buy2", "sf_sell", "sf_ma_base", "sf_weights"):
                         acct_data.setdefault("params", {})[k] = pc[k]
@@ -1095,24 +1124,23 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     st.success(f"✅ '{pc['label']}' 적용됨")
                     st.rerun()
             e1, e2, e3, e4 = st.columns(4)
-            v_agdiv = e1.number_input("공분할", 1, 12, ds_p.ag_divisions, key=f"ds_e_agdiv{sfx}")
-            v_agbuy = e2.number_input("공매수%", 0.0, 30.0, ds_p.ag_buy_pct, 0.5, key=f"ds_e_agbuy{sfx}")
-            v_agsa = e3.number_input("공매도α", 0.1, 3.0, ds_p.ag_sell_alpha, 0.1, key=f"ds_e_agsa{sfx}")
-            v_agha = e4.number_input("공보유α", 0.1, 5.0, ds_p.ag_hold_alpha, 0.1, key=f"ds_e_agha{sfx}")
+            v_agdiv = e1.number_input("공분할", min_value=1, max_value=12, step=1, key=f"ds_e_agdiv{sfx}")
+            v_agbuy = e2.number_input("공매수%", min_value=0.0, max_value=30.0, step=0.5, key=f"ds_e_agbuy{sfx}")
+            v_agsa = e3.number_input("공매도α", min_value=0.1, max_value=3.0, step=0.1, key=f"ds_e_agsa{sfx}")
+            v_agha = e4.number_input("공보유α", min_value=0.1, max_value=5.0, step=0.1, key=f"ds_e_agha{sfx}")
             f1, f2, f3, f4 = st.columns(4)
-            v_sfdiv = f1.number_input("방분할", 1, 12, ds_p.sf_divisions, key=f"ds_e_sfdiv{sfx}")
-            v_sfhold = f2.number_input("방보유", 1, 60, ds_p.sf_hold, key=f"ds_e_sfhold{sfx}")
-            v_sfb1 = f3.number_input("방매수1", -10.0, 10.0, ds_p.sf_buy_pct1, 0.1, key=f"ds_e_sfb1{sfx}")
-            v_sfb2 = f4.number_input("방매수2", 0.0, 30.0, ds_p.sf_buy_pct2, 0.1, key=f"ds_e_sfb2{sfx}")
+            v_sfdiv = f1.number_input("방분할", min_value=1, max_value=12, step=1, key=f"ds_e_sfdiv{sfx}")
+            v_sfhold = f2.number_input("방보유", min_value=1, max_value=60, step=1, key=f"ds_e_sfhold{sfx}")
+            v_sfb1 = f3.number_input("방매수1", min_value=-10.0, max_value=10.0, step=0.1, key=f"ds_e_sfb1{sfx}")
+            v_sfb2 = f4.number_input("방매수2", min_value=0.0, max_value=30.0, step=0.1, key=f"ds_e_sfb2{sfx}")
             g1, g2, g3 = st.columns(3)
-            v_sfsell = g1.number_input("방매도", 0.0, 10.0, ds_p.sf_sell_pct, 0.1, key=f"ds_e_sfsell{sfx}")
-            v_sfma = g2.number_input("MA기준", 2, 10, ds_p.sf_ma_base, key=f"ds_e_sfma{sfx}")
-            v_sfw = g3.text_input("티어비중%", ", ".join(str(int(x)) for x in ds_p.sf_tier_weights),
-                                  key=f"ds_e_sfw{sfx}")
+            v_sfsell = g1.number_input("방매도", min_value=0.0, max_value=10.0, step=0.1, key=f"ds_e_sfsell{sfx}")
+            v_sfma = g2.number_input("MA기준", min_value=2, max_value=10, step=1, key=f"ds_e_sfma{sfx}")
+            v_sfw = g3.text_input("티어비중%", key=f"ds_e_sfw{sfx}")
             h1, h2, h3 = st.columns(3)
-            v_ma = h1.number_input("추세MA(주)", 5, 60, mode_rule["ma_weeks"], key=f"ds_e_ma{sfx}")
-            v_pk = h2.number_input("천장wRSI", 50.0, 80.0, mode_rule["peak_thr"], 1.0, key=f"ds_e_pk{sfx}")
-            v_dn = h3.number_input("이탈wRSI", 30.0, 50.0, mode_rule["dn"], 1.0, key=f"ds_e_dn{sfx}")
+            v_ma = h1.number_input("추세MA(주)", min_value=5, max_value=60, step=1, key=f"ds_e_ma{sfx}")
+            v_pk = h2.number_input("천장wRSI", min_value=50.0, max_value=80.0, step=1.0, key=f"ds_e_pk{sfx}")
+            v_dn = h3.number_input("이탈wRSI", min_value=30.0, max_value=50.0, step=1.0, key=f"ds_e_dn{sfx}")
             if st.button("💾 파라미터 저장", type="primary", key=f"ds_save_p{sfx}"):
                 acct_data["params"] = {
                     "ag_div": v_agdiv, "ag_buy": v_agbuy, "ag_sell_alpha": v_agsa, "ag_hold_alpha": v_agha,
