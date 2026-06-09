@@ -204,8 +204,18 @@ def _render_norm_tables(hold_alpha, sell_alpha, buy_pct):
 
 def render_sidebar():
     cfg = _load_ds_config()
-    sp = cfg.get("strategy", {})
-    mr = cfg.get("mode_rule", {})
+    sp = dict(cfg.get("strategy", {}))
+    mr = dict(cfg.get("mode_rule", {}))
+
+    # 로케트셋 불러오기 요청 시: 위젯 키 비우고 기본값 소스를 로케트셋으로 덮어씀 (경고 없이 리셋)
+    if st.session_state.pop("_ds_force_rocket", False):
+        _rk = _DS_PRESETS[0]
+        sp = {"ag_div": _rk["ag_div"], "ag_buy": _rk["ag_buy"],
+              "ag_sell_alpha": _rk["ag_sell_alpha"], "ag_hold_alpha": _rk["ag_hold_alpha"],
+              "sf_div": _rk["sf_div"], "sf_hold": _rk["sf_hold"], "sf_buy1": _rk["sf_buy1"],
+              "sf_buy2": _rk["sf_buy2"], "sf_sell": _rk["sf_sell"], "sf_ma_base": _rk["sf_ma_base"],
+              "sf_weights": _rk["sf_weights"]}
+        mr = {"ma_weeks": 36, "peak_thr": 66.0, "dn": 42.0}
 
     st.sidebar.markdown("### 🎯 Dual Sniper Pro")
     st.sidebar.caption("SOXL · 공격/방어 2모드 슬롯 그리드")
@@ -227,6 +237,17 @@ def render_sidebar():
                                        help="자동=우리 하이브리드 규칙 / 원본시트=원전략 구글시트에서 모드 역산 / "
                                             "수동=직접 지정. 계좌 추가 시 이 값이 기본값으로 들어갑니다.")
     st.sidebar.caption("↳ 계좌별로 따로 저장됩니다. 주문표 탭에서 계좌마다 변경 가능.")
+
+    # ══ 로케트셋 기본값 불러오기 ══
+    def _load_rocket():
+        for _k in ("ds_agdiv", "ds_agbuy", "ds_agsa", "ds_agha", "ds_sfdiv", "ds_sfhold",
+                   "ds_sfb1", "ds_sfb2", "ds_sfsell", "ds_sfma", "ds_sfw",
+                   "ds_ma", "ds_peak", "ds_dn"):
+            st.session_state.pop(_k, None)     # 위젯 키 비움 → value= 기본값이 적용됨
+        st.session_state["_ds_force_rocket"] = True
+    st.sidebar.button("🚀 로케트셋 기본값 불러오기", on_click=_load_rocket,
+                      use_container_width=True,
+                      help="공격/방어 파라미터 + 모드규칙을 원전략(로케트셋) 기본값으로 일괄 초기화")
 
     # ══ 공격모드 (원전략 패널과 동일 레이아웃) ══
     st.sidebar.markdown("#### 🟥 공격모드")
