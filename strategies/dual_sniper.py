@@ -1504,10 +1504,13 @@ def render_intro_tab(params=None):
         st.info("성과 분석은 사이드바에서 듀얼스나이퍼를 선택한 상태에서 이용하세요.")
         return
 
-    src = st.radio("파라미터 소스", ["🧭 사이드바 설정값", "⚖️ 기본 (권장)"],
-                   horizontal=True, key="ds_intro_src")
+    src = st.radio("파라미터 / 모드 소스",
+                   ["🧭 사이드바 설정값", "⚖️ 기본 (자동모드)", "📜 원전략 실제모드 (2016~)"],
+                   horizontal=True, key="ds_intro_src",
+                   help="자동모드=우리 하이브리드 규칙 / 원전략 실제모드=로케트셋 실제 모드(번들)로 원전략 그대로 재현")
+    use_orig_modes = (src == "📜 원전략 실제모드 (2016~)")
 
-    if src == "⚖️ 기본 (권장)":
+    if src in ("⚖️ 기본 (자동모드)", "📜 원전략 실제모드 (2016~)"):
         ds_p = DualSniperParams(
             ag_buy_inclusive=False, sf_buy_inclusive=False,
             fee_rate=float(params.get("fee_rate", 0.0)) / 100, sec_fee_rate=0.0)
@@ -1532,7 +1535,10 @@ def render_intro_tab(params=None):
     if st.button("▶ 성과 분석 실행", type="primary", key="ds_intro_run", use_container_width=True):
         try:
             px_df = get_soxl_data()
-            mode_map = build_auto_mode_map(px_df, **mr)
+            if use_orig_modes:
+                mode_map = build_original_mode_map(px_df, extra_modes=dict(_load_shared_modes()))
+            else:
+                mode_map = build_auto_mode_map(px_df, **mr)
         except Exception as e:
             st.error(f"데이터/모드 로드 실패: {e}")
             return

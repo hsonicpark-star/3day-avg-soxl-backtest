@@ -1,0 +1,35 @@
+name: Dual Sniper Mode Update (10:00 KST)
+
+on:
+  schedule:
+    - cron: '0 1 * * 1-5'   # 01:00 UTC = 10:00 KST, 월~금
+  workflow_dispatch:          # 수동 실행 버튼 (테스트용)
+
+jobs:
+  update-mode:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install yfinance gspread google-auth pandas
+
+      - name: Run dual sniper mode update
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          DS_ORIGIN_SHEET_URL: ${{ secrets.DS_ORIGIN_SHEET_URL }}
+          DS_ORIGIN_TAB: ${{ secrets.DS_ORIGIN_TAB }}
+          DS_SHARE_SHEET_URL: ${{ secrets.DS_SHARE_SHEET_URL }}
+          DS_SHARE_TAB: ${{ secrets.DS_SHARE_TAB }}
+        run: python scripts/dual_sniper_mode_update.py
