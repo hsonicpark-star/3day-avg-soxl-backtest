@@ -323,11 +323,21 @@ def render_backtest_tab(params):
     p = params
     st.subheader("📊 Dual Sniper Pro 백테스트")
 
+    _msrc = _normalize_src(p.get("mode_source", "자동"))
+    if _msrc == "자동":
+        st.caption("🤖 모드: **자동 하이브리드** (사이드바 모드 소스 기준)")
+    else:
+        st.caption(f"📜 모드: **원전략 실제모드(2016~)** — 사이드바 '{_SRC_LBL.get(_msrc, _msrc)}' 선택됨 "
+                   "→ 원전략 그대로 백테스트")
+
     if st.button("▶ 백테스트 실행", type="primary", key="ds_bt_run"):
         try:
             px_df = get_soxl_data()
-            mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
-                                           peak_thr=p["peak_thr"], dn=p["dn"])
+            if _msrc == "자동":
+                mode_map = build_auto_mode_map(px_df, ma_weeks=p["ma_weeks"],
+                                               peak_thr=p["peak_thr"], dn=p["dn"])
+            else:
+                mode_map = build_original_mode_map(px_df, extra_modes=dict(_load_shared_modes()))
         except Exception as e:
             st.error(f"⚠️ 데이터/모드 로드 실패: {e}")
             return
