@@ -760,21 +760,21 @@ def render_optimization_tab(params):
 # ══════════════════════════════════════════════
 
 _DS_PRESETS = [
-    {"label": "🚀 로케트셋 (원전략 기본)", "ag_div": 6, "ag_buy": 8.0, "ag_sell_alpha": 0.4,
+    {"label": "🚀 공격형 (로케트셋)", "ag_div": 6, "ag_buy": 8.0, "ag_sell_alpha": 0.4,
      "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
      "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "6, 13, 20, 27, 34",
      "help": ("원전략(로케트셋) 기본 파라미터\n"
               "공격: 분할6 · 매수8.0% · 매도α0.4 · 보유α2.0\n"
               "방어: 분할5 · 보유8일 · 매수1 -0.6% · 매수2 5.5% · 매도0.7% · MA3 · 비중6/13/20/27/34\n"
               "원전략 실제모드 기준 CAGR 96.8% / MDD -26.1% / Calmar 3.70")},
-    {"label": "🛡️ 전차셋 (저변동)", "ag_div": 5, "ag_buy": 0.5, "ag_sell_alpha": 0.4,
+    {"label": "⚖️ 균형형 (전차셋)", "ag_div": 5, "ag_buy": 0.5, "ag_sell_alpha": 0.4,
      "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
      "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "6, 13, 20, 27, 34",
      "help": ("전차셋 — 공격 매수조건을 0.5%로 낮춰 진입을 보수적으로 (분할5)\n"
               "공격: 분할5 · 매수0.5% · 매도α0.4 · 보유α2.0\n"
               "방어: 로케트셋과 동일\n"
               "원전략 실제모드 기준 CAGR 85.1% / MDD -23.4% / Calmar 3.63 (MDD 더 낮음)")},
-    {"label": "🚁 헬기셋 (최저변동)", "ag_div": 6, "ag_buy": 0.5, "ag_sell_alpha": 0.4,
+    {"label": "🛡️ 안정형 (헬기셋)", "ag_div": 6, "ag_buy": 0.5, "ag_sell_alpha": 0.4,
      "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
      "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "6, 13, 20, 27, 34",
      "help": ("헬기셋 — 공격 매수 0.5% + 분할6 (전차셋보다 더 분산)\n"
