@@ -1908,7 +1908,7 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
                     else:
                         random.seed(7)
                         chosen = random.sample(valid, 100)
-                        sr = []; sm = []; br = []; bm = []
+                        sr = []; sm = []; br = []; bm = []; pers = []
                         prog = st.progress(0.0)
                         for ci, si in enumerate(chosen):
                             sdt = str(idx[si].date()); edt = str(idx[si+WIN-1].date())
@@ -1922,11 +1922,14 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
                                 ba = cap/bp[0]*bp
                                 br.append((ba[-1]/ba[0]-1)*100)
                                 bpk = np.maximum.accumulate(ba); bm.append(abs(((ba-bpk)/bpk).min())*100)
+                                pers.append((sdt, edt))
                             prog.progress(min((ci+1)/100, 1.0))
-                        st.session_state["ds_mc"] = (np.array(sr), np.array(sm), np.array(br), np.array(bm))
+                        st.session_state["ds_mc"] = (np.array(sr), np.array(sm),
+                                                     np.array(br), np.array(bm), pers)
             mc = st.session_state.get("ds_mc")
             if mc:
-                sr, sm, br, bm = mc
+                sr, sm, br, bm = mc[0], mc[1], mc[2], mc[3]
+                pers = mc[4] if len(mc) > 4 else [("", "")] * len(sr)
                 def _ms2(a, lbl, pos=True):
                     d = {"구분": lbl, "평균": f"{np.mean(a):+.1f}%", "중앙값": f"{np.median(a):+.1f}%",
                          "표준편차": f"{np.std(a):.1f}%", "최솟값": f"{np.min(a):+.1f}%",
@@ -1951,6 +1954,29 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None):
                                    legend=dict(orientation="v", x=1.02, y=1.0))
                 st.plotly_chart(figm, use_container_width=True)
                 st.caption("전략 수익률 분포가 오른쪽에 모이고 MDD 분포가 왼쪽(낮은 손실)에 모일수록 강건합니다.")
+
+                # ── 100구간 상세 결과 리스트 ──
+                det = pd.DataFrame({
+                    "시작일": [s for s, _ in pers], "종료일": [e for _, e in pers],
+                    "전략 수익률(%)": np.round(sr, 1), "전략 MDD(%)": np.round(sm, 1),
+                    "B&H 수익률(%)": np.round(br, 1), "B&H MDD(%)": np.round(bm, 1),
+                    "전략-B&H(%p)": np.round(sr - br, 1),
+                })
+                _sort_opt = st.selectbox("정렬 기준", ["시작일", "전략 수익률(%)", "전략 MDD(%)",
+                                                      "전략-B&H(%p)"], key="ds_mc_sort")
+                det = det.sort_values(_sort_opt,
+                                      ascending=(_sort_opt == "시작일")).reset_index(drop=True)
+                det.index += 1
+
+                def _hl(row):
+                    c = "#e8f5e9" if row["전략 수익률(%)"] > 0 else "#ffebee"
+                    return [f"background-color:{c}"] * len(row)
+                st.markdown(f"**📄 100구간 상세 결과** (전략이 B&H보다 나은 구간: "
+                            f"{int((det['전략-B&H(%p)'] > 0).sum())}/{len(det)})")
+                st.dataframe(det.style.apply(_hl, axis=1),
+                             use_container_width=True, height=min(38 + 35 * len(det), 560))
+                st.download_button("📥 100구간 결과 CSV", det.to_csv().encode("utf-8-sig"),
+                                   "dual_sniper_robustness.csv", "text/csv", key="ds_mc_dl")
 
 
 
