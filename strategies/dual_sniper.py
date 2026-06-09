@@ -35,6 +35,7 @@ if _root_dir not in sys.path:
 from dual_sniper_engine import (
     DualSniperParams, run_backtest, compute_metrics,
     load_price_data, build_auto_mode_map, build_today_orders,
+    build_original_mode_map, load_original_modes,
 )
 from common.config import _IS_CLOUD
 
@@ -43,6 +44,65 @@ from common.config import _IS_CLOUD
 # ──────────────────────────────────────────────
 _DS_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".dual_sniper")
 _DS_CONFIG_PATH = os.path.join(_DS_CONFIG_DIR, "config.json")
+
+# 모드 공유 중앙 시트 설정 (committed: 모든 유저 공통). 관리자만 쓰기, 전체 읽기.
+_SHARE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "dual_sniper_share.json")
+
+
+def _share_cfg():
+    try:
+        with open(_SHARE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_shared_modes():
+    """중앙 공유 시트의 일별 모드(번들 이후) → {date_str: mode}. 미설정/실패 시 {}."""
+    cfg = _share_cfg()
+    url, tab = cfg.get("url", ""), cfg.get("tab", "모드공유")
+    if not url:
+        return {}
+    try:
+        from common.config import _get_gspread_client
+        ws = _get_gspread_client().open_by_url(url).worksheet(tab)
+        out = {}
+        for row in ws.get_all_values()[1:]:
+            if len(row) >= 2 and row[0].strip() and row[1].strip() in ("공격", "방어"):
+                out[row[0].strip()] = row[1].strip()
+        return out
+    except Exception:
+        return {}
+
+
+def _save_shared_mode(date_str, mode):
+    """중앙 공유 시트에 오늘 모드 기록 (관리자). (성공여부, 메시지)."""
+    cfg = _share_cfg()
+    url, tab = cfg.get("url", ""), cfg.get("tab", "모드공유")
+    if not url:
+        return False, "공유 시트가 설정되지 않았습니다 (dual_sniper_share.json)."
+    try:
+        from common.config import _get_gspread_client
+        sh = _get_gspread_client().open_by_url(url)
+        try:
+            ws = sh.worksheet(tab)
+        except Exception:
+            ws = sh.add_worksheet(title=tab, rows=3000, cols=4)
+            ws.append_row(["date", "mode", "기록시각"])
+        existing = {r[0] for r in ws.get_all_values()[1:] if r}
+        if date_str in existing:
+            return True, "이미 기록됨"
+        from datetime import datetime as _dt
+        ws.append_row([date_str, mode, _dt.now().strftime("%Y-%m-%d %H:%M")])
+        try:
+            _load_shared_modes.clear()
+        except Exception:
+            pass
+        return True, "기록 완료"
+    except Exception as e:
+        return False, str(e)
 
 
 def _load_ds_config() -> dict:
@@ -866,7 +926,19 @@ def render_ordersheet_tab(params):
     cfg = _load_ds_config()
     today_str = datetime.today().strftime("%Y-%m-%d")
     st.subheader(f"📋 오늘의 주문표 — {today_str}")
-    st.caption("계좌별 포트폴리오를 추적하고, 다음 거래일 LOC/MOC 주문을 산출합니다. (자동 하이브리드 모드)")
+    st.caption("계좌별 포트폴리오를 추적하고, 다음 거래일 LOC/MOC 주문을 산출합니다.")
+
+    # ── 📢 오늘 원전략 모드 (전체 유저 공유) ──
+    _shared = _load_shared_modes()
+    _orig = load_original_modes()
+    _last_bundle = (str(_orig['date'].iloc[-1].date()), _orig['mode'].iloc[-1]) if len(_orig) else (None, None)
+    if _shared:
+        _ld = sorted(_shared.keys())[-1]
+        st.info(f"📢 **오늘 원전략 모드: `{_shared[_ld]}`** (공유 기준일 {_ld}) — "
+                f"원전략을 따라가려면 계좌 모드 소스를 '수동: {_shared[_ld]}'로 두면 됩니다.")
+    elif _last_bundle[0]:
+        st.caption(f"📜 원전략 실제모드 번들: {_orig['date'].iloc[0].date()} ~ {_last_bundle[0]} "
+                   f"(마지막 {_last_bundle[1]}) · 이후 모드는 관리자 공유 시 표시됩니다.")
 
     accounts = cfg.get("accounts", {})
 
@@ -1067,12 +1139,14 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     use_algoc = (saved_src == "원본시트")
     st.markdown(f"**현재 모드 소스**: {_SRC_LBL[saved_src]}"
                 + (f" · 원본탭 `{acct_data.get('algoc_tab','Rocket')}`" if use_algoc else ""))
+    if saved_src != "자동":
+        st.caption("📜 과거 보유 슬롯은 **원전략 실제모드(2016~2026 번들)** 로 재현됩니다. "
+                   "→ 원전략을 과거부터 돌린 것과 동일한 현재 상태.")
     if st.button("📋 주문표 로드", type="primary", key=f"ds_load{sfx}", use_container_width=True):
         try:
             px_df = get_soxl_data()
-            mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
-                                           peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
             algoc_info = None
+            shared_today = None
             if use_algoc:
                 au = acct_data.get("algoc_url", "").strip()
                 at = (acct_data.get("algoc_tab", "Rocket") or "Rocket").strip()
@@ -1086,7 +1160,17 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     st.error(f"모드 역산 실패 — 원본 주문: {rows}")
                     return
                 forced = m_inf
+                shared_today = m_inf
                 algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
+            # 모드맵: 자동=하이브리드 / 그 외=원전략 실제모드(번들+공유)
+            if saved_src == "자동":
+                mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
+                                               peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+            else:
+                extra = dict(_load_shared_modes())   # 공유 일별 모드 (번들 이후)
+                if shared_today:
+                    extra[str(pd.Timestamp(px_df.index[-1]).date())] = shared_today
+                mode_map = build_original_mode_map(px_df, extra_modes=extra)
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
                                    mode_rule=mode_rule, forced_mode=forced)
             r["algoc"] = algoc_info
@@ -1110,6 +1194,12 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         with st.expander("📥 원본 시트에서 읽은 주문"):
             st.dataframe(pd.DataFrame(ai["orders"], columns=["구분", "거래방법", "가격", "수량"]),
                          hide_index=True, use_container_width=True)
+        # 관리자: 다른 유저에게 오늘 모드 공유
+        _today_str = str(pd.Timestamp(r["last_date"]).date())
+        if st.button(f"📢 오늘({_today_str}) 모드 '{ai['mode']}' 다른 유저에게 공유 저장",
+                     key=f"ds_share{sfx}"):
+            ok, msg = _save_shared_mode(_today_str, ai["mode"])
+            (st.success if ok else st.error)(f"공유 {'완료' if ok else '실패'}: {msg}")
 
     # ── 요약 ──
     od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")

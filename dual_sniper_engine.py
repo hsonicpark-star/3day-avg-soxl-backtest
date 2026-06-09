@@ -23,10 +23,43 @@ Dual Sniper Pro 백테스트 엔진
 """
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 import pandas as pd
 import numpy as np
+
+# 번들된 원전략 실제 모드 (2016~2026, 로케트셋 역설계)
+_MODES_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dual_sniper_modes.csv')
+
+
+def load_original_modes() -> pd.DataFrame:
+    """번들된 원전략 실제 모드 DataFrame[date, mode]. 없으면 빈 DF."""
+    if not os.path.exists(_MODES_CSV):
+        return pd.DataFrame(columns=['date', 'mode'])
+    df = pd.read_csv(_MODES_CSV)
+    df['date'] = pd.to_datetime(df['date'])
+    return df
+
+
+def build_original_mode_map(prices: pd.DataFrame, extra_modes: dict = None) -> dict:
+    """원전략 실제 모드(번들) + 추가 일별모드(공유) → 거래일별 mode_map.
+    번들에 없는 날(번들 종료 이후)은 직전 알려진 모드를 carry-forward."""
+    df = load_original_modes()
+    by_date = {pd.Timestamp(d).normalize(): m for d, m in zip(df['date'], df['mode'])}
+    if extra_modes:
+        for d, m in extra_modes.items():
+            if m in ('공격', '방어'):
+                by_date[pd.Timestamp(d).normalize()] = m
+    dates = pd.to_datetime(prices.index)
+    mode_map = {}
+    last = '방어'
+    for d in dates:
+        dn = pd.Timestamp(d).normalize()
+        if dn in by_date:
+            last = by_date[dn]
+        mode_map[d] = last
+    return mode_map
 
 
 # ──────────────────────────────────────────────
