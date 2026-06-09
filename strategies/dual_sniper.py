@@ -942,17 +942,23 @@ def _render_ds_source_box(acct_key, acct_data, cfg, sfx):
         sel = st.selectbox("소스 선택", _SRC_VALS,
                            index=_SRC_VALS.index(cur), format_func=lambda x: _SRC_LBL[x],
                            key=f"ds_src{sfx}", label_visibility="collapsed")
-        au = acct_data.get("algoc_url", "")
+        # 빈 값이면 공용 원전략 시트를 기본으로 채움 (사용자가 직접 만들 필요 없음)
+        _default_url = _share_cfg().get("url", "")
+        au = acct_data.get("algoc_url", "") or _default_url
         at = acct_data.get("algoc_tab", "Rocket")
         if sel == "원본시트":
-            a1, a2 = st.columns([3, 1])
-            au = a1.text_input("원본 시트 URL (ASTRA/Rocket)", value=au,
-                               placeholder="https://docs.google.com/spreadsheets/d/...",
-                               key=f"ds_au{sfx}")
-            at = a2.text_input("탭 이름", value=at, key=f"ds_at{sfx}")
-            st.caption("⚠️ 원본 시트를 서비스 계정(읽기)에 공유: "
-                       "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com` · "
-                       "매일 9시경 원본 주문가로 공격/방어 모드를 자동 역산합니다.")
+            st.success("✅ **그대로 두고 '모드 소스 저장'만 누르면 됩니다.** "
+                       "공용 원전략 시트가 이미 연결돼 있어요 — 직접 구글시트를 만들 필요 없습니다. "
+                       "매일 아침 자동으로 원전략의 공격/방어 모드를 따라갑니다.")
+            with st.expander("🔧 고급: 내 원본 시트를 직접 연결 (선택)"):
+                a1, a2 = st.columns([3, 1])
+                au = a1.text_input("원본 시트 URL (ASTRA/Rocket)", value=au,
+                                   placeholder="https://docs.google.com/spreadsheets/d/...",
+                                   key=f"ds_au{sfx}")
+                at = a2.text_input("탭 이름", value=at, key=f"ds_at{sfx}")
+                st.caption("본인 소유의 원전략 주문시트가 따로 있을 때만 바꾸세요. 그 경우 시트를 "
+                           "서비스 계정에 **읽기 공유**: "
+                           "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com`")
         elif sel in ("공격", "방어"):
             st.caption(f"✋ 항상 **{sel}** 모드로 주문을 산출합니다. (원전략 모드를 직접 확인하며 변경)")
         else:
