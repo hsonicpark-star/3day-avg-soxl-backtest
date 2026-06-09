@@ -976,7 +976,8 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
             amt = (o["수량"] * (o["가격"] or r["last_close"]))
             rows.append({"구분": gubun, "사유": o["사유"], "주문가": price,
-                         "수량": f"{o['수량']:,}주", "예상금액": f"${amt:,.0f}"})
+                         "수량": f"{o['수량']:,}주", "예상금액": f"${amt:,.0f}",
+                         "비고 (계산 근거)": o.get("비고", "")})
 
         def _style(row):
             s = [""] * len(row)
@@ -1086,6 +1087,9 @@ def _render_mode_now(ma_weeks=36, peak_thr=66.0, dn=42.0):
         st.caption(f"(데이터 로드 실패: {e})")
         return
     wc = pxf['close'].resample('W-FRI').last().dropna()
+    # 미완성 현재 주봉 제외 (주중 실행 시)
+    if len(wc) > 0 and wc.index[-1].date() > pxf.index[-1].date():
+        wc = wc.iloc[:-1]
     wv = wc.values.astype(float)
     if len(wv) < ma_weeks + 3:
         st.caption("(주봉 데이터 부족)")

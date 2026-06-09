@@ -223,6 +223,9 @@ def forward_mode(prices: pd.DataFrame, ma_weeks: int = 36, peak_thr: float = 66.
     df.index = pd.to_datetime(df.index)
     df = df.sort_index()
     wclose = df['close'].resample('W-FRI').last().dropna()
+    # 미완성 현재 주봉 제외 (장중·주중 실행 시 마지막 W-FRI 라벨이 미래면 미완성)
+    if len(wclose) > 0 and wclose.index[-1].date() > df.index[-1].date():
+        wclose = wclose.iloc[:-1]
     wv = wclose.values.astype(float)
     if len(wv) < 2:
         return prev_mode
@@ -806,22 +809,30 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
                          '매도목표': round(p.sell_target, 2) if p.sell_target else None,
                          '손절예정일': sdt})
         if order_date >= sdt:
+            hd = p.hold_days
+            note = f"보유 {hd}일 만기({pd.Timestamp(sdt).strftime('%m/%d')} 도래) → 시장가 종가 청산"
             orders.append({'구분': '매도', '거래방법': 'MOC', '가격': None, '수량': p.qty,
-                           '사유': 'MOC', '모드': p.mode, '티어': p.tier})
+                           '사유': 'MOC', '모드': p.mode, '티어': p.tier, '비고': note})
             continue
         if moc_today:
             continue                     # MOC 우선 → 다른 LOC 매도 보류
         if p.mode == '공격' and p.sell_target is not None:
             if ag_hold_tier1 and p.tier == 1:
                 continue                 # 1티어 보류
+            npct = (p.sell_target / p.buy_price - 1) * 100 if p.buy_price else 0
+            note = (f"매수가 ${p.buy_price:.2f} × (1+{npct:.2f}%) = ${p.sell_target:.2f} "
+                    f"[매수RSI {p.buy_rsi:.0f} 정규화] 이상 종가면 익절")
             orders.append({'구분': '매도', '거래방법': 'LOC', '가격': round(p.sell_target, 2),
-                           '수량': p.qty, '사유': f'T{p.tier}', '모드': '공격', '티어': p.tier})
+                           '수량': p.qty, '사유': f'T{p.tier}', '모드': '공격', '티어': p.tier,
+                           '비고': note})
     # 방어 그룹 MA 전량 매도 (MOC 없을 때)
     if not moc_today and sf_sell_price is not None:
         sf_qty = sum(p.qty for p in positions if p.mode == '방어')
         if sf_qty > 0:
+            note = (f"3일MA 기준 (1+{params.sf_sell_pct}%) = ${sf_sell_price:.2f} "
+                    f"이상 종가면 방어분 전량청산")
             orders.append({'구분': '매도', '거래방법': 'LOC', '가격': round(sf_sell_price, 2),
-                           '수량': sf_qty, '사유': 'MA', '모드': '방어', '티어': None})
+                           '수량': sf_qty, '사유': 'MA', '모드': '방어', '티어': None, '비고': note})
 
     # 매수 주문 (빈 슬롯)
     if mode == '공격':
@@ -835,9 +846,19 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
         alloc = cash * (wts[tier - 1] / remaining) if remaining > 0 else 0
         buy_qty = int(alloc / K)
         if buy_qty > 0:
+            if mode == '공격':
+                if prev_fi == '+':
+                    note = (f"전일↑(FI+): 전일종가 ${c1:.2f} × (1+{params.ag_buy_pct}%) "
+                            f"= ${K:.2f} 이하 종가면 체결 · 할당 ${alloc:,.0f}÷${K:.2f}")
+                else:
+                    note = (f"전일↓(FI−): 전일종가 ${c1:.2f} × (1−0.1%) "
+                            f"= ${K:.2f} 이하 종가면 체결 · 할당 ${alloc:,.0f}÷${K:.2f}")
+            else:
+                note = (f"min(MA−{abs(params.sf_buy_pct1)}%, 전일종가×(1+{params.sf_buy_pct2}%)) "
+                        f"= ${K:.2f} 이하 종가면 체결 · 티어{tier} 비중 할당 ${alloc:,.0f}÷${K:.2f}")
             orders.append({'구분': '매수', '거래방법': 'LOC', '가격': round(K, 2), '수량': buy_qty,
                            '사유': f'{"공" if mode == "공격" else "방"}T{tier}',
-                           '모드': mode, '티어': tier})
+                           '모드': mode, '티어': tier, '비고': note})
 
     return {
         'order_date': order_date, 'last_date': last_date, 'last_close': c1,
