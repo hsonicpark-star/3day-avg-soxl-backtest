@@ -58,6 +58,16 @@ def _share_cfg():
         return {}
 
 
+def _is_ds_owner():
+    """원본 실계좌 시트 연동(원시주문 열람·역산·공유)을 할 수 있는 운영자인지.
+    share.json 의 'owner'(로그인 아이디)와 현재 로그인 유저가 일치할 때만 True.
+    owner 미설정 시: 하위호환으로 누구나 자기 시트 URL을 직접 넣어 쓸 수 있게 True."""
+    owner = str(_share_cfg().get("owner", "")).strip()
+    if not owner:
+        return True
+    return str(st.session_state.get("username", "")).strip() == owner
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _load_shared_modes():
     """중앙 공유 시트의 일별 모드(번들 이후) → {date_str: mode}. 미설정/실패 시 {}."""
@@ -942,23 +952,24 @@ def _render_ds_source_box(acct_key, acct_data, cfg, sfx):
         sel = st.selectbox("소스 선택", _SRC_VALS,
                            index=_SRC_VALS.index(cur), format_func=lambda x: _SRC_LBL[x],
                            key=f"ds_src{sfx}", label_visibility="collapsed")
-        # 빈 값이면 공용 원전략 시트를 기본으로 채움 (사용자가 직접 만들 필요 없음)
-        _default_url = _share_cfg().get("url", "")
-        au = acct_data.get("algoc_url", "") or _default_url
+        au = acct_data.get("algoc_url", "")
         at = acct_data.get("algoc_tab", "Rocket")
         if sel == "원본시트":
-            st.success("✅ **그대로 두고 '모드 소스 저장'만 누르면 됩니다.** "
-                       "공용 원전략 시트가 이미 연결돼 있어요 — 직접 구글시트를 만들 필요 없습니다. "
-                       "매일 아침 자동으로 원전략의 공격/방어 모드를 따라갑니다.")
-            with st.expander("🔧 고급: 내 원본 시트를 직접 연결 (선택)"):
-                a1, a2 = st.columns([3, 1])
-                au = a1.text_input("원본 시트 URL (ASTRA/Rocket)", value=au,
-                                   placeholder="https://docs.google.com/spreadsheets/d/...",
-                                   key=f"ds_au{sfx}")
-                at = a2.text_input("탭 이름", value=at, key=f"ds_at{sfx}")
-                st.caption("본인 소유의 원전략 주문시트가 따로 있을 때만 바꾸세요. 그 경우 시트를 "
-                           "서비스 계정에 **읽기 공유**: "
-                           "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com`")
+            st.success("✅ **그대로 '모드 소스 저장'만 누르면 됩니다.** 매일 아침 자동 산출되는 "
+                       "**원전략 오늘의 모드(공격/방어)** 를 받아, 내 파라미터·자본으로 주문을 생성합니다. "
+                       "구글시트 연동은 필요 없습니다.")
+            # 원본 실계좌 시트 직접 연동은 운영자(시트 소유자)만 — 개인 주문내역 보호
+            if _is_ds_owner():
+                with st.expander("🔧 운영자 전용: 내 실계좌 원본 시트 연동 (모드 역산·공유용)"):
+                    st.caption("⚠️ 여기 연결한 시트의 원시 주문은 **나만** 보이고, 역산된 **모드만** "
+                               "다른 유저에게 공유됩니다. (미설정 시 공유 모드를 그대로 사용)")
+                    a1, a2 = st.columns([3, 1])
+                    au = a1.text_input("원본 시트 URL (ASTRA/Rocket)", value=au,
+                                       placeholder="https://docs.google.com/spreadsheets/d/...",
+                                       key=f"ds_au{sfx}")
+                    at = a2.text_input("탭 이름", value=at, key=f"ds_at{sfx}")
+                    st.caption("시트를 서비스 계정에 **읽기 공유**: "
+                               "`connectspreadsheet@sodium-gateway-485307-f3.iam.gserviceaccount.com`")
         elif sel in ("공격", "방어"):
             st.caption(f"✋ 항상 **{sel}** 모드로 주문을 산출합니다. (원전략 모드를 직접 확인하며 변경)")
         else:
@@ -1264,18 +1275,24 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             if use_algoc:
                 au = acct_data.get("algoc_url", "").strip()
                 at = (acct_data.get("algoc_tab", "Rocket") or "Rocket").strip()
-                if not au:
-                    st.error("원본 시트 URL을 모드 소스 박스에서 입력·저장하세요.")
-                    return
-                rows = _read_algoc_orders(au, at)
-                c1 = float(px_df['close'].iloc[-1]); c2 = float(px_df['close'].iloc[-2])
-                m_inf, det = _infer_mode_from_orders(rows, c1, c2, ds_p)
-                if m_inf is None:
-                    st.error(f"모드 역산 실패 — 원본 주문: {rows}")
-                    return
-                forced = m_inf
-                shared_today = m_inf
-                algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
+                if _is_ds_owner() and au:
+                    # 운영자: 내 실계좌 시트에서 모드 역산 (원시 주문은 나만 열람)
+                    rows = _read_algoc_orders(au, at)
+                    c1 = float(px_df['close'].iloc[-1]); c2 = float(px_df['close'].iloc[-2])
+                    m_inf, det = _infer_mode_from_orders(rows, c1, c2, ds_p)
+                    if m_inf is None:
+                        st.error(f"모드 역산 실패 — 원본 주문: {rows}")
+                        return
+                    forced = m_inf
+                    shared_today = m_inf
+                    algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
+                else:
+                    # 일반 유저: 시트 비열람 → 공유된 오늘의 모드만 사용
+                    _shared = dict(_load_shared_modes())
+                    _nd = next_trading_days(px_df.index[-1], 1)
+                    _kd = str((_nd[0] if len(_nd) else px_df.index[-1]).date())
+                    forced = _shared.get(_kd)        # 공유 모드 없으면 None → 번들 carry
+                    shared_today = forced
             # 모드맵: 자동=하이브리드 / 그 외=원전략 실제모드(번들+공유)
             if saved_src == "자동":
                 mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
@@ -1287,8 +1304,10 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     _kd = (_nd[0] if len(_nd) else px_df.index[-1]).date()
                     extra[str(_kd)] = shared_today
                 mode_map = build_original_mode_map(px_df, extra_modes=extra)
+            # 자동=하이브리드 규칙으로 다음 모드 산출 / 그 외=forced 또는 번들·공유 carry
+            _mr = mode_rule if saved_src == "자동" else None
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
-                                   mode_rule=mode_rule, forced_mode=forced)
+                                   mode_rule=_mr, forced_mode=forced)
             r["algoc"] = algoc_info
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
