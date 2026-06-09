@@ -937,14 +937,22 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     eff_capital = os_capital + net_adj
     ds_p.initial_capital = eff_capital
 
-    # ── 5) 주문표 로드 ──
+    # ── 5) 모드 소스 + 주문표 로드 ──
+    msrc = st.radio("🧭 모드 소스", ["자동 (하이브리드)", "수동: 🟥 공격", "수동: 🟦 방어"],
+                    horizontal=True, key=f"ds_msrc{sfx}",
+                    help="원전략을 그대로 따라가려면 매주 원전략의 모드(공격/방어)를 수동으로 지정하세요. "
+                         "엔진이 그 모드로 원전략과 동일하게 주문을 산출합니다.")
+    forced = "공격" if "공격" in msrc else ("방어" if "방어" in msrc else None)
+    if forced:
+        st.caption(f"✋ 수동 모드 **{forced}** 적용 — 다음 세션 신규 매수가 {forced} 규칙으로 계산됩니다. "
+                   "(기존 보유 슬롯은 매수 당시 모드로 계속 관리)")
     if st.button("📋 주문표 로드", type="primary", key=f"ds_load{sfx}", use_container_width=True):
         try:
             px_df = get_soxl_data()
             mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
                                            peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
-                                   mode_rule=mode_rule)
+                                   mode_rule=mode_rule, forced_mode=forced)
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
             return

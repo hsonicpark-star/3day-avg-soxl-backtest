@@ -748,9 +748,11 @@ def next_trading_days(start_date, n_days):
     return pd.DatetimeIndex(out)
 
 
-def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule=None):
+def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule=None,
+                       forced_mode=None):
     """백테스트 최종 상태 → 다음 거래일 LOC/MOC 주문표.
 
+    forced_mode: '공격'/'방어' 지정 시 다음 세션 매수 모드를 강제 (원전략 수동 모드용).
     mode_rule: {'ma_weeks','peak_thr','dn'} 제공 시, 다음 세션 모드를 '직전 확정 주봉
                (지난주/지지난주)' 기준으로 산출 (실거래 주문표 권장 — 1주 추가지연 제거).
                미제공 시 백테스트 마지막 주 모드를 그대로 carry.
@@ -767,7 +769,9 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
     prev_fi = state['prev_fi']
     last_ma5 = state['last_ma5']
     cash = state['cash']
-    if mode_rule:
+    if forced_mode in ('공격', '방어'):
+        mode = forced_mode                  # 수동 지정 (원전략 모드 따라가기)
+    elif mode_rule:
         mode = forward_mode(prices, prev_mode=state['last_mode'], **mode_rule)
     else:
         mode = state['last_mode']           # 다음 세션 모드 (carry)
