@@ -93,7 +93,19 @@ def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
     df = df[["Close"]].dropna()
     df["Close"] = df["Close"].astype(float)
-    return _filter_incomplete_today(df)
+    df = _filter_incomplete_today(df)
+    # SOXL: yfinance 확정 종가 누락 시 백업 구글시트(DB)로 보충
+    # 경고는 df.attrs['data_warning'] → 호출자가 user_warnings에 추가
+    if ticker.upper() == "SOXL":
+        try:
+            from backup_close import check_and_patch_soxl
+            df, _warn = check_and_patch_soxl(df, gc=None)  # env 인증 (Actions)
+            df.attrs['data_warning'] = _warn
+            if _warn:
+                print(f"    {_warn}")
+        except Exception:
+            df.attrs['data_warning'] = None
+    return df
 
 # ══════════════════════════════════════════════════════════════
 # 종가평균매매 관련
@@ -317,6 +329,9 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     if soxl.empty or qqq.empty:
         return None
 
+    # yfinance 이상 → 백업 보충 경고 (fetch_prices가 attrs에 저장)
+    _data_warning = soxl.attrs.get('data_warning')
+
     # RSI/모드 계산
     weekly_rsi_df = build_weekly_rsi_series(qqq)
     mode_series_df = build_mode_series(weekly_rsi_df)
@@ -435,6 +450,7 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         "cur_buy_pct": cur_buy_pct, "cur_sell_pct": cur_sell_pct,
         "cur_max_hold": cur_hold, "os_capital": os_capital,
         "latest_rsi": latest_rsi, "prev_rsi": prev_rsi,
+        "data_warning": _data_warning,
     }
 
 
@@ -1502,6 +1518,13 @@ def main():
                 # 이상치 감지 (DSS는 중점 체크)
                 _issues = sanity_check_dss(os_result, acct_name, acct_data)
                 user_warnings.extend([f"[DSS/{acct_name}] {m}" for m in _issues])
+
+                # yfinance 데이터 이상 → 백업 보충 알림 (유저당 1회만)
+                _dw = os_result.get("data_warning")
+                if _dw:
+                    _dw_msg = f"[DSS] {_dw} (주문표는 백업 데이터 반영)"
+                    if _dw_msg not in user_warnings:
+                        user_warnings.append(_dw_msg)
 
                 # 알고리C 원본 시트(BOARD)와 대조 검증 (계좌별 URL)
                 _vinfo = dss_verify.get(acct_name)

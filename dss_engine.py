@@ -18,9 +18,14 @@ import yfinance as yf
 # ──────────────────────────────────────────────
 
 def load_price_data(ticker: str, start: str = "2009-01-01",
-                    end: str = "2026-12-31") -> pd.DataFrame:
+                    end: str = "2026-12-31",
+                    gspread_client=None) -> pd.DataFrame:
     """yfinance에서 미조정(unadjusted) 종가 로드.
-    미국장이 종료되지 않은 당일 intraday 데이터는 제외."""
+    - 미국장이 종료되지 않은 당일 intraday 데이터는 제외
+    - Close NaN 행 제거 (yfinance 오류 방어)
+    - SOXL: 확정 거래일 종가 누락 시 백업 구글시트(DB)로 보충
+      → 보충/실패 경고는 df.attrs['data_warning'] 에 저장
+    """
     df = yf.download(ticker, start=start, end=end, auto_adjust=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -40,6 +45,15 @@ def load_price_data(ticker: str, start: str = "2009-01-01",
             df = df[df.index.normalize() < us_today]
     except Exception:
         pass
+    # SOXL: yfinance 누락 시 백업 시트로 보충 (지연 import — 순환 방지)
+    data_warning = None
+    if ticker.upper() == "SOXL":
+        try:
+            from backup_close import check_and_patch_soxl
+            df, data_warning = check_and_patch_soxl(df, gc=gspread_client)
+        except Exception:
+            pass
+    df.attrs['data_warning'] = data_warning
     return df
 
 

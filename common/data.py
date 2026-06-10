@@ -103,6 +103,33 @@ def filter_incomplete_today(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _maybe_patch_soxl_backup(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """SOXL 한정: yfinance 확정 종가 누락 시 백업 구글시트(DB)로 보충.
+    경고는 df.attrs['data_warning']에 저장 (호출자가 UI 표시)."""
+    if df is None or df.empty or ticker.upper() != "SOXL":
+        if df is not None:
+            df.attrs['data_warning'] = None
+        return df
+    try:
+        import sys as _sys, os as _os
+        _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from backup_close import check_and_patch_soxl
+        # gspread client: Cloud는 st.secrets, 로컬은 service_account.json
+        gc = None
+        try:
+            from common.config import _get_gspread_client
+            gc = _get_gspread_client()
+        except Exception:
+            gc = None  # backup_close가 자체 인증 시도
+        df, warn = check_and_patch_soxl(df, gc=gc)
+        df.attrs['data_warning'] = warn
+    except Exception:
+        df.attrs['data_warning'] = None
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     start = pd.to_datetime(start_str).date()
@@ -131,7 +158,7 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
         )
         df = _to_close_df(raw)
         if not df.empty:
-            return filter_incomplete_today(df)
+            return _maybe_patch_soxl_backup(filter_incomplete_today(df), ticker)
     except Exception:
         pass
 
@@ -147,7 +174,8 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
             df2 = raw2[["Close"]].copy()
             df2.index = pd.to_datetime(df2.index).tz_localize(None)
             df2["Close"] = pd.to_numeric(df2["Close"], errors="coerce")
-            return filter_incomplete_today(df2.dropna())
+            return _maybe_patch_soxl_backup(
+                filter_incomplete_today(df2.dropna()), ticker)
     except Exception:
         pass
 

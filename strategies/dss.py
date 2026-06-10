@@ -1876,6 +1876,13 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             st.error(f"⚠️ 가격 데이터 로드 실패: {_data_err}\n\n잠시 후 다시 시도해주세요.")
             soxl = None
 
+        # yfinance 데이터 이상 → 백업 시트 보충 여부 안내
+        if soxl is not None:
+            _dw = soxl.attrs.get('data_warning')
+            if _dw:
+                st.warning(f"{_dw}\n\n주문표는 백업 데이터를 반영하여 계산되었습니다. "
+                           f"yfinance 데이터가 정상화되면 자동으로 원복됩니다.")
+
         if soxl is not None:
             os_params = DSSParams(
                 sf_divisions=cur_sf_div, sf_max_hold=cur_sf_hold,
