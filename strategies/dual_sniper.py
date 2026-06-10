@@ -1281,11 +1281,23 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     c1 = float(px_df['close'].iloc[-1]); c2 = float(px_df['close'].iloc[-2])
                     m_inf, det = _infer_mode_from_orders(rows, c1, c2, ds_p)
                     if m_inf is None:
-                        st.error(f"모드 역산 실패 — 원본 주문: {rows}")
-                        return
-                    forced = m_inf
-                    shared_today = m_inf
-                    algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
+                        # 역산 실패 — 대부분 야후 종가 미갱신(기준종가가 옛날) 탓.
+                        _ld = px_df.index[-1].date()
+                        st.warning(
+                            f"⚠️ **모드 역산 실패** — 원본 주문 {rows}\n\n"
+                            f"현재 기준종가: **{_ld} ${c1:.2f}** · 원본 주문가가 이 종가 기반 "
+                            f"후보가와 맞지 않습니다. **야후 종가가 아직 미갱신**일 가능성이 큽니다.\n\n"
+                            f"→ 5분 후 다시 로드해 보세요 (데이터 캐시 5분). "
+                            f"우선 **공유된 모드로 대체**해 주문표를 생성합니다.")
+                        _shared = dict(_load_shared_modes())
+                        _nd = next_trading_days(px_df.index[-1], 1)
+                        _kd = str((_nd[0] if len(_nd) else px_df.index[-1]).date())
+                        forced = _shared.get(_kd)    # 공유 모드 폴백 (없으면 번들 carry)
+                        shared_today = None          # 미확정 모드는 공유 저장 금지
+                    else:
+                        forced = m_inf
+                        shared_today = m_inf
+                        algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
                 else:
                     # 일반 유저: 시트 비열람 → 공유된 오늘의 모드만 사용
                     _shared = dict(_load_shared_modes())
