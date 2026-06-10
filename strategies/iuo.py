@@ -170,6 +170,22 @@ def _next_trading_date(d=None):
 # 데이터 캐싱
 # ──────────────────────────────────────────────
 
+def _iuo_clean_and_patch(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
+    """공통 데이터 정리: Close NaN 행 제거 + intraday 필터 +
+    SOXL이면 백업시트 보충 (yfinance 6/9 NaN 사건 대응)."""
+    if df is None or df.empty:
+        return df
+    if 'Close' in df.columns:
+        df = df[df['Close'].notna()]
+    try:
+        from common.data import filter_incomplete_today, _maybe_patch_soxl_backup
+        df = filter_incomplete_today(df)
+        df = _maybe_patch_soxl_backup(df, ticker)
+    except Exception:
+        pass
+    return df
+
+
 @st.cache_data(ttl=3600)
 def _download_soxl(start: str = "2009-01-01", end: str = "2027-01-01"):
     import yfinance as yf
@@ -177,7 +193,7 @@ def _download_soxl(start: str = "2009-01-01", end: str = "2027-01-01"):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)
-    return df
+    return _iuo_clean_and_patch(df, "SOXL")
 
 
 @st.cache_data(ttl=3600)
@@ -187,7 +203,7 @@ def _download_qqq(start: str = "2009-01-01", end: str = "2027-01-01"):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)
-    return df
+    return _iuo_clean_and_patch(df, "QQQ")
 
 
 @st.cache_data(ttl=3600)
@@ -197,7 +213,7 @@ def _download_ticker(ticker: str, start: str = "2009-01-01", end: str = "2027-01
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)
-    return df
+    return _iuo_clean_and_patch(df, ticker)
 
 
 # ══════════════════════════════════════════════
