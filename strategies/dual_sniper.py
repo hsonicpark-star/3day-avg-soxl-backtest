@@ -959,6 +959,9 @@ def _render_ds_source_box(acct_key, acct_data, cfg, sfx):
                        "**원전략 오늘의 모드(공격/방어)** 를 받아, 내 파라미터·자본으로 주문을 생성합니다. "
                        "구글시트 연동은 필요 없습니다.")
             # 원본 실계좌 시트 직접 연동은 운영자(시트 소유자)만 — 개인 주문내역 보호
+            if not _is_ds_owner():
+                st.caption("ℹ️ 운영자가 매일 아침 산출·공유하는 모드를 받아 사용합니다. "
+                           "(원본 시트 직접 연동·원시 주문 열람은 운영자 전용)")
             if _is_ds_owner():
                 with st.expander("🔧 운영자 전용: 내 실계좌 원본 시트 연동 (모드 역산·공유용)"):
                     st.caption("⚠️ 여기 연결한 시트의 원시 주문은 **나만** 보이고, 역산된 **모드만** "
@@ -1153,6 +1156,17 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             v_pk = h2.number_input("천장wRSI", min_value=50.0, max_value=80.0, step=1.0, key=f"ds_e_pk{sfx}")
             v_dn = h3.number_input("이탈wRSI", min_value=30.0, max_value=50.0, step=1.0, key=f"ds_e_dn{sfx}")
             if st.button("💾 파라미터 저장", type="primary", key=f"ds_save_p{sfx}"):
+                # 티어비중 검증: 개수=방분할, 합≈100 아닐 때 경고 (저장은 진행)
+                try:
+                    _wl = [float(x.strip()) for x in str(v_sfw).split(",") if x.strip()]
+                except Exception:
+                    _wl = []
+                _w_msg = None
+                if len(_wl) != int(v_sfdiv):
+                    _w_msg = (f"⚠️ 티어비중 개수({len(_wl)})가 방분할({int(v_sfdiv)})과 달라 "
+                              f"기본 비중으로 대체됩니다. 쉼표로 {int(v_sfdiv)}개를 입력해 다시 저장하세요.")
+                elif abs(sum(_wl) - 100) > 1:
+                    _w_msg = f"⚠️ 티어비중 합({sum(_wl):g})이 100이 아닙니다 — 배분이 의도와 다를 수 있어요."
                 acct_data["params"] = {
                     "ag_div": v_agdiv, "ag_buy": v_agbuy, "ag_sell_alpha": v_agsa, "ag_hold_alpha": v_agha,
                     "sf_div": v_sfdiv, "sf_hold": v_sfhold, "sf_buy1": v_sfb1, "sf_buy2": v_sfb2,
@@ -1160,8 +1174,11 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     "ma_weeks": v_ma, "peak_thr": v_pk, "dn": v_dn}
                 cfg["accounts"][acct_key] = acct_data
                 _save_ds_config(cfg)
-                st.success("✅ 저장되었습니다.")
-                st.rerun()
+                if _w_msg:
+                    st.warning(_w_msg)   # rerun 생략 → 경고 유지 (저장은 완료됨)
+                else:
+                    st.success("✅ 저장되었습니다.")
+                    st.rerun()
 
     # ── 1.5) 모드 소스 (계좌별 저장) ──
     saved_src = _render_ds_source_box(acct_key, acct_data, cfg, sfx)

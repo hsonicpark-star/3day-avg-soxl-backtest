@@ -46,5 +46,6 @@ jobs:
             echo "변경 없음 — 커밋 생략"
           else
             git commit -m "chore: 듀얼스나이퍼 모드 번들 자동 갱신"
+            git pull --rebase origin main || true
             git push
           fi
