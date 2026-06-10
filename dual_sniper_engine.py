@@ -84,6 +84,7 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
     except Exception:
         pass
     out = df[['Close']].rename(columns={'Close': 'close'}).copy()
+    out = out[out['close'].notna()]   # 미확정/누락(NaN) 종가 행 제거 — 마지막 확정 종가만 사용
     return out
 
 
