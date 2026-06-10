@@ -103,11 +103,37 @@ def _read_origin_orders(gc, url, tab):
     return rows
 
 
-def _soxl_last2():
+def _soxl_last2(gc=None):
     df = yf.download("SOXL", period="1mo", auto_adjust=False, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     closes = df["Close"].dropna()
+    # 야후 일봉 지연 보충: 보조 종가 DB(구글시트)가 더 최신이면 병합
+    try:
+        share_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "dual_sniper_share.json")
+        with open(share_path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        db_url = cfg.get("price_db_url", "").strip()
+        if gc is not None and db_url:
+            vals = gc.open_by_url(db_url).worksheet(cfg.get("price_db_tab", "DB")).get_all_values()
+            ser = {}
+            for r in vals:
+                if len(r) < 6 or not r[4].strip() or not r[5].strip():
+                    continue
+                try:
+                    dt = pd.to_datetime("20" + r[4].split("(")[0].strip(), format="%Y.%m.%d")
+                    ser[dt.normalize()] = float(r[5].replace(",", ""))
+                except Exception:
+                    continue
+            if ser:
+                db = pd.Series(ser).sort_index()
+                newer = db[db.index > closes.index[-1]]
+                if len(newer):
+                    closes = pd.concat([closes, newer])
+                    print(f"[db] 야후 누락 보충: {[str(d.date()) for d in newer.index]}")
+    except Exception as e:
+        print(f"[db] 보조 DB 사용 불가 (야후만 사용): {e}")
     return float(closes.iloc[-1]), float(closes.iloc[-2]), closes.index[-1].date()
 
 
@@ -189,7 +215,7 @@ def main():
     gc = _gc()
     rows = _read_origin_orders(gc, origin_url, origin_tab)
     print(f"원본 주문: {rows}")
-    c1, c2, last_date = _soxl_last2()
+    c1, c2, last_date = _soxl_last2(gc)
     mode, detail = _infer_mode(rows, c1, c2)
     apply_date = _next_trading_day(last_date)   # 모드가 적용되는 다음 거래일
     print(f"종가기준일 {last_date} (종가 {c1:.2f}/{c2:.2f}) → 적용거래일 {apply_date} "

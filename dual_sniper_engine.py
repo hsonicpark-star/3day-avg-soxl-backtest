@@ -66,6 +66,56 @@ def build_original_mode_map(prices: pd.DataFrame, extra_modes: dict = None) -> d
 # 데이터 로드 (yfinance, 미조정 raw — 스프레드시트와 일치)
 # ──────────────────────────────────────────────
 
+_SHARE_JSON = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dual_sniper_share.json')
+
+
+def _load_db_closes():
+    """보조 종가 DB(구글시트 DB탭, E=날짜 'YY.MM.DD(요일)' / F=종가) → Series[date→close].
+    야후 일봉 지연/누락 보충용. 인증 실패·미설정 시 None."""
+    try:
+        import json as _json
+        with open(_SHARE_JSON, encoding='utf-8') as f:
+            cfg = _json.load(f)
+        url = cfg.get('price_db_url', '').strip()
+        tab = cfg.get('price_db_tab', 'DB').strip() or 'DB'
+        if not url:
+            return None
+        gc = None
+        # 1) GitHub Actions 등 env 인증
+        try:
+            import json as _j, gspread
+            from google.oauth2.service_account import Credentials
+            info = _j.loads(os.environ['GCP_SERVICE_ACCOUNT_JSON'])
+            creds = Credentials.from_service_account_info(
+                info, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"])
+            gc = gspread.authorize(creds)
+        except Exception:
+            pass
+        # 2) 앱 공용 클라이언트 (Cloud st.secrets / 로컬 service_account.json)
+        if gc is None:
+            try:
+                from common.config import _get_gspread_client
+                gc = _get_gspread_client()
+            except Exception:
+                return None
+        vals = gc.open_by_url(url).worksheet(tab).get_all_values()
+        out = {}
+        for r in vals:
+            if len(r) < 6:
+                continue
+            d, c = r[4].strip(), r[5].strip()
+            if not d or not c:
+                continue
+            try:
+                dt = pd.to_datetime('20' + d.split('(')[0].strip(), format='%Y.%m.%d')
+                out[dt.normalize()] = float(c.replace(',', ''))
+            except Exception:
+                continue
+        return pd.Series(out).sort_index() if out else None
+    except Exception:
+        return None
+
+
 def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
                     end: str = "2027-01-01") -> pd.DataFrame:
     """yfinance 미조정(auto_adjust=False) 종가 로드 → DataFrame[index=date, 'close'].
@@ -85,14 +135,30 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
     except Exception:
         today_est = None
     out = df[['Close']].rename(columns={'Close': 'close'}).copy()
-    # 야후 일봉 지연 보정: '마감된 지난 거래일' 종가가 NaN이면 실시간 최종가(fast_info)로 채움.
-    # (오늘 행은 위 intraday 필터로 이미 제거됨 → 지난 거래일만 대상이라 라이브가 섞일 일 없음)
+    # ── 야후 일봉 지연/누락 보정 (마감된 지난 거래일만 대상 — 오늘 행은 위에서 제거됨) ──
+    # 1순위: 보조 종가 DB(구글시트) → 2순위: yf fast_info 최종가
     try:
-        if len(out) and pd.isna(out['close'].iloc[-1]) and today_est is not None \
-                and out.index[-1].date() < today_est:
-            lp = yf.Ticker(ticker).fast_info.last_price
-            if lp and float(lp) > 0:
-                out.iloc[-1, out.columns.get_loc('close')] = float(lp)
+        if ticker == "SOXL" and today_est is not None and len(out):
+            _tail_nan = pd.isna(out['close'].iloc[-1]) and out.index[-1].date() < today_est
+            _nd = next_trading_days(out.index[-1], 1)
+            _row_missing = len(_nd) > 0 and _nd[0].date() < today_est  # 마감된 세션 행 자체가 없음
+            if _tail_nan or _row_missing:
+                db = _load_db_closes()
+                if db is not None:
+                    # NaN 채움 + 야후에 없는 마감 거래일 행 추가 (오늘 이전만)
+                    for d, c in db.items():
+                        if d.date() >= today_est:
+                            continue
+                        if d in out.index:
+                            if pd.isna(out.loc[d, 'close']):
+                                out.loc[d, 'close'] = c
+                        elif d > out.index[-1]:
+                            out.loc[d] = c
+                    out = out.sort_index()
+                elif _tail_nan:   # DB 불가 시 최후 폴백
+                    lp = yf.Ticker(ticker).fast_info.last_price
+                    if lp and float(lp) > 0:
+                        out.iloc[-1, out.columns.get_loc('close')] = float(lp)
     except Exception:
         pass
     out = out[out['close'].notna()]   # 남은 NaN(미확정) 종가 행 제거
