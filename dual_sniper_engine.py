@@ -81,10 +81,21 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
         close_buf = now_est.replace(hour=16, minute=30, second=0, microsecond=0)
         if now_est < close_buf:
             df = df[df.index.normalize() < pd.Timestamp(now_est.date())]
+        today_est = now_est.date()
+    except Exception:
+        today_est = None
+    out = df[['Close']].rename(columns={'Close': 'close'}).copy()
+    # 야후 일봉 지연 보정: '마감된 지난 거래일' 종가가 NaN이면 실시간 최종가(fast_info)로 채움.
+    # (오늘 행은 위 intraday 필터로 이미 제거됨 → 지난 거래일만 대상이라 라이브가 섞일 일 없음)
+    try:
+        if len(out) and pd.isna(out['close'].iloc[-1]) and today_est is not None \
+                and out.index[-1].date() < today_est:
+            lp = yf.Ticker(ticker).fast_info.last_price
+            if lp and float(lp) > 0:
+                out.iloc[-1, out.columns.get_loc('close')] = float(lp)
     except Exception:
         pass
-    out = df[['Close']].rename(columns={'Close': 'close'}).copy()
-    out = out[out['close'].notna()]   # 미확정/누락(NaN) 종가 행 제거 — 마지막 확정 종가만 사용
+    out = out[out['close'].notna()]   # 남은 NaN(미확정) 종가 행 제거
     return out
 
 
