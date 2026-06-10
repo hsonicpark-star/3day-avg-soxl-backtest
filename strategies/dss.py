@@ -1291,6 +1291,14 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
     여기서는 표시용으로 adj_applied 합계만 계산 (UI 캡션에 사용)."""
     last = bt_df.iloc[-1]
     prev_close = float(last['종가'])
+    # NaN 방어: yfinance가 마지막 행 Close를 NaN으로 준 경우,
+    # 그 이전의 유효한 종가 행으로 대체 (math.floor(NaN) 크래시 방지)
+    if pd.isna(prev_close):
+        _valid = bt_df[bt_df['종가'].notna()]
+        if _valid.empty:
+            return None
+        last = _valid.iloc[-1]
+        prev_close = float(last['종가'])
     last_date = pd.Timestamp(last['날짜'])
 
     # 오늘의 주문에 적용할 모드 = '다음 거래일' 모드.

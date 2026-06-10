@@ -25,6 +25,11 @@ def load_price_data(ticker: str, start: str = "2009-01-01",
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)
+    # Close가 NaN인 행 제거 — yfinance가 장 마감 직후 마지막 행을
+    # NaN으로 반환하는 경우가 있어, 엔진에 들어가면 prev_close가 NaN으로
+    # 전파되어 math.floor(NaN) ValueError 발생 (2026-06-08 Cloud 크래시)
+    if 'Close' in df.columns:
+        df = df[df['Close'].notna()]
     # US 장 마감(16:30 ET) 이전이면 당일 intraday 데이터 제거
     try:
         now_est = pd.Timestamp.now(tz="America/New_York")
