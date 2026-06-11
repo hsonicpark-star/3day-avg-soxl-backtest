@@ -470,7 +470,15 @@ def next_trading_date(d=None):
 
 @st.cache_data(show_spinner="SOXL 데이터 로딩...", ttl=300)
 def get_soxl_data():
-    df = load_price_data("SOXL", "2009-06-01", "2026-12-31")
+    # 백업시트 보충용 gspread client — Cloud는 st.secrets 인증이 필요하므로
+    # common 통합 함수로 생성해 엔진에 전달 (없으면 backup_close 자체 인증 시도)
+    _gc = None
+    try:
+        from common.config import _get_gspread_client
+        _gc = _get_gspread_client()
+    except Exception:
+        _gc = None
+    df = load_price_data("SOXL", "2009-06-01", "2026-12-31", gspread_client=_gc)
     if df is None or df.empty:
         raise RuntimeError("SOXL 데이터 로드 실패 (yfinance)")
     return df
