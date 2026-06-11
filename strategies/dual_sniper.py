@@ -1315,6 +1315,22 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                         forced = m_inf
                         shared_today = m_inf
                         algoc_info = {"mode": m_inf, "detail": det, "orders": rows}
+                        # 주중 전환 검증 — 원전략은 '주 첫 거래일'에만 전환 (70회 전수 확인)
+                        try:
+                            _ld = px_df.index[-1]
+                            _od = next_trading_days(_ld, 1)
+                            _od = _od[0] if len(_od) else None
+                            _prev_mode = build_original_mode_map(
+                                px_df, extra_modes=dict(_load_shared_modes())).get(_ld)
+                            if (_od is not None and _prev_mode and m_inf != _prev_mode
+                                    and pd.Timestamp(_ld).isocalendar()[:2]
+                                    == pd.Timestamp(_od).isocalendar()[:2]):
+                                st.warning(
+                                    f"⚠️ **주중 모드 전환 감지** ({_ld.date()} {_prev_mode} → "
+                                    f"{_od.date()} {m_inf}) — 원전략은 주 첫 거래일에만 전환합니다. "
+                                    f"역산 오류일 수 있으니 원본 주문을 직접 확인하세요!")
+                        except Exception:
+                            pass
                 else:
                     # 일반 유저: 시트 비열람 → 공유된 오늘의 모드만 사용
                     _shared = dict(_load_shared_modes())

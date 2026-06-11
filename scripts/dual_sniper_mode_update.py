@@ -223,6 +223,24 @@ def main():
     if mode is None:
         print("[error] 모드 역산 실패")
         sys.exit(2)
+
+    # ── 주중 전환 검증: 원전략은 '주 첫 거래일'에만 전환 (2016~2026 70회 전수 확인) ──
+    # 직전 거래일(last_date)과 적용일(apply_date)이 같은 ISO 주인데 모드가 바뀌면
+    # 주중 전환 = 데이터/역산 오류 가능성 → 경고 (기록은 진행하되 사람이 확인)
+    try:
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "dual_sniper_modes.csv")
+        bdf = pd.read_csv(csv_path)
+        prev_row = bdf[bdf["date"] == str(last_date)]
+        prev_mode = prev_row["mode"].iloc[0] if len(prev_row) else None
+        same_week = (pd.Timestamp(last_date).isocalendar()[:2]
+                     == pd.Timestamp(apply_date).isocalendar()[:2])
+        if prev_mode and mode != prev_mode and same_week:
+            print(f"[⚠️ WARNING] 주중 모드 전환 감지: {last_date}({prev_mode}) → {apply_date}({mode})"
+                  f" — 원전략은 주 첫 거래일에만 전환합니다. 역산 오류/데이터 이상 가능성을 확인하세요!")
+    except Exception as e:
+        print(f"[warn] 주중 전환 검증 생략: {e}")
+
     _append_shared(gc, share_url, share_tab, str(apply_date), mode)
     _append_bundle_csv(str(apply_date), mode)   # 로컬 번들 CSV에도 누적 (2016~오늘 연속)
 
