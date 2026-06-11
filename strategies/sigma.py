@@ -312,6 +312,9 @@ def run_sigma_ordersheet(ticker: str, sigma_period_days: int = 252, _as_of: str 
         "buy_loc_1": buy_loc_1, "buy_loc_2": buy_loc_2, "buy_loc_3": buy_loc_3,
         "sigma_period": sigma_period_days,
         "as_of": df.index[-1].strftime("%Y-%m-%d"),
+        # 전일 종가 미확보 정책용 (yfinance+백업 실패 시 주문표 차단)
+        "data_stale": bool(df.attrs.get("data_stale", False)),
+        "data_warning": df.attrs.get("data_warning"),
     }
 
 
@@ -431,7 +434,14 @@ def _render_sigma_account_tab(tk: str, cfg: dict, key_sfx: str):
             _od = run_sigma_ordersheet(tk, sigma_period, _as_of=str(datetime.today().date()))
         if _od is None:
             st.error("데이터 로드 실패 또는 σ 계산 데이터가 부족합니다.")
+        elif _od.get("data_stale"):
+            # 전일 종가 미확보(yfinance+백업 실패) → 주문표 생성 차단
+            st.error(f"{_od.get('data_warning') or '⛔ 전일 종가 미확보'}\n\n"
+                     f"최신 전일 종가를 확보하지 못해 **주문표를 생성하지 않습니다.** "
+                     f"잠시 후 다시 시도해주세요.")
         else:
+            if _od.get("data_warning"):
+                st.warning(f"{_od['data_warning']}\n\n주문표는 백업 데이터를 반영하여 계산되었습니다.")
             st.session_state[f"order_data_{key_sfx}"]   = _od
             st.session_state[f"order_shares_{key_sfx}"] = _t_shares
             st.session_state[f"order_avg_{key_sfx}"]    = _t_avg_cost

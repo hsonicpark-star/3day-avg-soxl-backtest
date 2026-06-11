@@ -1099,6 +1099,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if price_df_os.empty:
             st.error("가격 데이터를 불러오지 못했습니다.")
             return
+        # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
+        from common.data import halt_if_stale
+        if halt_if_stale(price_df_os):
+            return
 
         res = run_portfolio_for_ordersheet(
             price_df_os, os_start, tk,

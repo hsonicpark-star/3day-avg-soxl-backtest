@@ -1064,6 +1064,10 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
     except Exception:
         st.error("가격 데이터를 로드할 수 없습니다.")
         return
+    # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
+    from common.data import halt_if_stale
+    if halt_if_stale(price_df):
+        return
 
     _ss_key = f"iuo_os_result{sfx}"
     _use_start = str(os_start_input)

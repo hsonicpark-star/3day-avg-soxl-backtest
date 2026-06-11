@@ -1053,8 +1053,12 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _buf_start = (_os_start - timedelta(days=90))
             _pdf = load_price_data(tk, str(_buf_start), str(datetime.today().date()),
                                    "야후 파이낸스 (yfinance)", None)
+        # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
+        from common.data import halt_if_stale
         if _pdf is None or _pdf.empty:
             st.error("가격 데이터를 불러오지 못했습니다.")
+        elif halt_if_stale(_pdf):
+            pass  # halt_if_stale이 에러 표시 — 주문표 미생성
         else:
             _sd_r = run_stdev_ordersheet(
                 price_df=_pdf, start_date=str(_os_start),

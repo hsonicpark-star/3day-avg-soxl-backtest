@@ -184,6 +184,29 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     return pd.DataFrame()
 
 
+def halt_if_stale(df, context: str = "주문표") -> bool:
+    """df.attrs['data_stale']이면 st.error 표시 후 True 반환 (호출자는 생성 중단).
+
+    정책: 전일 종가 미확보(yfinance + 백업 모두 실패) 시 낡은 데이터로
+    주문표를 만들면 안 됨 → 생성 차단 + 에러 안내."""
+    if df is None:
+        return False
+    try:
+        stale = df.attrs.get('data_stale', False)
+        warn = df.attrs.get('data_warning')
+    except Exception:
+        return False
+    if stale:
+        st.error(f"{warn or '⛔ 전일 종가 미확보'}\n\n"
+                 f"최신 전일 종가를 확보하지 못해 **{context}를 생성하지 않습니다.** "
+                 f"낡은 데이터 기준의 잘못된 주문을 방지하기 위함입니다. "
+                 f"잠시 후 다시 시도해주세요.")
+        return True
+    if warn:
+        st.warning(f"{warn}\n\n{context}는 백업 데이터를 반영하여 계산되었습니다.")
+    return False
+
+
 def load_price_data(ticker, start, end, data_source, excel_file):
     if data_source == "엑셀 Daily_Close 시트" and excel_file is not None:
         xl = pd.ExcelFile(excel_file)
