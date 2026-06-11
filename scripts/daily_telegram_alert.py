@@ -96,15 +96,16 @@ def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
     df = _filter_incomplete_today(df)
     # SOXL: yfinance 확정 종가 누락 시 백업 구글시트(DB)로 보충
     # 경고는 df.attrs['data_warning'] → 호출자가 user_warnings에 추가
+    # ⛔ 백업까지 실패해 최신 전일 종가가 없으면 raise — 낡은 데이터로
+    #    주문표를 만들어 발송하면 안 되므로 해당 발송을 차단한다.
     if ticker.upper() == "SOXL":
-        try:
-            from backup_close import check_and_patch_soxl
-            df, _warn = check_and_patch_soxl(df, gc=None)  # env 인증 (Actions)
-            df.attrs['data_warning'] = _warn
-            if _warn:
-                print(f"    {_warn}")
-        except Exception:
-            df.attrs['data_warning'] = None
+        from backup_close import check_and_patch_soxl
+        df, _warn, _resolved = check_and_patch_soxl(df, gc=None)  # env 인증 (Actions)
+        df.attrs['data_warning'] = _warn
+        if _warn:
+            print(f"    {_warn}")
+        if not _resolved:
+            raise RuntimeError(_warn or "⛔ 전일 종가 미확보 (yfinance+백업 모두 실패)")
     return df
 
 # ══════════════════════════════════════════════════════════════
@@ -318,16 +319,13 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     os_start  = str(acct_data.get("os_start", "2024-01-01"))
     os_capital = float(acct_data.get("os_capital", 100000))
 
-    # 데이터 로드
-    try:
-        soxl = fetch_prices("SOXL", "2009-06-01")
-        qqq  = fetch_prices("QQQ",  "2009-01-01")
-    except Exception as e:
-        print(f"    ⚠️ 데이터 로드 실패: {e}")
-        return None
+    # 데이터 로드 — 실패(전일 종가 미확보 포함) 시 예외 전파
+    # → main에서 해당 계좌 발송 차단 + 사용자 에러 알림
+    soxl = fetch_prices("SOXL", "2009-06-01")
+    qqq  = fetch_prices("QQQ",  "2009-01-01")
 
     if soxl.empty or qqq.empty:
-        return None
+        raise RuntimeError("가격 데이터 비어있음 (yfinance)")
 
     # yfinance 이상 → 백업 보충 경고 (fetch_prices가 attrs에 저장)
     _data_warning = soxl.attrs.get('data_warning')
@@ -774,13 +772,11 @@ def calc_iuo_order(acct_data: dict) -> dict | None:
     div = ap.get("divisions", IUO_DEFAULT_PARAMS["divisions"])
     fee = ap.get("fee_rate",  IUO_DEFAULT_PARAMS["fee_rate"]) / 100
 
-    try:
-        price_df = fetch_prices(ticker, "2009-01-01")
-    except Exception as e:
-        print(f"    ⚠️ {ticker} 데이터 로드 실패: {e}")
-        return None
+    # 데이터 로드 — 실패(전일 종가 미확보 포함) 시 예외 전파
+    # → main에서 해당 발송 차단 + 사용자 에러 알림
+    price_df = fetch_prices(ticker, "2009-01-01")
     if price_df.empty:
-        return None
+        raise RuntimeError(f"{ticker} 가격 데이터 비어있음 (yfinance)")
 
     params = IUOParams(
         initial_capital=os_capital,
@@ -1367,6 +1363,7 @@ def main():
                 except Exception as e:
                     print(f"    ❌ [{tk}] 계산 오류 → {e}")
                     fail_count += 1
+                    user_warnings.append(f"[종가평균/{tk}] ❌ 주문표 미발송: {e}")
                     if shared_gs_url:
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
                                                   _label, status="ERROR", error_reason=f"계산 오류: {e}")
@@ -1436,6 +1433,7 @@ def main():
                 except Exception as e:
                     print(f"    ❌ [표준편차/{tk}] 계산 오류 → {e}")
                     fail_count += 1
+                    user_warnings.append(f"[표준편차/{tk}] ❌ 주문표 미발송: {e}")
                     if shared_gs_url:
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
                                                   _label, status="ERROR", error_reason=f"계산 오류: {e}")
@@ -1502,6 +1500,7 @@ def main():
                 except Exception as e:
                     print(f"    ❌ [DSS/{acct_name}] 계산 오류 → {e}")
                     fail_count += 1
+                    user_warnings.append(f"[DSS/{acct_name}] ❌ 주문표 미발송: {e}")
                     if dss_gs_url and _gs_sheet_dss:
                         write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
                                                   _label, status="ERROR", error_reason=f"계산 오류: {e}")
@@ -1574,6 +1573,7 @@ def main():
                 except Exception as e:
                     print(f"    ❌ [Sigma/{tk}] 계산 오류 → {e}")
                     fail_count += 1
+                    user_warnings.append(f"[Sigma/{tk}] ❌ 주문표 미발송: {e}")
                     if shared_gs_url:
                         write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
                                                   _label, status="ERROR", error_reason=f"계산 오류: {e}")
@@ -1636,6 +1636,7 @@ def main():
                 except Exception as e:
                     print(f"    ❌ [IUO/{acct_name}] 계산 오류 → {e}")
                     fail_count += 1
+                    user_warnings.append(f"[IUO/{acct_name}] ❌ 주문표 미발송: {e}")
                     if iuo_gs_url and _gs_sheet_iuo:
                         write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
                                                   _label, status="ERROR", error_reason=f"계산 오류: {e}")

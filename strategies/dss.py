@@ -1884,10 +1884,19 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             st.error(f"⚠️ 가격 데이터 로드 실패: {_data_err}\n\n잠시 후 다시 시도해주세요.")
             soxl = None
 
-        # yfinance 데이터 이상 → 백업 시트 보충 여부 안내
+        # yfinance 데이터 이상 처리
         if soxl is not None:
             _dw = soxl.attrs.get('data_warning')
-            if _dw:
+            _stale = soxl.attrs.get('data_stale', False)
+            if _stale:
+                # ⛔ 전일 종가 미확보 (yfinance + 백업 모두 실패)
+                # → 낡은 데이터로 주문표를 만들면 안 되므로 생성 중단
+                st.error(f"{_dw or '⛔ 전일 종가 미확보'}\n\n"
+                         f"최신 전일 종가를 확보하지 못해 **주문표를 생성하지 않습니다.** "
+                         f"낡은 데이터 기준의 잘못된 주문을 방지하기 위함입니다. "
+                         f"잠시 후 다시 시도해주세요.")
+                soxl = None  # 주문표 생성 차단
+            elif _dw:
                 st.warning(f"{_dw}\n\n주문표는 백업 데이터를 반영하여 계산되었습니다. "
                            f"yfinance 데이터가 정상화되면 자동으로 원복됩니다.")
 

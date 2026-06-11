@@ -118,33 +118,35 @@ def check_and_patch_soxl(df: pd.DataFrame, gc=None):
         gc: gspread client (None이면 자체 인증 시도)
 
     Returns:
-        (df, warning_msg)
-        - 정상(최신): (원본 df, None)
-        - 보충 성공: (보충된 df, "⚠️ ... 백업 시트로 보충" 메시지)
-        - 보충 실패: (원본 df, "⚠️ ... 보충 실패" 메시지)
+        (df, warning_msg, resolved)
+        - 정상(최신):  (원본 df, None, True)
+        - 보충 성공:   (보충된 df, "⚠️ ... 백업으로 보충", True)
+        - 보충 실패:   (원본 df, "⛔ ... 실패" 메시지, False)
+          → resolved=False 면 최신 전일 종가 미확보 상태.
+            호출자는 주문표 생성/발송을 중단하고 에러로 처리해야 함.
     """
     if df is None or df.empty or "Close" not in df.columns:
-        return df, None
+        return df, None, True
     try:
         expected = expected_latest_trading_date()
     except Exception:
-        return df, None
+        return df, None, True
 
     valid = df[df["Close"].notna()]
     if valid.empty:
-        return df, "⚠️ yfinance 데이터 전체가 비정상 (유효 종가 없음)"
+        return df, "⛔ yfinance 데이터 전체가 비정상 (유효 종가 없음)", False
     last_valid = pd.Timestamp(valid.index[-1]).normalize()
 
     if last_valid >= expected:
-        return df, None  # 최신 — 정상
+        return df, None, True  # 최신 — 정상
 
     # stale: expected까지의 누락 거래일을 백업에서 보충
     missing_desc = f"{last_valid.date()} 이후 ~ {expected.date()}"
     try:
         backup = fetch_backup_soxl_closes(gc)
     except Exception as e:
-        return df, (f"⚠️ yfinance 데이터 지연 감지 ({missing_desc} 종가 누락) "
-                    f"— 백업 시트 접근 실패: {e}")
+        return df, (f"⛔ 전일 종가 미확보: yfinance 누락({missing_desc}) "
+                    f"+ 백업 시트 접근 실패({e})"), False
 
     patched = df.copy()
     added = []
@@ -157,8 +159,16 @@ def check_and_patch_soxl(df: pd.DataFrame, gc=None):
         d += pd.Timedelta(days=1)
     patched = patched.sort_index()
 
-    if added:
+    # 보충 후 최신 종가(expected)가 실제로 확보됐는지 재확인
+    patched_valid = patched[patched["Close"].notna()]
+    patched_last = pd.Timestamp(patched_valid.index[-1]).normalize() if not patched_valid.empty else last_valid
+
+    if patched_last >= expected:
         return patched, (f"⚠️ yfinance 종가 누락 감지 → 백업 시트(DB)로 보충: "
-                         f"{', '.join(added)}")
-    return df, (f"⚠️ yfinance 데이터 지연 ({missing_desc} 종가 누락) "
-                f"— 백업 시트에도 해당 날짜 없음")
+                         f"{', '.join(added)}"), True
+    if added:
+        return patched, (f"⛔ 전일 종가 미확보: 백업에서 일부만 보충"
+                         f"({', '.join(added)}) — 최신 거래일({expected.date()}) "
+                         f"종가는 백업에도 없음"), False
+    return df, (f"⛔ 전일 종가 미확보: yfinance 누락({missing_desc}) "
+                f"+ 백업 시트에도 해당 날짜 없음"), False

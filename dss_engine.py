@@ -47,13 +47,16 @@ def load_price_data(ticker: str, start: str = "2009-01-01",
         pass
     # SOXL: yfinance 누락 시 백업 시트로 보충 (지연 import — 순환 방지)
     data_warning = None
+    data_stale = False  # True = 최신 전일 종가 미확보 → 주문표 생성 금지
     if ticker.upper() == "SOXL":
         try:
             from backup_close import check_and_patch_soxl
-            df, data_warning = check_and_patch_soxl(df, gc=gspread_client)
+            df, data_warning, _resolved = check_and_patch_soxl(df, gc=gspread_client)
+            data_stale = not _resolved
         except Exception:
             pass
     df.attrs['data_warning'] = data_warning
+    df.attrs['data_stale'] = data_stale
     return df
 
 

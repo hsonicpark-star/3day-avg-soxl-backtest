@@ -123,10 +123,12 @@ def _maybe_patch_soxl_backup(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
             gc = _get_gspread_client()
         except Exception:
             gc = None  # backup_close가 자체 인증 시도
-        df, warn = check_and_patch_soxl(df, gc=gc)
+        df, warn, resolved = check_and_patch_soxl(df, gc=gc)
         df.attrs['data_warning'] = warn
+        df.attrs['data_stale'] = not resolved
     except Exception:
         df.attrs['data_warning'] = None
+        df.attrs['data_stale'] = False
     return df
 
 
