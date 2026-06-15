@@ -450,12 +450,16 @@ def render():
     st.success(f"✅ 공통 백테스트 구간: **{norm.index[0].date()} ~ {norm.index[-1].date()}** "
                f"({len(norm):,} 거래일)")
 
-    tab_fwd, tab_rev = st.tabs(["➡️ 순방향: 금액 → CAGR/MDD", "🎯 역방향: 목표 → 금액 배분"])
+    tab_fwd, tab_rev, tab_cmp = st.tabs([
+        "➡️ 순방향: 금액 → CAGR/MDD", "🎯 역방향: 목표 → 금액 배분",
+        "🔬 비교 분석: 합산 vs 단일 전략"])
 
     with tab_fwd:
         _render_forward(norm)
     with tab_rev:
         _render_reverse(norm)
+    with tab_cmp:
+        _render_compare(norm)
 
 
 def _render_forward(norm):
@@ -615,6 +619,155 @@ def _render_forward(norm):
                            use_container_width=True)
     except Exception as _xe:
         d4.caption(f"Excel 생성 실패: {_xe}")
+
+
+def _monthly_ret_series(curve):
+    """일별 자산곡선 → 월별 수익률(%) Series (인덱스=월말)."""
+    m = curve.resample("ME").last()
+    return m.pct_change().dropna() * 100
+
+
+def _annual_of(curve):
+    """per-dollar 자산곡선 → 연도별 수익률/MDD 표."""
+    h = pd.DataFrame({"날짜": curve.index, "총자산($)": curve.values})
+    return compute_annual_stats(h, float(curve.iloc[0]))
+
+
+def _render_compare(norm):
+    st.markdown("#### 🔬 합산 포트폴리오 vs 단일 전략 비교")
+    st.caption("순방향 탭의 투자금액 배분을 그대로 사용합니다. 단일 전략이 합산을 **보완**하는지, "
+               "아니면 **함께 등락**하는지 연·월별 성과와 상관관계로 확인합니다.")
+
+    amounts = {k: float(st.session_state.get(f"pf_amt_{k}", DEFAULT_AMOUNT.get(k, 10000.0)))
+               for k in norm.columns}
+    total = sum(amounts.values())
+    if total <= 0:
+        st.info("순방향 탭에서 투자금액을 입력하세요.")
+        return
+
+    sel = st.selectbox("비교할 단일 전략", list(norm.columns), key="pf_cmp_sel")
+
+    # per-dollar (시작=1.0) 곡선 — 수익률 비교는 금액 무관
+    comb_pd = combine(norm, amounts) / total
+    sel_pd = norm[sel]
+
+    c_cb, m_cb, _ = _metrics(comb_pd.values, comb_pd.index)
+    c_sel, m_sel, _ = _metrics(sel_pd.values, sel_pd.index)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(f"{sel} CAGR", f"{c_sel*100:.2f}%", f"{(c_sel-c_cb)*100:+.2f}%p vs 합산")
+    k2.metric("합산 CAGR", f"{c_cb*100:.2f}%")
+    k3.metric(f"{sel} MDD", f"{m_sel*100:.2f}%", f"{(abs(m_sel)-abs(m_cb))*-100:+.2f}%p vs 합산",
+              delta_color="inverse")
+    k4.metric("합산 MDD", f"{m_cb*100:.2f}%")
+
+    # ── 1) 연도별 비교 ──
+    st.markdown("##### 📅 연도별 수익률 비교 (선택 전략 vs 합산)")
+    a_sel = _annual_of(sel_pd).rename(columns={"연간수익률(%)": "선택 수익률%", "MDD(%)": "선택 MDD%"})
+    a_cb = _annual_of(comb_pd).rename(columns={"연간수익률(%)": "합산 수익률%", "MDD(%)": "합산 MDD%"})
+    ann = a_sel.merge(a_cb, on="연도")
+    ann["수익 차이(선택-합산)%"] = (ann["선택 수익률%"] - ann["합산 수익률%"]).round(2)
+    yx = ann["연도"].astype(str)
+
+    g1, g2 = st.columns([1.1, 1])
+    with g1:
+        fig = go.Figure()
+        fig.add_bar(x=yx, y=ann["선택 수익률%"], name=sel, marker_color="#1565C0")
+        fig.add_bar(x=yx, y=ann["합산 수익률%"], name="합산", marker_color="#9E9E9E")
+        fig.update_layout(barmode="group", height=340, hovermode="x unified", yaxis_title="%",
+                          legend=dict(orientation="h", y=1.02, yanchor="bottom"), margin=dict(t=30, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+    with g2:
+        figd = go.Figure()
+        figd.add_bar(x=yx, y=ann["수익 차이(선택-합산)%"],
+                     marker_color=["#2E7D32" if v >= 0 else "#C62828" for v in ann["수익 차이(선택-합산)%"]],
+                     text=ann["수익 차이(선택-합산)%"], textposition="outside")
+        figd.update_layout(height=340, title="차이 (양수=선택 우위 / 음수=합산 우위)",
+                           yaxis_title="%p", margin=dict(t=40, b=10))
+        st.plotly_chart(figd, use_container_width=True)
+
+    st.dataframe(ann.style.format({c: "{:.2f}" for c in ann.columns if c != "연도"}),
+                 use_container_width=True, hide_index=True)
+
+    # ── 2) 월별 차이 히트맵 ──
+    st.markdown("##### 🌡️ 월별 수익률 차이 히트맵 (선택 − 합산)")
+    st.caption("초록 = 그 달에 선택 전략이 합산보다 우수(보완 효과) / 빨강 = 합산이 더 우수")
+    mp_sel = monthly_for(norm, amounts, sel)
+    mp_cb = monthly_for(norm, amounts, "📊 합산")
+    common_yr = mp_sel.index.intersection(mp_cb.index)
+    diff = (mp_sel.loc[common_yr] - mp_cb.loc[common_yr])
+    fig_h = go.Figure(go.Heatmap(
+        z=diff.values, x=list(diff.columns), y=[str(i) for i in diff.index],
+        colorscale="RdYlGn", zmid=0, text=diff.values, texttemplate="%{text:.1f}",
+        textfont=dict(size=10), colorbar=dict(title="%p")))
+    fig_h.update_layout(height=360, yaxis=dict(autorange="reversed", title="연도"), margin=dict(t=20, b=10))
+    st.plotly_chart(fig_h, use_container_width=True)
+
+    # ── 3) 상관관계 분석 ──
+    st.markdown("##### 🔗 상관관계 분석 (상호 보완 vs 동반 등락)")
+    rets = norm.pct_change().dropna()
+    comb_ret = comb_pd.pct_change().reindex(rets.index)
+    rets_all = rets.copy()
+    rets_all["📊 합산"] = comb_ret
+    corr_d = rets_all.corr()
+
+    # 월별 상관
+    mser = {k: _monthly_ret_series(norm[k]) for k in norm.columns}
+    mser["📊 합산"] = _monthly_ret_series(comb_pd)
+    corr_m = pd.DataFrame(mser).corr()
+
+    cc1, cc2 = st.columns(2)
+    for col, corr, title in [(cc1, corr_d, "일간 수익률 상관계수"), (cc2, corr_m, "월간 수익률 상관계수")]:
+        with col:
+            fig_c = go.Figure(go.Heatmap(
+                z=corr.values, x=list(corr.columns), y=list(corr.index),
+                colorscale="RdBu_r", zmid=0, zmin=-1, zmax=1,
+                text=corr.round(2).values, texttemplate="%{text}", textfont=dict(size=11),
+                colorbar=dict(title="r")))
+            fig_c.update_layout(height=360, title=title, yaxis=dict(autorange="reversed"),
+                                margin=dict(t=40, b=10))
+            st.plotly_chart(fig_c, use_container_width=True)
+
+    avg_off = (corr_d.values[~np.eye(len(corr_d), dtype=bool)]).mean()
+    st.caption(f"📌 전략 간 평균 일간 상관 **{avg_off:.2f}** — "
+               + ("1에 가까울수록 **다같이 등락**(분산효과 작음), " if avg_off > 0.7 else "")
+               + "0에 가깝거나 낮을수록 **상호 보완적**입니다. (모두 SOXL 기반이라 상관은 대체로 높은 편)")
+
+    # ── 4) 하방 보완 지표 + 산점도 + 롤링 상관 ──
+    st.markdown("##### 🛡️ 하방 보완 & 동조성")
+    sm = _monthly_ret_series(sel_pd)
+    cm = _monthly_ret_series(comb_pd)
+    idx = sm.index.intersection(cm.index)
+    sm, cm = sm.loc[idx], cm.loc[idx]
+    down = cm < 0
+    help_rate = float((sm[down] > cm[down]).mean()) * 100 if down.any() else 0.0
+    cushion = float((sm[down] > 0).mean()) * 100 if down.any() else 0.0
+
+    d1, d2, d3 = st.columns(3)
+    d1.metric("합산 손실月에 선택이 더 나은 비율", f"{help_rate:.0f}%",
+              help="합산이 마이너스인 달 중, 선택 전략이 합산보다 높았던 비율")
+    d2.metric("합산 손실月에 선택이 플러스인 비율", f"{cushion:.0f}%",
+              help="합산이 마이너스인 달 중, 선택 전략은 오히려 수익이었던 비율 (방어력)")
+    d3.metric("월간 상관계수", f"{sm.corr(cm):.2f}")
+
+    s1, s2 = st.columns(2)
+    with s1:
+        fig_s = go.Figure(go.Scatter(x=cm, y=sm, mode="markers",
+                                     marker=dict(size=6, color=np.where(down, "#C62828", "#2E7D32"), opacity=0.6)))
+        _lim = float(max(abs(cm).max(), abs(sm).max())) * 1.05
+        fig_s.add_trace(go.Scatter(x=[-_lim, _lim], y=[-_lim, _lim], mode="lines",
+                                   line=dict(dash="dash", color="gray"), showlegend=False))
+        fig_s.update_layout(height=340, title=f"월간 수익률 산점도 ({sel} vs 합산)",
+                            xaxis_title="합산 월수익률(%)", yaxis_title=f"{sel} 월수익률(%)", margin=dict(t=40))
+        st.plotly_chart(fig_s, use_container_width=True)
+    with s2:
+        roll = rets[sel].rolling(126).corr(comb_ret).dropna()
+        fig_r = go.Figure(go.Scatter(x=roll.index, y=roll.values, mode="lines", line=dict(color="#6A1B9A")))
+        fig_r.update_layout(height=340, title=f"6개월 롤링 상관 ({sel} vs 합산)",
+                            yaxis_title="r", yaxis_range=[-1, 1], margin=dict(t=40))
+        fig_r.add_hline(y=avg_off, line_dash="dot", line_color="gray")
+        st.plotly_chart(fig_r, use_container_width=True)
+
+    st.caption("롤링 상관이 낮아지는 구간 = 그 시기에 선택 전략이 합산과 **다르게 움직여 분산에 기여**한 시점입니다.")
 
 
 def _render_reverse(norm):
