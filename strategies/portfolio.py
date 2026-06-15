@@ -336,15 +336,25 @@ def build_excel(norm: pd.DataFrame, amounts: dict):
 # 역방향: 목표 CAGR/MDD 를 만족하는 배분 탐색 (벡터화)
 # ══════════════════════════════════════════════════════════════
 def _sample_simplex(n, k, bounds=None, seed=42):
-    """합=1 가중치 n×k 샘플. bounds=[(lo,hi),...] (비율) 충족분만 반환."""
+    """합=1 가중치 n×k 샘플.
+
+    bounds=[(lo,hi),...] (비율). 하한은 'Dirichlet 여유분 분배'로 수학적으로 보장하고
+    상한만 기각필터 → 빡빡한 제약에서도 표본이 잘 확보됨. 불가능 제약이면 빈 배열.
+    """
     rng = np.random.default_rng(seed)
-    W = rng.dirichlet(np.ones(k), size=n)
-    if bounds:
-        lo = np.array([b[0] for b in bounds])
-        hi = np.array([b[1] for b in bounds])
-        mask = np.all((W >= lo - 1e-9) & (W <= hi + 1e-9), axis=1)
-        W = W[mask]
-    return W
+    if not bounds:
+        return rng.dirichlet(np.ones(k), size=n)
+    lo = np.array([b[0] for b in bounds], dtype=float)
+    hi = np.array([b[1] for b in bounds], dtype=float)
+    if lo.sum() > 1 + 1e-9 or hi.sum() < 1 - 1e-9:
+        return np.empty((0, k))           # 합=100% 불가능
+    residual = 1.0 - lo.sum()
+    if residual <= 1e-12:
+        W = np.tile(lo, (n, 1))           # 하한 합이 100% → 고정
+    else:
+        W = lo + rng.dirichlet(np.ones(k), size=n) * residual
+    mask = np.all(W <= hi + 1e-9, axis=1)   # 상한 필터
+    return W[mask]
 
 
 def frontier(norm: pd.DataFrame, n_samples=20000, bounds=None):
@@ -782,14 +792,23 @@ def _render_reverse(norm):
 
     total_budget = st.number_input("총 투자금 ($)", min_value=0.0, value=40000.0, step=5000.0)
 
-    with st.expander("전략별 비중 제약 (선택)"):
+    with st.expander("전략별 비중 제약 (최소%·최대% — 항상 적용됨)", expanded=True):
+        st.caption("최소/최대 비중을 지정하면 추천 탐색에 바로 반영됩니다. 기본값(0~100%)은 제약 없음과 동일.")
         bcols = st.columns(4)
         bounds = []
         for i, k in enumerate(norm.columns):
             lo = bcols[i].number_input(f"{k} 최소%", 0, 100, 0, 5, key=f"pf_lo_{k}") / 100
             hi = bcols[i].number_input(f"{k} 최대%", 0, 100, 100, 5, key=f"pf_hi_{k}") / 100
             bounds.append((lo, hi))
-        use_bounds = st.checkbox("비중 제약 적용", value=False)
+        _lo_sum = sum(b[0] for b in bounds) * 100
+        _hi_sum = sum(b[1] for b in bounds) * 100
+        if _lo_sum > 100:
+            st.warning(f"⚠️ 최소% 합계가 {_lo_sum:.0f}% — 100%를 초과해 불가능합니다. 최소%를 낮추세요.")
+        if _hi_sum < 100:
+            st.warning(f"⚠️ 최대% 합계가 {_hi_sum:.0f}% — 100%에 못 미쳐 불가능합니다. 최대%를 높이세요.")
+        for i, k in enumerate(norm.columns):
+            if bounds[i][0] > bounds[i][1]:
+                st.warning(f"⚠️ {k}: 최소%가 최대%보다 큽니다.")
 
     obj_map = {"MDD 한도 내 CAGR 최대화": "max_cagr_under_mdd",
                "목표 CAGR 이상에서 MDD 최소화": "min_mdd_over_cagr",
@@ -797,12 +816,14 @@ def _render_reverse(norm):
 
     if st.button("🔍 추천 배분 탐색", type="primary"):
         rec = recommend(norm, obj_map[objective],
-                        target_cagr=target_cagr, target_mdd=target_mdd,
-                        bounds=bounds if use_bounds else None, n_samples=30000)
+                        target_cagr=target_cagr, target_mdd=target_mdd / 100.0,
+                        bounds=bounds, n_samples=30000)
         if rec is None:
-            st.error("제약을 만족하는 배분을 찾지 못했습니다. 제약을 완화하세요.")
+            st.error("제약(최소/최대 비중)을 만족하는 배분을 찾지 못했습니다. 비중 제약을 완화하세요.")
+            st.session_state.pop("pf_rec", None)
             return
         st.session_state["pf_rec"] = rec
+        st.session_state["pf_rec_bounds"] = bounds
 
     rec = st.session_state.get("pf_rec")
     if not rec:
@@ -826,9 +847,9 @@ def _render_reverse(norm):
     st.dataframe(alloc.style.format({"비중(%)": "{:.1f}", "추천 금액($)": "${:,.0f}"}),
                  use_container_width=True, hide_index=True)
 
-    # ── 효율적 프론티어 ──
+    # ── 효율적 프론티어 (추천 탐색에 쓴 제약 그대로) ──
     cagr_all, mdd_all, _ = frontier(norm, n_samples=4000,
-                                    bounds=(bounds if use_bounds else None))
+                                    bounds=st.session_state.get("pf_rec_bounds"))
     if len(cagr_all):
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=-mdd_all * 100, y=cagr_all * 100, mode="markers",
