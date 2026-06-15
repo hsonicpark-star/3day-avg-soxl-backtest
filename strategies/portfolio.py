@@ -286,6 +286,30 @@ def monthly_for(norm: pd.DataFrame, amounts: dict, label: str):
     return pd.DataFrame()
 
 
+def _bg_pct(v, lo=-20.0, hi=20.0):
+    """수익률(%) → RdYlGn 배경색 (matplotlib 비의존). 음수=빨강, 0=노랑, 양수=초록."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    t = (float(v) - lo) / (hi - lo)
+    t = max(0.0, min(1.0, t))
+    if t < 0.5:
+        f = t / 0.5
+        r, g, b = 215 + (255 - 215) * f, 48 + (255 - 48) * f, 39 + (191 - 39) * f
+    else:
+        f = (t - 0.5) / 0.5
+        r, g, b = 255 + (26 - 255) * f, 255 + (152 - 255) * f, 191 + (80 - 191) * f
+    return f"background-color: rgb({int(r)},{int(g)},{int(b)}); color:#111"
+
+
+def _style_pct(df):
+    """월별 수익률 DataFrame → 색상 입힌 Styler (matplotlib 불필요)."""
+    sty = df.style.format("{:.1f}")
+    try:
+        return sty.map(_bg_pct)            # pandas >= 2.1
+    except AttributeError:
+        return sty.applymap(_bg_pct)       # 구버전 fallback
+
+
 def _sheet_name(s):
     """엑셀 시트명 정리 (특수문자·이모지 제거, 31자 제한)."""
     import re
@@ -495,8 +519,7 @@ def _render_forward(norm):
     with cB:
         st.markdown("##### 🗓️ 합산 월별 수익률 (%)")
         pivot = compute_monthly_pivot(hist, total)
-        st.dataframe(pivot.style.format("{:.1f}").background_gradient(cmap="RdYlGn", axis=None),
-                     use_container_width=True)
+        st.dataframe(_style_pct(pivot), use_container_width=True)
 
     # ── 합산 그래프 (연도별 막대 + 월별 히트맵) ──
     gA, gB = st.columns([1, 1.2])
@@ -561,8 +584,7 @@ def _render_forward(norm):
     mp = monthly_for(norm, amounts, sel)
     mcol1, mcol2 = st.columns([1, 1])
     with mcol1:
-        st.dataframe(mp.style.format("{:.1f}").background_gradient(cmap="RdYlGn", axis=None),
-                     use_container_width=True)
+        st.dataframe(_style_pct(mp), use_container_width=True)
     with mcol2:
         if not mp.empty:
             fig_ms = go.Figure(go.Heatmap(
