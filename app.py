@@ -29,7 +29,7 @@ except Exception as _import_err:
     st.stop()
 
 # ── 전략 목록 ────────────────────────────────────────────────
-_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼"]
+_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🧩 포트폴리오 합산"]
 
 # ── 전략 판별 ────────────────────────────────────────────────
 _strategy_title = st.session_state.get("strategy_radio", "📐 표준편차매매")
@@ -38,6 +38,19 @@ _is_sigma = (_strategy_title == "📐 Sigma매매")
 _is_dss = (_strategy_title == "🌊 DSS 동파법")
 _is_iuo = (_strategy_title == "📊 IUO 매매법")
 _is_dual = (_strategy_title == "🎯 듀얼스나이퍼")
+_is_portfolio = (_strategy_title == "🧩 포트폴리오 합산")
+
+# ── 포트폴리오 합산 lazy import (선택 시에만 로드) ─────────────
+portfolio = None
+if _is_portfolio:
+    try:
+        import importlib
+        from strategies import portfolio
+        importlib.reload(portfolio)
+    except Exception as _pf_err:
+        st.error(f"⚠️ 포트폴리오 모듈 로드 실패: {_pf_err}")
+        import traceback
+        st.code(traceback.format_exc())
 
 # ── DSS lazy import (선택 시에만 로드) ───────────────────────
 dss = None
@@ -103,8 +116,8 @@ with st.sidebar:
     st.selectbox("전략 선택", _STRATEGIES, key="strategy_radio")
     st.markdown("---")
 
-    # ── 공통 종목 선택 (Sigma·DSS·IUO·듀얼 제외 — 자체 사이드바 사용) ──
-    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual:
+    # ── 공통 종목 선택 (Sigma·DSS·IUO·듀얼·포트폴리오 제외 — 자체 사이드바 사용) ──
+    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual and not _is_portfolio:
         st.subheader("📌 종목")
         _PRESET_TICKERS = ["SOXL", "USD", "TQQQ", "직접입력"]
         _ticker_select = st.selectbox("종목코드 (Ticker)", _PRESET_TICKERS, index=0)
@@ -232,6 +245,16 @@ with st.sidebar:
         data_source = "야후 파이낸스 (yfinance)"
         excel_file = None
 
+    elif _is_portfolio:
+        # 포트폴리오 합산: 사이드바/본문 모두 portfolio.render() 가 자체 처리
+        params = {}
+        ticker = "SOXL"
+        start_date = datetime(2016, 1, 4).date()
+        end_date = datetime.today().date()
+        initial_capital = 0.0
+        data_source = "야후 파이낸스 (yfinance)"
+        excel_file = None
+
     else:
         # Sigma: 자체 사이드바 (종목, 날짜, 파라미터 포함)
         params = sigma.render_sidebar()
@@ -254,6 +277,17 @@ with st.sidebar:
             for k in ("logged_in", "username", "user_settings"):
                 st.session_state.pop(k, None)
             st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════
+# 포트폴리오 합산 — 전용 페이지 (표준 탭 레이아웃 우회)
+# ══════════════════════════════════════════════════════════════
+if _is_portfolio:
+    if portfolio:
+        portfolio.render()
+    else:
+        st.warning("⚠️ 포트폴리오 모듈을 로드하지 못했습니다.")
+    st.stop()
 
 
 # ══════════════════════════════════════════════════════════════
