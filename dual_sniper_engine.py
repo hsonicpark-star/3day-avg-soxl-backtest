@@ -706,6 +706,12 @@ def run_backtest(prices: pd.DataFrame,
             continue
 
         hold_qty = sum(p.qty for p in positions)
+        _avg = round(sum(p.buy_amount for p in positions) / hold_qty, 4) if hold_qty else 0.0
+        if mode == '방어':
+            _sell_loc = round(sf_sell_price, 2) if sf_sell_price else None
+        else:
+            _tgts = [p.sell_target for p in positions if p.sell_target]
+            _sell_loc = round(min(_tgts), 2) if _tgts else None
 
         records.append({
             '날짜': date,
@@ -716,9 +722,11 @@ def run_backtest(prices: pd.DataFrame,
             'MA3': round(cur_ma_n, 2) if not np.isnan(cur_ma_n) else None,
             'MA5': round(cur_ma5, 2) if not np.isnan(cur_ma5) else None,
             '매수주문가': order_price,
+            '매도주문가': _sell_loc,
             '매수티어': f'{"공" if mode=="공격" else "방"}T{bought.tier}' if bought else '',
             '매수량': bought.qty if bought else 0,
             '매수가': bought.buy_price if bought else None,
+            '평단가': _avg,
             '보유일': bought.hold_days if bought else None,
             '매도사유': ','.join(f'T{p.tier}' if r and r.startswith('T') else (r or '')
                               for p, r in zip(sold, sell_reasons)) if sold else '',

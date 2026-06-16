@@ -1458,27 +1458,50 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     else:
         st.info("현재 보유 슬롯 없음 (전량 현금).")
 
-    # ── 일별 거래 내역 (시작일~현재 실제 체결) ──
-    st.markdown("##### 📑 거래 내역 (체결 기록)")
-    _trades = r.get("trades", [])
-    if _trades:
-        td = pd.DataFrame(_trades)
-        # 보기 좋게 정리 (최근순)
-        td = td.copy()
-        for _c in ("매수일", "매도일"):
-            if _c in td.columns:
-                td[_c] = pd.to_datetime(td[_c]).dt.strftime("%Y-%m-%d")
-        _cols = [c for c in ["매도일", "매수일", "모드", "티어", "매수가", "매도가",
-                             "수량", "실현손익", "수익률(%)", "사유", "보유일"] if c in td.columns]
-        _wins = (td["실현손익"] > 0).sum() if "실현손익" in td.columns else 0
-        _tot = td["실현손익"].sum() if "실현손익" in td.columns else 0
-        st.caption(f"총 {len(td)}건 청산 · 승률 {_wins/len(td)*100:.0f}% · 누적 실현손익 ${_tot:,.0f}")
-        st.dataframe(td[_cols].iloc[::-1].reset_index(drop=True), use_container_width=True,
-                     hide_index=True, height=min(38 + 35 * len(td), 420))
-        st.download_button("📥 거래내역 CSV", td[_cols].to_csv(index=False).encode("utf-8-sig"),
-                           f"dual_sniper_trades_{acct_key}.csv", "text/csv", key=f"ds_dltr{sfx}")
+    # ── 일별 매매 상세표 (시작일~현재, 하루 1행) ──
+    st.markdown("##### 📑 일별 매매 상세표")
+    _dl = r.get("daily_log")
+    if _dl is not None and len(_dl):
+        dl = _dl.copy()
+        dl["날짜"] = pd.to_datetime(dl["날짜"]).dt.strftime("%Y-%m-%d")
+
+        def _act(row):
+            if row.get("매수량", 0) and row["매수량"] > 0:
+                return f"BUY (${row['종가']:.2f})"
+            if row.get("매도량", 0) and row["매도량"] > 0:
+                return f"SELL (${row['종가']:.2f})"
+            return "-"
+        dl["매매"] = dl.apply(_act, axis=1)
+        dl["티어"] = dl["매수티어"].where(dl["매수티어"].astype(str) != "", dl["보유티어수"])
+        view = dl.rename(columns={
+            "매수주문가": "매수LOC", "매도주문가": "매도LOC", "당일실현": "실현손익",
+            "현금": "예수금", "보유수량": "보유량"})
+        _cols = [c for c in ["날짜", "매매", "종가", "모드", "일RSI", "매수LOC", "매도LOC",
+                             "매수량", "매도량", "보유량", "평단가", "실현손익", "예수금",
+                             "총자산", "티어"] if c in view.columns]
+        nb = int((dl["매수량"] > 0).sum()); ns_ = int((dl["매도량"] > 0).sum())
+        st.caption(f"기록 {dl['날짜'].iloc[0]} ~ {dl['날짜'].iloc[-1]} · 총 {len(dl)}일 "
+                   f"(매수 {nb}회 / 매도 {ns_}회)")
+        st.info("ℹ️ 시작일부터 현재까지 전략 실행 시의 **일별 상태 재현**입니다. "
+                "파라미터를 바꾸면 다시 계산됩니다 (과거 기록 불변 아님).")
+        _show = view[_cols].iloc[::-1].reset_index(drop=True)
+        st.dataframe(_show, use_container_width=True, hide_index=True,
+                     height=min(38 + 35 * len(_show), 480))
+        dlc1, dlc2 = st.columns(2)
+        dlc1.download_button("📥 CSV 다운로드", _show.to_csv(index=False).encode("utf-8-sig"),
+                             f"dual_sniper_daily_{acct_key}.csv", "text/csv", key=f"ds_dldaily{sfx}")
+        try:
+            import io as _io
+            _buf = _io.BytesIO()
+            with pd.ExcelWriter(_buf, engine="openpyxl") as _w:
+                _show.to_excel(_w, index=False, sheet_name="일별매매")
+            dlc2.download_button("📊 엑셀 다운로드", _buf.getvalue(),
+                                 f"dual_sniper_daily_{acct_key}.xlsx", key=f"ds_dlxls{sfx}",
+                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        except Exception:
+            pass
     else:
-        st.info("아직 청산된 거래가 없습니다 (보유 중이거나 거래 전).")
+        st.info("표시할 일별 기록이 없습니다.")
 
     # ── 일일 주문표 스냅샷 저장 ──
     hc1, hc2 = st.columns([1, 3])
