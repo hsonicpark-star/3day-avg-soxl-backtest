@@ -871,7 +871,8 @@ def _save_ds_history(acct_name, snapshot_row):
 
 # ── 일별 매매 상세 영구 누적 (B방식: 과거 행 불변, 새 날짜만 추가) ──
 _DS_DAILY_COLS = ["날짜", "매매", "종가", "모드", "일RSI", "매수LOC", "매도LOC",
-                  "매수량", "매도량", "보유량", "평단가", "실현손익", "예수금", "총자산", "티어"]
+                  "매수량", "매도량", "보유량", "평단가", "실현손익", "예수금", "총자산",
+                  "손익률(%)", "티어"]
 
 
 def _ds_daily_path(acct_name=""):
@@ -1327,7 +1328,8 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     # ── 4) 자본 조정 ──
     from common.analysis import recalc_adj_history as _recalc
     with st.expander("💰 자본 조정 (증액 / 감액)"):
-        st.caption("증액: 양수 · 감액: 음수. (v1: 조정 합계를 시작 자본에 반영)")
+        st.caption("증액: 양수 · 감액: 음수. **날짜 = 미국장 종료일 기준** → 그 날 종료 후 입금/출금으로 "
+                   "보아 **다음 거래일부터** 반영됩니다. (손익률은 좌당가 방식으로 조정분 제외)")
         raw = acct_data.get("capital_adj_history", "[]")
         try:
             adj = json.loads(raw) if isinstance(raw, str) else raw
@@ -1501,11 +1503,14 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     _src = _SRC_LBL.get(saved_src, saved_src)
     st.markdown(f"**주문일** {od} · **기준종가**({ld}) ${r['last_close']:.2f} · "
                 f"**모드** `{r['next_mode']}` ({_src}) · **보유** {r['n_pos']}/{r['divisions']}슬롯")
-    sm1, sm2, sm3, sm4 = st.columns(4)
+    sm1, sm2, sm3, sm4, sm5 = st.columns(5)
     sm1.metric("총자산", f"${r['total_asset']:,.0f}")
     sm2.metric("현금", f"${r['cash']:,.0f}")
     sm3.metric("누적실현", f"${r['cum_realized']:,.0f}")
     sm4.metric("유효자본", f"${eff_capital:,.0f}", delta=f"{net_adj:+,.0f}" if net_adj else None)
+    _rp = r.get("return_pct")
+    sm5.metric("손익률(좌당가)", f"{_rp:+.2f}%" if _rp is not None else "—",
+               help="펀드 기준가(좌당가) 방식 — 증액/감액을 제외한 순수 투자 수익률")
 
     # ── 내일 주문 ──
     st.markdown("##### 📌 다음 거래일 주문")

@@ -504,15 +504,20 @@ def run_backtest(prices: pd.DataFrame,
     sell_count = 0
     trades = []
 
+    # 좌당가(기준가) 방식 손익률: 시작 좌당가 1.0, 좌수 = 시작자본. 증액/감액 시 당시 좌당가로 좌수 가감.
+    units = float(params.initial_capital) if params.initial_capital else 1.0
+    prev_total_asset = float(params.initial_capital)
+
     start_ts = pd.Timestamp(start_date) if start_date is not None else None
 
-    # 자본 조정(증액/감액): 조정일 '이후 첫 거래일'에 현금 투입/회수 (시작자본 변경 아님)
+    # 자본 조정(증액/감액): '미국장 종료 후' 기준 → 조정일 다음 거래일부터 가용 (post-close)
     inject_on = {}
     if capital_injections:
         for d, amt in capital_injections.items():
             dt = pd.Timestamp(d).normalize()
-            lo = dt if start_ts is None else max(dt, start_ts)
-            cand = dates[dates >= lo]
+            cand = dates[dates > dt]                       # 종료 후 → 다음 거래일부터
+            if start_ts is not None:
+                cand = cand[cand >= start_ts]
             if len(cand):
                 inject_on[cand[0]] = inject_on.get(cand[0], 0.0) + float(amt)
 
@@ -528,9 +533,12 @@ def run_backtest(prices: pd.DataFrame,
         # 워밍업: start_date 이전이면 지표/전일값만 갱신, 매매·기록 없음
         trading = (start_ts is None) or (date >= start_ts)
 
-        # 자본 조정 현금 투입/회수 (장 시작 시점)
+        # 자본 조정 현금 투입/회수 (장 시작 시점) + 좌수 가감 (직전일 종가 기준 좌당가)
         if date in inject_on:
-            cash += inject_on[date]
+            _amt = inject_on[date]
+            _up = (prev_total_asset / units) if units > 0 else 1.0
+            units += _amt / _up if _up > 0 else 0.0
+            cash += _amt
 
         mode = (mode_override.get(date) if mode_override else None) \
             or mode_map.get(date, '방어')
@@ -697,6 +705,10 @@ def run_backtest(prices: pd.DataFrame,
         # ── 평가 ──
         hold_value = sum(p.qty * close for p in positions)
         total_asset = cash + hold_value
+        if trading:
+            prev_total_asset = total_asset   # 다음날 증액 시 좌당가 산정 기준
+        unit_price = (total_asset / units) if units > 0 else 1.0
+        ret_pct = (unit_price - 1.0) * 100   # 좌당가 기준 누적 손익률 (증액/감액 영향 제거)
 
         if light:
             records.append((date, total_asset))
@@ -738,6 +750,8 @@ def run_backtest(prices: pd.DataFrame,
             '현금': round(cash, 2),
             '총자산': round(total_asset, 2),
             '누적실현': round(cum_realized, 2),
+            '좌당가': round(unit_price, 6),
+            '손익률(%)': round(ret_pct, 2),
         })
 
         prev_close = close
@@ -760,6 +774,9 @@ def run_backtest(prices: pd.DataFrame,
             'total_asset': cash + sum(p.qty * last_close for p in positions) if n > 0 else cash,
             'trades': trades,           # 체결 내역 (매수일/매도일/모드/티어/수량/실현손익)
             'sell_count': sell_count,
+            'units': units,             # 좌수 (좌당가 손익률용)
+            'unit_price': (cash + sum(p.qty * last_close for p in positions)) / units
+            if units > 0 and n > 0 else 1.0,
         }
         log_df = pd.DataFrame(records)
         return log_df, state
@@ -919,14 +936,21 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
     nd = next_trading_days(last_date, 1)
     order_date = nd[0] if len(nd) else pd.Timestamp(last_date) + pd.Timedelta(days=1)
 
-    # 마지막 종가일~주문일 사이(이번 세션)에 적용되는 자본 조정은 주문 현금에 반영
+    # '미국장 종료 후' 자본 조정 중, 이번 주문일(=다음 거래일)부터 가용해지는 분을 주문 현금에 반영.
+    # D일 종료 후 입금 → next_trading_day(D)=주문일. 즉 last_date <= D < order_date.
+    units = state.get('units', 0.0)
     if capital_injections:
         _ld = pd.Timestamp(last_date).normalize()
         _od = pd.Timestamp(order_date).normalize()
         for d, amt in capital_injections.items():
-            if _ld < pd.Timestamp(d).normalize() <= _od:
+            _dn = pd.Timestamp(d).normalize()
+            if _ld <= _dn < _od:
+                _up = state.get('unit_price', 1.0) or 1.0
+                units += float(amt) / _up if _up > 0 else 0.0
                 cash += float(amt)
                 state['total_asset'] = state.get('total_asset', cash) + float(amt)
+    unit_price_now = (state['total_asset'] / units) if units > 0 else state.get('unit_price', 1.0)
+    ret_pct_now = (unit_price_now - 1.0) * 100
 
     # 다음날 방어 MA 매도가 / 매수 K
     sf_sell_price = sf_buy_K = None
@@ -1021,4 +1045,6 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
         'positions': pos_view, 'orders': orders,
         'trades': state.get('trades', []),    # 시작일~현재 체결 내역
         'daily_log': log,                     # 일별 매매로그 DataFrame
+        'unit_price': round(unit_price_now, 6),   # 좌당가
+        'return_pct': round(ret_pct_now, 2),      # 좌당가 기준 누적 손익률(%)
     }
