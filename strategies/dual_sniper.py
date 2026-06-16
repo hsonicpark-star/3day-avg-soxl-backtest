@@ -1252,9 +1252,12 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                                   max_value=max(datetime.today().date(), datetime(2026, 12, 31).date()),
                                   key=f"ds_adj_d{sfx}")
         adj_amt = ad1.number_input("조정 금액 ($)", value=0.0, step=500.0, key=f"ds_adj_a{sfx}")
+        adj_memo = ad1.text_input("메모 (선택)", value="", key=f"ds_adj_m{sfx}",
+                                  placeholder="예: 6월 적립 / 일부 출금 / 배당 재투자")
         if ad2.button("💰 적용", key=f"ds_adj_btn{sfx}", disabled=(adj_amt == 0)):
+            _memo = adj_memo.strip() or ("증액" if adj_amt > 0 else "감액")
             adj.append({"날짜": adj_date.strftime("%Y-%m-%d"), "조정금액": float(adj_amt),
-                        "누적자본금": 0.0, "메모": "증액" if adj_amt > 0 else "감액"})
+                        "누적자본금": 0.0, "메모": _memo})
             adj, _fc = _recalc(adj, os_capital)
             acct_data["capital_adj_history"] = json.dumps(adj, ensure_ascii=False)
             cfg["accounts"][acct_key] = acct_data
@@ -1262,19 +1265,35 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             st.rerun()
         if adj:
             dfa = pd.DataFrame(adj)
-            st.dataframe(dfa[["날짜", "조정금액", "메모"]], use_container_width=True, hide_index=True)
+            _show = [c for c in ["날짜", "조정금액", "메모"] if c in dfa.columns]
+            ds1, ds2 = st.columns([3, 1])
+            ds1.dataframe(dfa[_show], use_container_width=True, hide_index=True)
+            # 개별 조정 삭제
+            _opts = [f"{a['날짜']} {a['조정금액']:+,.0f} ({a.get('메모','')})" for a in adj]
+            _sel = ds2.selectbox("삭제할 항목", ["—"] + _opts, key=f"ds_adj_del_sel{sfx}")
+            if _sel != "—" and ds2.button("🗑️ 삭제", key=f"ds_adj_del{sfx}"):
+                adj.pop(_opts.index(_sel))
+                adj, _fc = _recalc(adj, os_capital) if adj else ([], os_capital)
+                acct_data["capital_adj_history"] = json.dumps(adj, ensure_ascii=False)
+                cfg["accounts"][acct_key] = acct_data
+                _save_ds_config(cfg)
+                st.rerun()
 
-    # 유효 자본 (v1: 시작자본 + today 이하 조정 합계)
+    # 자본 조정: 시작자본은 base(os_capital) 불변 — 조정은 '조정일에 현금 투입'으로 반영
     net_adj = 0.0
+    _injections = {}
     raw = acct_data.get("capital_adj_history", "[]")
     try:
         for it in (json.loads(raw) if isinstance(raw, str) else raw):
-            if pd.Timestamp(it.get("날짜")) <= pd.Timestamp(datetime.today().date()):
-                net_adj += float(it.get("조정금액", 0))
+            _d = str(it.get("날짜"))
+            _amt = float(it.get("조정금액", 0))
+            _injections[_d] = _injections.get(_d, 0.0) + _amt
+            if pd.Timestamp(_d) <= pd.Timestamp(datetime.today().date()):
+                net_adj += _amt
     except Exception:
         pass
-    eff_capital = os_capital + net_adj
-    ds_p.initial_capital = eff_capital
+    eff_capital = os_capital + net_adj       # 표시용 유효자본
+    ds_p.initial_capital = os_capital        # 시뮬 시작자본 = base (조정은 injections로)
 
     # ── 5) 주문표 로드 (저장된 모드 소스 사용) ──
     forced = saved_src if saved_src in ("공격", "방어") else None
@@ -1352,7 +1371,8 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             # 자동=하이브리드 규칙으로 다음 모드 산출 / 그 외=forced 또는 번들·공유 carry
             _mr = mode_rule if saved_src == "자동" else None
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
-                                   mode_rule=_mr, forced_mode=forced)
+                                   mode_rule=_mr, forced_mode=forced,
+                                   capital_injections=_injections or None)
             r["algoc"] = algoc_info
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
@@ -1438,7 +1458,29 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     else:
         st.info("현재 보유 슬롯 없음 (전량 현금).")
 
-    # ── 히스토리 저장 ──
+    # ── 일별 거래 내역 (시작일~현재 실제 체결) ──
+    st.markdown("##### 📑 거래 내역 (체결 기록)")
+    _trades = r.get("trades", [])
+    if _trades:
+        td = pd.DataFrame(_trades)
+        # 보기 좋게 정리 (최근순)
+        td = td.copy()
+        for _c in ("매수일", "매도일"):
+            if _c in td.columns:
+                td[_c] = pd.to_datetime(td[_c]).dt.strftime("%Y-%m-%d")
+        _cols = [c for c in ["매도일", "매수일", "모드", "티어", "매수가", "매도가",
+                             "수량", "실현손익", "수익률(%)", "사유", "보유일"] if c in td.columns]
+        _wins = (td["실현손익"] > 0).sum() if "실현손익" in td.columns else 0
+        _tot = td["실현손익"].sum() if "실현손익" in td.columns else 0
+        st.caption(f"총 {len(td)}건 청산 · 승률 {_wins/len(td)*100:.0f}% · 누적 실현손익 ${_tot:,.0f}")
+        st.dataframe(td[_cols].iloc[::-1].reset_index(drop=True), use_container_width=True,
+                     hide_index=True, height=min(38 + 35 * len(td), 420))
+        st.download_button("📥 거래내역 CSV", td[_cols].to_csv(index=False).encode("utf-8-sig"),
+                           f"dual_sniper_trades_{acct_key}.csv", "text/csv", key=f"ds_dltr{sfx}")
+    else:
+        st.info("아직 청산된 거래가 없습니다 (보유 중이거나 거래 전).")
+
+    # ── 일일 주문표 스냅샷 저장 ──
     hc1, hc2 = st.columns([1, 3])
     if hc1.button("💾 오늘 주문 기록 저장", key=f"ds_savehist{sfx}"):
         n_buy = sum(1 for o in r["orders"] if o["구분"] == "매수")

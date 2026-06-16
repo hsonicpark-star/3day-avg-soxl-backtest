@@ -457,7 +457,8 @@ def run_backtest(prices: pd.DataFrame,
                  light: bool = False,
                  return_trades: bool = False,
                  return_state: bool = False,
-                 liquidate_at_end: bool = True) -> pd.DataFrame:
+                 liquidate_at_end: bool = True,
+                 capital_injections: dict = None) -> pd.DataFrame:
     """Dual Sniper Pro 백테스트.
 
     Args:
@@ -505,6 +506,16 @@ def run_backtest(prices: pd.DataFrame,
 
     start_ts = pd.Timestamp(start_date) if start_date is not None else None
 
+    # 자본 조정(증액/감액): 조정일 '이후 첫 거래일'에 현금 투입/회수 (시작자본 변경 아님)
+    inject_on = {}
+    if capital_injections:
+        for d, amt in capital_injections.items():
+            dt = pd.Timestamp(d).normalize()
+            lo = dt if start_ts is None else max(dt, start_ts)
+            cand = dates[dates >= lo]
+            if len(cand):
+                inject_on[cand[0]] = inject_on.get(cand[0], 0.0) + float(amt)
+
     records = []
     prev_close = None
     prev_fi = None       # 전일 FI (+/-)
@@ -516,6 +527,10 @@ def run_backtest(prices: pd.DataFrame,
 
         # 워밍업: start_date 이전이면 지표/전일값만 갱신, 매매·기록 없음
         trading = (start_ts is None) or (date >= start_ts)
+
+        # 자본 조정 현금 투입/회수 (장 시작 시점)
+        if date in inject_on:
+            cash += inject_on[date]
 
         mode = (mode_override.get(date) if mode_override else None) \
             or mode_map.get(date, '방어')
@@ -735,6 +750,8 @@ def run_backtest(prices: pd.DataFrame,
             'last_mode': mode_map.get(dates[-1], '방어') if n > 0 else '방어',
             'cum_realized': cum_realized,
             'total_asset': cash + sum(p.qty * last_close for p in positions) if n > 0 else cash,
+            'trades': trades,           # 체결 내역 (매수일/매도일/모드/티어/수량/실현손익)
+            'sell_count': sell_count,
         }
         log_df = pd.DataFrame(records)
         return log_df, state
@@ -863,7 +880,7 @@ def next_trading_days(start_date, n_days):
 
 
 def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule=None,
-                       forced_mode=None):
+                       forced_mode=None, capital_injections=None):
     """백테스트 최종 상태 → 다음 거래일 LOC/MOC 주문표.
 
     forced_mode: '공격'/'방어' 지정 시 다음 세션 매수 모드를 강제 (원전략 수동 모드용).
@@ -877,7 +894,7 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
     """
     log, state = run_backtest(prices, params, mode_map=mode_map,
                               start_date=start_date, return_state=True,
-                              liquidate_at_end=False)
+                              liquidate_at_end=False, capital_injections=capital_injections)
     positions = state['positions']
     last_date = state['last_date']
     c1, c2 = state['c1'], state['c2']
@@ -893,6 +910,15 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
 
     nd = next_trading_days(last_date, 1)
     order_date = nd[0] if len(nd) else pd.Timestamp(last_date) + pd.Timedelta(days=1)
+
+    # 마지막 종가일~주문일 사이(이번 세션)에 적용되는 자본 조정은 주문 현금에 반영
+    if capital_injections:
+        _ld = pd.Timestamp(last_date).normalize()
+        _od = pd.Timestamp(order_date).normalize()
+        for d, amt in capital_injections.items():
+            if _ld < pd.Timestamp(d).normalize() <= _od:
+                cash += float(amt)
+                state['total_asset'] = state.get('total_asset', cash) + float(amt)
 
     # 다음날 방어 MA 매도가 / 매수 K
     sf_sell_price = sf_buy_K = None
@@ -985,4 +1011,6 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
         'n_pos': len(positions), 'divisions': divisions,
         'cum_realized': state['cum_realized'],
         'positions': pos_view, 'orders': orders,
+        'trades': state.get('trades', []),    # 시작일~현재 체결 내역
+        'daily_log': log,                     # 일별 매매로그 DataFrame
     }
