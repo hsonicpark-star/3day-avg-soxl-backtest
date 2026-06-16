@@ -1827,6 +1827,9 @@ def render_settings_tab():
                                         ["2σ 참고",     round(_od_sg2["buy_loc_2"], 4), "", ""],
                                         ["3σ 참고",     round(_od_sg2["buy_loc_3"], 4), "", ""],
                                     ])
+                                    # B11 업데이트 시각 (KST)
+                                    _ws2.update(range_name="B11", values=[[
+                                        pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
                                     st.success(f"✅ {_gs_tk_sg2} → '{_sheet_nm_sg2}' 탭 L4에 전송 완료!")
                                 except Exception as _e_gs2:
                                     st.error(f"❌ {_gs_tk_sg2} 전송 실패: {_e_gs2}")

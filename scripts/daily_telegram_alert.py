@@ -1173,6 +1173,9 @@ def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
         ws.batch_clear(["L4:O30"])
         # ② 그 다음 L4부터 새 rows만 작성 → 오늘 발송분만 표시됨
         ws.update(range_name="L4", values=rows)
+        # ③ B11 업데이트 시각 (KST) — 주문표가 언제 갱신됐는지 확인용
+        ws.update(range_name="B11",
+                  values=[[pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
         print(f"      📊 [{label}] GSheet '{gs_sheet}' L4에 {len(rows)}건 기록 (이전 기록 clear 완료)")
         return True
     except Exception as e:

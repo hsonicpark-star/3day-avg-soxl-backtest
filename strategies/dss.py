@@ -250,6 +250,9 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
     rows = build_order_rows(os_result)
     if rows:
         ws.update(range_name="L4", values=rows)
+    # B11 업데이트 시각 (KST) — 주문표 갱신 시점 확인용
+    ws.update(range_name="B11",
+              values=[[pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
     return len(rows)
 
 

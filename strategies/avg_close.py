@@ -247,6 +247,9 @@ def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
 
     # L4 = row 4, col 12 (L) → gspread update
     ws.update(range_name="L4", values=rows)
+    # B11 업데이트 시각 (KST) — 주문표 갱신 시점 확인용
+    ws.update(range_name="B11",
+              values=[[pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
     return len(rows)
 
 

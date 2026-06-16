@@ -2579,6 +2579,9 @@ def render_settings_tab():
                                     if _res_gs["holdings"] > 0:
                                         rows_gs.append(["매도", "LOC", _res_gs["next_sell_loc"], _res_gs["est_sell_qty"]])
                                     ws.update(range_name="L4", values=rows_gs)
+                                    # B11 업데이트 시각 (KST)
+                                    ws.update(range_name="B11", values=[[
+                                        pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
                                     st.success(f"{_gs_sd_tk} -> '{_sheet_nm}' L4에 {len(rows_gs)}건 전송 완료!")
                             except Exception as e:
                                 st.error(f"{_gs_sd_tk} 전송 실패: {e}")
