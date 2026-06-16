@@ -869,6 +869,93 @@ def _save_ds_history(acct_name, snapshot_row):
             st.warning(f"⚠️ GSheets 동기화 실패: {_e}")
 
 
+# ── 일별 매매 상세 영구 누적 (B방식: 과거 행 불변, 새 날짜만 추가) ──
+_DS_DAILY_COLS = ["날짜", "매매", "종가", "모드", "일RSI", "매수LOC", "매도LOC",
+                  "매수량", "매도량", "보유량", "평단가", "실현손익", "예수금", "총자산", "티어"]
+
+
+def _ds_daily_path(acct_name=""):
+    safe = (acct_name or "").replace(" ", "_").replace("/", "_").replace("\\", "_")
+    return os.path.join(_DS_CONFIG_DIR, f"daily_SOXL_{safe}.csv" if safe else "daily_SOXL.csv")
+
+
+def _ds_daily_view(daily_log):
+    """엔진 일별로그 → 일별 매매 상세표 형식 DataFrame(시간순)."""
+    if daily_log is None or len(daily_log) == 0:
+        return pd.DataFrame(columns=_DS_DAILY_COLS)
+    dl = daily_log.copy()
+    dl["날짜"] = pd.to_datetime(dl["날짜"]).dt.strftime("%Y-%m-%d")
+
+    def _act(row):
+        if row.get("매수량", 0) and row["매수량"] > 0:
+            return f"BUY (${row['종가']:.2f})"
+        if row.get("매도량", 0) and row["매도량"] > 0:
+            return f"SELL (${row['종가']:.2f})"
+        return "-"
+    dl["매매"] = dl.apply(_act, axis=1)
+    dl["티어"] = dl["매수티어"].where(dl["매수티어"].astype(str) != "", dl["보유티어수"])
+    dl = dl.rename(columns={"매수주문가": "매수LOC", "매도주문가": "매도LOC",
+                            "당일실현": "실현손익", "현금": "예수금", "보유수량": "보유량"})
+    cols = [c for c in _DS_DAILY_COLS if c in dl.columns]
+    return dl[cols].reset_index(drop=True)
+
+
+def _load_ds_daily(acct_name=""):
+    path = _ds_daily_path(acct_name)
+    if os.path.exists(path):
+        try:
+            return pd.read_csv(path, encoding="utf-8-sig")
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+def _save_ds_daily(acct_name, daily_df):
+    """B방식 누적: 기존 날짜 보존, 새 날짜만 추가 → 병합본 반환. Cloud: GSheets 동기화."""
+    os.makedirs(_DS_CONFIG_DIR, exist_ok=True)
+    daily_df = daily_df.copy()
+    daily_df["날짜"] = daily_df["날짜"].astype(str)
+    path = _ds_daily_path(acct_name)
+    if os.path.exists(path):
+        old = pd.read_csv(path, encoding="utf-8-sig")
+        old["날짜"] = old["날짜"].astype(str)
+        add = daily_df[~daily_df["날짜"].isin(set(old["날짜"]))]
+        merged = pd.concat([old, add], ignore_index=True) if not add.empty else old
+    else:
+        add = daily_df
+        merged = daily_df
+    merged = merged.sort_values("날짜").reset_index(drop=True)
+    merged.to_csv(path, index=False, encoding="utf-8-sig")
+
+    cfg = _load_ds_config()
+    gs_url = cfg.get("gs_url", "")
+    if gs_url and not add.empty:
+        try:
+            import gspread as _gs
+            from common.config import _get_gspread_client
+            safe = (acct_name or "기본계좌").replace(" ", "_").replace("/", "_").replace("\\", "_")
+            ws_name = f"ds_{safe}_일별매매"
+            sh = _get_gspread_client().open_by_url(gs_url)
+            try:
+                ws = sh.worksheet(ws_name)
+                cells = ws.get_all_values()
+                gs_dates = set()
+                if len(cells) > 1 and "날짜" in cells[0]:
+                    di = cells[0].index("날짜")
+                    gs_dates = {r[di] for r in cells[1:] if len(r) > di}
+                add_gs = add[~add["날짜"].isin(gs_dates)]
+            except _gs.WorksheetNotFound:
+                ws = sh.add_worksheet(title=ws_name, rows=5000, cols=20)
+                ws.append_row(daily_df.columns.tolist())
+                add_gs = add
+            if not add_gs.empty:
+                ws.append_rows([[str(v) for v in r] for r in add_gs.values.tolist()],
+                               value_input_option="RAW")
+        except Exception as _e:
+            st.warning(f"⚠️ 일별매매 GSheets 동기화 실패: {_e}")
+    return merged
+
+
 def _read_algoc_orders(url, tab="Rocket"):
     """원본(알고리C/ASTRA) 시트 L4:O 주문 영역 읽기 → [(구분,거래방법,가격,수량), ...]."""
     from common.config import _get_gspread_client
@@ -1197,9 +1284,10 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             if nm and nm not in cfg["accounts"]:
                 cfg["accounts"] = {(nm if k == acct_key else k): v for k, v in cfg["accounts"].items()}
                 _save_ds_config(cfg)
-                op, npth = _ds_history_path(acct_key), _ds_history_path(nm)
-                if os.path.exists(op):
-                    os.rename(op, npth)
+                for _pf in (_ds_history_path, _ds_daily_path):
+                    op, npth = _pf(acct_key), _pf(nm)
+                    if os.path.exists(op):
+                        os.rename(op, npth)
                 st.session_state.pop(f"ds_rn{sfx}", None)
                 st.rerun()
         if r3.button("❌", key=f"ds_rn_no{sfx}"):
@@ -1211,9 +1299,10 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         if d1.button("✅ 삭제", type="primary", key=f"ds_del_ok{sfx}"):
             del cfg["accounts"][acct_key]
             _save_ds_config(cfg)
-            hp = _ds_history_path(acct_key)
-            if os.path.exists(hp):
-                os.remove(hp)
+            for _pf in (_ds_history_path, _ds_daily_path):
+                hp = _pf(acct_key)
+                if os.path.exists(hp):
+                    os.remove(hp)
             st.session_state.pop(f"ds_del{sfx}", None)
             st.rerun()
         if d2.button("❌ 취소", key=f"ds_del_no{sfx}"):
@@ -1374,6 +1463,11 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                                    mode_rule=_mr, forced_mode=forced,
                                    capital_injections=_injections or None)
             r["algoc"] = algoc_info
+            # B방식 영구 누적: 이번 로드의 일별 행을 계좌 히스토리에 추가 (기존 날짜 불변)
+            try:
+                _save_ds_daily(acct_key, _ds_daily_view(r.get("daily_log")))
+            except Exception:
+                pass
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
             return
@@ -1458,33 +1552,21 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     else:
         st.info("현재 보유 슬롯 없음 (전량 현금).")
 
-    # ── 일별 매매 상세표 (시작일~현재, 하루 1행) ──
+    # ── 일별 매매 상세표 (B방식 영구 누적 기록) ──
     st.markdown("##### 📑 일별 매매 상세표")
-    _dl = r.get("daily_log")
-    if _dl is not None and len(_dl):
-        dl = _dl.copy()
-        dl["날짜"] = pd.to_datetime(dl["날짜"]).dt.strftime("%Y-%m-%d")
-
-        def _act(row):
-            if row.get("매수량", 0) and row["매수량"] > 0:
-                return f"BUY (${row['종가']:.2f})"
-            if row.get("매도량", 0) and row["매도량"] > 0:
-                return f"SELL (${row['종가']:.2f})"
-            return "-"
-        dl["매매"] = dl.apply(_act, axis=1)
-        dl["티어"] = dl["매수티어"].where(dl["매수티어"].astype(str) != "", dl["보유티어수"])
-        view = dl.rename(columns={
-            "매수주문가": "매수LOC", "매도주문가": "매도LOC", "당일실현": "실현손익",
-            "현금": "예수금", "보유수량": "보유량"})
-        _cols = [c for c in ["날짜", "매매", "종가", "모드", "일RSI", "매수LOC", "매도LOC",
-                             "매수량", "매도량", "보유량", "평단가", "실현손익", "예수금",
-                             "총자산", "티어"] if c in view.columns]
-        nb = int((dl["매수량"] > 0).sum()); ns_ = int((dl["매도량"] > 0).sum())
-        st.caption(f"기록 {dl['날짜'].iloc[0]} ~ {dl['날짜'].iloc[-1]} · 총 {len(dl)}일 "
-                   f"(매수 {nb}회 / 매도 {ns_}회)")
-        st.info("ℹ️ 시작일부터 현재까지 전략 실행 시의 **일별 상태 재현**입니다. "
-                "파라미터를 바꾸면 다시 계산됩니다 (과거 기록 불변 아님).")
-        _show = view[_cols].iloc[::-1].reset_index(drop=True)
+    daily_hist = _load_ds_daily(acct_key)
+    if daily_hist.empty:                       # 아직 저장 전 → 이번 재시뮬로 표시
+        daily_hist = _ds_daily_view(r.get("daily_log"))
+    if not daily_hist.empty:
+        daily_hist = daily_hist.copy()
+        daily_hist["날짜"] = daily_hist["날짜"].astype(str)
+        nb = int((pd.to_numeric(daily_hist.get("매수량"), errors="coerce") > 0).sum())
+        ns_ = int((pd.to_numeric(daily_hist.get("매도량"), errors="coerce") > 0).sum())
+        st.caption(f"기록 {daily_hist['날짜'].iloc[0]} ~ {daily_hist['날짜'].iloc[-1]} · "
+                   f"총 {len(daily_hist)}일 (매수 {nb}회 / 매도 {ns_}회)")
+        st.info("ℹ️ 이 기록은 **주문표 로드 시점마다 누적 저장**된 데이터입니다 (B방식). "
+                "파라미터를 변경해도 **과거 기록은 변경되지 않습니다.**")
+        _show = daily_hist.iloc[::-1].reset_index(drop=True)
         st.dataframe(_show, use_container_width=True, hide_index=True,
                      height=min(38 + 35 * len(_show), 480))
         dlc1, dlc2 = st.columns(2)
@@ -1501,7 +1583,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         except Exception:
             pass
     else:
-        st.info("표시할 일별 기록이 없습니다.")
+        st.info("주문표를 로드하면 일별 기록이 누적 저장됩니다.")
 
     # ── 일일 주문표 스냅샷 저장 ──
     hc1, hc2 = st.columns([1, 3])
