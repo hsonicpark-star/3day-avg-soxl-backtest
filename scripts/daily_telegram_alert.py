@@ -9,6 +9,7 @@ Google Sheets users 탭의 모든 사용자에게
   3. DSS 동파법   (dss_config 내 tg_chat_id / tg_token + 계좌별 발송)
   4. Sigma매매법  (sigma_tg_chat_id / sigma_tg_token / sigma_ticker_settings)
   5. IUO 매매법   (iuo_config 내 tg_chat_id / tg_token + 계좌별 발송)
+  6. 듀얼스나이퍼 (dual_sniper_config 내 tg_chat_id / tg_token + 계좌별 발송)
 """
 
 import os, sys, json, math, time, requests
@@ -1330,6 +1331,141 @@ def build_iuo_order_rows(o: dict) -> list:
     return rows
 
 # ══════════════════════════════════════════════════════════════
+# 듀얼스나이퍼 (Dual Sniper Pro) — SOXL 2모드 그리드
+# ══════════════════════════════════════════════════════════════
+
+def parse_ds_config(user: dict) -> dict:
+    """users 행에서 dual_sniper_config JSON 파싱."""
+    raw = str(user.get("dual_sniper_config", "")).strip()
+    if raw:
+        try:
+            cfg = json.loads(raw)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
+    return {}
+
+
+def _ds_shared_modes(client) -> dict:
+    """중앙 공유 시트(모드공유)에서 {적용거래일: 모드}. 실패 시 {}."""
+    try:
+        share_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  "dual_sniper_share.json")
+        with open(share_path, encoding="utf-8") as f:
+            scfg = json.load(f)
+        url = str(scfg.get("url", "")).strip()
+        tab = str(scfg.get("tab", "모드공유")).strip() or "모드공유"
+        if not url:
+            return {}
+        ws = client.open_by_url(url).worksheet(tab)
+        out = {}
+        for row in ws.get_all_values()[1:]:
+            if len(row) >= 2 and row[0] and row[1] in ("공격", "방어"):
+                out[str(row[0]).strip()] = row[1]
+        return out
+    except Exception:
+        return {}
+
+
+def calc_ds_order(client, acct_data: dict) -> dict:
+    """듀얼스나이퍼 오늘의 주문 계산 (헤드리스, 웹앱 _compute_ds_order와 동일 로직).
+    ⚠️ 엔진은 auto_adjust=False raw 종가를 써야 하므로 engine.load_price_data 사용 (fetch_prices 아님)."""
+    from dual_sniper_engine import (
+        DualSniperParams, load_price_data, build_today_orders,
+        build_original_mode_map, build_auto_mode_map, next_trading_days)
+
+    ap = acct_data.get("params", {}) or {}
+    def g(k, d):
+        return ap.get(k, d)
+    sf_div = int(g("sf_div", 5))
+    try:
+        weights = tuple(float(x.strip()) for x in str(g("sf_weights", "6, 13, 20, 27, 34")).split(",") if x.strip())
+    except Exception:
+        weights = (6, 13, 20, 27, 34)
+    if len(weights) != sf_div:
+        weights = tuple([6, 13, 20, 27, 34, 40, 46, 52][:sf_div]) or (100.0,)
+    p = DualSniperParams(
+        ag_divisions=int(g("ag_div", 6)), ag_buy_pct=float(g("ag_buy", 8.0)),
+        ag_sell_alpha=float(g("ag_sell_alpha", 0.4)), ag_hold_alpha=float(g("ag_hold_alpha", 2.0)),
+        sf_divisions=sf_div, sf_buy_pct1=float(g("sf_buy1", -0.6)), sf_buy_pct2=float(g("sf_buy2", 5.5)),
+        sf_sell_pct=float(g("sf_sell", 0.7)), sf_ma_base=int(g("sf_ma_base", 3)), sf_hold=int(g("sf_hold", 8)),
+        sf_tier_weights=weights, initial_capital=float(acct_data.get("os_capital", 10000)),
+        fee_rate=0.0, sec_fee_rate=0.0, ag_buy_inclusive=False, sf_buy_inclusive=False)
+    mode_rule = {"ma_weeks": int(g("ma_weeks", 36)), "peak_thr": float(g("peak_thr", 66.0)),
+                 "dn": float(g("dn", 42.0))}
+
+    px = load_price_data("SOXL")
+    src = str(acct_data.get("mode_source", "자동"))
+    if "원본" in src:
+        src = "원본시트"
+    elif "공격" in src:
+        src = "공격"
+    elif "방어" in src:
+        src = "방어"
+    else:
+        src = "자동"
+
+    injections = {}
+    try:
+        for it in (json.loads(acct_data.get("capital_adj_history", "[]")) or []):
+            _d = str(it.get("날짜"))
+            injections[_d] = injections.get(_d, 0.0) + float(it.get("조정금액", 0))
+    except Exception:
+        pass
+
+    shared = _ds_shared_modes(client)
+    nd = next_trading_days(px.index[-1], 1)
+    apply_d = str((nd[0] if len(nd) else px.index[-1]).date())
+    forced = None
+    if src in ("공격", "방어"):
+        forced = src
+    elif src == "원본시트":
+        forced = shared.get(apply_d)     # 운영자 역산은 모드공유 Action이 채움
+
+    if src == "자동":
+        mode_map = build_auto_mode_map(px, ma_weeks=mode_rule["ma_weeks"],
+                                       peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+        _mr = mode_rule
+    else:
+        extra = dict(shared)
+        if forced and src == "원본시트":
+            extra[apply_d] = forced
+        mode_map = build_original_mode_map(px, extra_modes=extra)
+        _mr = None
+
+    return build_today_orders(px, p, mode_map=mode_map,
+                              start_date=str(acct_data.get("os_start", "2016-01-04")),
+                              mode_rule=_mr, forced_mode=forced,
+                              capital_injections=injections or None)
+
+
+def build_ds_message(r: dict, acct_name: str) -> str:
+    od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
+    lines = [f"<b>🎯 Dual Sniper — {acct_name}</b>",
+             f"주문일 {od} · 모드 <b>{r['next_mode']}</b> · 보유 {r['n_pos']}/{r['divisions']}슬롯",
+             f"기준종가 ${r['last_close']:.2f} · 총자산 ${r['total_asset']:,.0f}"
+             + (f" · 손익률 {r.get('return_pct'):+.2f}%" if r.get('return_pct') is not None else ""), ""]
+    if r.get("orders"):
+        for o in r["orders"]:
+            price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
+            tag = "🔴매도" if o["거래방법"] == "MOC" else ("🔵매도" if o["구분"] == "매도" else "🟠매수")
+            lines.append(f"{tag} {o['거래방법']} {price} × {o['수량']:,}주 ({o['사유']})")
+    else:
+        lines.append("⬜ 오늘 주문 없음")
+    return "\n".join(lines)
+
+
+def build_ds_order_rows(r: dict) -> list:
+    """듀얼스나이퍼 주문 → 시트 L4 행 [[구분, 거래방법, 가격, 수량], ...]."""
+    rows = []
+    for o in r.get("orders", []):
+        price = "" if o["가격"] is None else round(float(o["가격"]), 2)
+        rows.append([o["구분"], o["거래방법"], price, int(o["수량"])])
+    return rows
+
+
+# ══════════════════════════════════════════════════════════════
 # 메인
 # ══════════════════════════════════════════════════════════════
 
@@ -1735,7 +1871,54 @@ def main():
             print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
             skip_count += 1
 
-        # ── 6. 이상치 알림 (유저 본인에게 발송) ─────────────────
+        # ── 6. 듀얼스나이퍼 발송 ─────────────────────────────────
+        ds_cfg = parse_ds_config(user)
+        ds_chat_id = str(ds_cfg.get("tg_chat_id", "")).strip()
+        ds_token   = str(ds_cfg.get("tg_token",   "")).strip()
+        ds_accounts = ds_cfg.get("accounts", {}) or {}
+        ds_gs_url  = str(ds_cfg.get("gs_url", "")).strip()
+
+        if ds_chat_id and ds_token and ds_accounts:
+            print(f"  👤 {username} [DualSniper]: {list(ds_accounts.keys())} 처리 중...")
+            for acct_name, acct_data in ds_accounts.items():
+                _gs_sheet_ds = str(acct_data.get("gs_sheet", "") or acct_name).strip()
+                _label = f"DualSniper/{acct_name}"
+                try:
+                    r_ds = calc_ds_order(client, acct_data)
+                except Exception as e:
+                    print(f"    ❌ [DualSniper/{acct_name}] 계산 오류 → {e}")
+                    fail_count += 1
+                    user_warnings.append(f"[DualSniper/{acct_name}] ❌ 주문표 미발송: {e}")
+                    if ds_gs_url and _gs_sheet_ds:
+                        write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
+                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                    continue
+                if not r_ds:
+                    print(f"    ❌ [DualSniper/{acct_name}] 데이터 부족")
+                    fail_count += 1
+                    if ds_gs_url and _gs_sheet_ds:
+                        write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
+                                                  _label, status="ERROR", error_reason="데이터 부족")
+                    continue
+
+                msg = build_ds_message(r_ds, acct_name)
+                ok, resp = send_telegram(ds_chat_id, ds_token, msg, parse_mode="HTML")
+                if ok:
+                    print(f"    ✅ [DualSniper/{acct_name}] 발송 성공")
+                    ok_count += 1
+                else:
+                    print(f"    ❌ [DualSniper/{acct_name}] 발송 실패 → {resp}")
+                    fail_count += 1
+
+                if ds_gs_url and _gs_sheet_ds:
+                    _rows = build_ds_order_rows(r_ds)
+                    write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, _rows,
+                                              _label, status="OK")
+        else:
+            print(f"  ⏭️  {username} [DualSniper]: 미설정 → 건너뜀")
+            skip_count += 1
+
+        # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
         if user_warnings:
             # 텔레그램 채널: 등록된 전략 중 하나 선택
             # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO
@@ -1745,6 +1928,7 @@ def main():
                 (dss_chat_id, dss_token),
                 (sg_chat_id, sg_token),
                 (iuo_chat_id, iuo_token),
+                (ds_chat_id, ds_token),
             ]
             _alert_chat_id = ""
             _alert_token = ""
