@@ -2722,9 +2722,12 @@ def render_settings_tab():
                                 _rows = _ds_order_rows(_r)
                                 if _rows:
                                     _ws.update(range_name="L4", values=_rows)
+                                # B11 업데이트 시각 (KST) — 주문표가 언제 갱신됐는지 확인용
+                                _now_kst = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")
+                                _ws.update(range_name="B11", values=[[_now_kst]])
                                 _od = pd.Timestamp(_r["order_date"]).strftime("%m/%d")
                                 st.success(f"✅ {_ak} → '{_snm}' L4: {_od} 주문 {len(_rows)}건 "
-                                           f"(모드 {_r['next_mode']}) 전송 완료")
+                                           f"(모드 {_r['next_mode']}) · B11 {_now_kst} 전송 완료")
                             except Exception as _e2:
                                 st.error(f"❌ {_ak} → '{_snm}' 실패: {_e2}")
                 except Exception as e:
