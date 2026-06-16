@@ -68,6 +68,47 @@ def get_users(client, sheet_url: str, max_retries: int = 5) -> list:
             else:
                 raise
 
+
+# ── 중복 발송 방지 (외부 cron + 백업 cron 둘 다 도는 경우 대비) ──
+_SEND_LOG_TAB = "_send_log"
+
+
+def already_sent_today(client, sheet_url: str) -> bool:
+    """오늘(UTC 날짜) 이미 발송했으면 True. _send_log 탭 A1에 마지막 발송일 기록.
+
+    외부 cron(cron-job.org)이 정시 트리거하고, GitHub 내장 백업 cron이
+    수시간 뒤 또 실행될 때 중복 발송을 막는다. FILTER_USER(테스트) 모드는
+    가드 무시 (호출 측에서 처리)."""
+    from datetime import datetime as _dt
+    today = _dt.utcnow().strftime("%Y-%m-%d")
+    try:
+        sh = client.open_by_url(sheet_url)
+        try:
+            ws = sh.worksheet(_SEND_LOG_TAB)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title=_SEND_LOG_TAB, rows=10, cols=2)
+            ws.update("A1", [["last_sent_date"]])
+            return False
+        last = str(ws.acell("A2").value or "").strip()
+        return last == today
+    except Exception as _e:
+        print(f"  ⚠️ 발송 로그 확인 실패 (가드 무시하고 진행): {_e}")
+        return False
+
+
+def mark_sent_today(client, sheet_url: str):
+    """오늘 발송 완료 기록 (_send_log A2)."""
+    from datetime import datetime as _dt
+    today = _dt.utcnow().strftime("%Y-%m-%d")
+    now_kst = (_dt.utcnow() + timedelta(hours=9)).strftime("%H:%M")
+    try:
+        sh = client.open_by_url(sheet_url)
+        ws = sh.worksheet(_SEND_LOG_TAB)
+        ws.update("A2:B2", [[today, f"KST {now_kst}"]])
+    except Exception as _e:
+        print(f"  ⚠️ 발송 로그 기록 실패: {_e}")
+
+
 # ── 가격 데이터 ────────────────────────────────────────────────
 def _filter_incomplete_today(df: pd.DataFrame) -> pd.DataFrame:
     """미국 장이 아직 종료되지 않은 당일 intraday 데이터 제거."""
@@ -1316,11 +1357,23 @@ def main():
 
     print("👥 사용자 목록 로드 중...")
     client = get_gspread_client()
+
+    filter_user = os.environ.get("FILTER_USER", "").strip()
+    force_run = os.environ.get("FORCE_RUN", "").strip()
+
+    # ── 중복 발송 방지 ──
+    # 외부 cron(정시)과 GitHub 백업 cron(지연)이 같은 날 둘 다 실행될 때
+    # 두 번째 실행은 스킵. 단 테스트(FILTER_USER)/강제(FORCE_RUN)는 통과.
+    if not filter_user and not force_run:
+        if already_sent_today(client, sheet_url):
+            print("✅ 오늘 이미 발송 완료 — 중복 실행 스킵 "
+                  "(FORCE_RUN=1 로 강제 재발송 가능)")
+            return
+
     users  = get_users(client, sheet_url)
     print(f"✅ {len(users)}명 로드")
 
     # 특정 유저만 필터링 (테스트 모드)
-    filter_user = os.environ.get("FILTER_USER", "").strip()
     if filter_user:
         _before = len(users)
         users = [u for u in users if str(u.get("username", "")).strip() == filter_user]
@@ -1714,6 +1767,11 @@ def main():
                     print(f"     - {w}")
 
     print(f"\n🏁 완료: 성공 {ok_count}건 / 건너뜀 {skip_count}명 / 실패 {fail_count}건")
+
+    # 발송 완료 기록 (중복 실행 방지용). 테스트/강제 모드는 기록 안 함.
+    if not filter_user and not force_run and ok_count > 0:
+        mark_sent_today(client, sheet_url)
+        print("📝 오늘 발송 완료 기록됨 (_send_log)")
 
 if __name__ == "__main__":
     main()

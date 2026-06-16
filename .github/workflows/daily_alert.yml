@@ -1,9 +1,15 @@
 name: Daily LOC Alert (12:00 KST)
 
+# ── 발송 트리거 ──
+# 1순위: 외부 cron(cron-job.org)이 매일 03:00 UTC에 workflow_dispatch API 호출
+#        → GitHub Actions 내장 cron 큐 지연(평균 4~6h)을 우회, 분 단위 정시 발송
+# 2순위(백업): 아래 schedule cron — 외부 서비스 장애 시에도 발송 보장
+#        (단 GitHub 큐 사정에 따라 수시간 지연될 수 있음)
+# 중복 발송 방지: 스크립트가 '오늘 이미 발송' 가드로 재실행 스킵
 on:
   schedule:
-    - cron: '0 3 * * 1-5'   # 03:00 UTC = 12:00 KST, 월~금
-  workflow_dispatch:          # 수동 실행 버튼 (테스트용)
+    - cron: '0 3 * * 1-5'   # 03:00 UTC = 12:00 KST, 월~금 (백업)
+  workflow_dispatch:          # 외부 cron / 수동 실행 진입점
     inputs:
       filter_user:
         description: '특정 username만 실행 (테스트용, 빈 값이면 전체)'
