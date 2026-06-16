@@ -2385,6 +2385,62 @@ def _build_ds_order_text(r, acct_name=""):
     return "\n".join(lines)
 
 
+def _compute_ds_order(acct_key, acct_data, cfg, px_df):
+    """계좌 설정만으로 다음 거래일 주문표 계산 (헤드리스 — st.* 호출 없음, 시트전송용)."""
+    pmin = {"fee_rate": cfg.get("fee_rate", 0.0), "ma_weeks": 36, "peak_thr": 66.0, "dn": 42.0}
+    ds_p, mode_rule = _acct_params(acct_data, pmin)
+    os_start = acct_data.get("os_start", "2016-01-04")
+    os_capital = float(acct_data.get("os_capital", 10000))
+    ds_p.initial_capital = os_capital
+    # 자본 조정 → injections
+    injections = {}
+    try:
+        for it in (json.loads(acct_data.get("capital_adj_history", "[]")) or []):
+            _d = str(it.get("날짜"))
+            injections[_d] = injections.get(_d, 0.0) + float(it.get("조정금액", 0))
+    except Exception:
+        pass
+
+    saved_src = _normalize_src(acct_data.get("mode_source", "자동"))
+    forced = saved_src if saved_src in ("공격", "방어") else None
+    shared_today = None
+    if saved_src == "원본시트":
+        au = acct_data.get("algoc_url", "").strip()
+        at = (acct_data.get("algoc_tab", "Rocket") or "Rocket").strip()
+        if _is_ds_owner() and au:
+            rows = _read_algoc_orders(au, at)
+            c1 = float(px_df['close'].iloc[-1]); c2 = float(px_df['close'].iloc[-2])
+            m_inf, _ = _infer_mode_from_orders(rows, c1, c2, ds_p)
+            forced = m_inf; shared_today = m_inf
+        else:
+            _shared = dict(_load_shared_modes())
+            _nd = next_trading_days(px_df.index[-1], 1)
+            _kd = str((_nd[0] if len(_nd) else px_df.index[-1]).date())
+            forced = _shared.get(_kd); shared_today = forced
+    if saved_src == "자동":
+        mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
+                                       peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+    else:
+        extra = dict(_load_shared_modes())
+        if shared_today:
+            _nd = next_trading_days(px_df.index[-1], 1)
+            extra[str((_nd[0] if len(_nd) else px_df.index[-1]).date())] = shared_today
+        mode_map = build_original_mode_map(px_df, extra_modes=extra)
+    _mr = mode_rule if saved_src == "자동" else None
+    return build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(os_start),
+                              mode_rule=_mr, forced_mode=forced,
+                              capital_injections=injections or None)
+
+
+def _ds_order_rows(r):
+    """주문표 result → 구글시트 L4 기록용 행 [[구분, 거래방법, 가격, 수량], ...]."""
+    rows = []
+    for o in r.get("orders", []):
+        price = "" if o["가격"] is None else round(float(o["가격"]), 2)
+        rows.append([o["구분"], o["거래방법"], price, int(o["수량"])])
+    return rows
+
+
 def render_settings_tab():
     st.subheader("⚙️ 개인 설정")
     cfg = _load_ds_config()
@@ -2619,7 +2675,22 @@ def render_settings_tab():
         gs_url = st.text_input("스프레드시트 URL", value=cfg.get("gs_url", ""),
                                placeholder="https://docs.google.com/spreadsheets/d/...", key="ds_gs_url")
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
-        g1, g2, _ = st.columns([1, 1, 4])
+
+        # ── 계좌별 시트 탭 이름 매핑 ──
+        _accts = cfg.get("accounts", {})
+        _sheet_map = {}
+        if _accts:
+            st.markdown("##### 🗂️ 계좌별 시트(탭) 이름 매핑")
+            st.caption("각 계좌의 주문을 기록할 구글시트 탭 이름을 입력하세요. "
+                       "「📤 주문 시트 전송」 시 해당 탭 **L4** 에 다음 거래일 주문이 기록됩니다.")
+            for _ak, _ad in _accts.items():
+                _sheet_map[_ak] = st.text_input(f"**{_ak}** 시트 이름",
+                                                value=_ad.get("gs_sheet", _ak),
+                                                key=f"ds_gssheet_{_ak}")
+        else:
+            st.info("등록된 계좌가 없습니다. 오늘의 주문표 탭에서 계좌를 먼저 등록하세요.")
+
+        g1, g2, g3 = st.columns(3)
         if g1.button("🔗 시트 연결 테스트", use_container_width=True, key="ds_gs_test"):
             if not gs_url:
                 st.warning("URL을 먼저 입력하세요.")
@@ -2627,16 +2698,47 @@ def render_settings_tab():
                 try:
                     from common.config import _get_gspread_client
                     sh = _get_gspread_client().open_by_url(gs_url)
-                    st.success(f"✅ 연결 성공: **{sh.title}**")
+                    st.success(f"✅ 연결 성공: **{sh.title}** · 탭: {[w.title for w in sh.worksheets()]}")
                 except Exception as e:
                     st.error(f"❌ 연결 실패: {e}")
-        if g2.button("💾 저장하기 ", use_container_width=True, key="ds_gs_save", type="primary"):
+        if g2.button("📤 주문 시트 전송", use_container_width=True, key="ds_gs_send", type="primary"):
+            if not gs_url:
+                st.warning("URL을 먼저 입력하세요.")
+            elif not _accts:
+                st.warning("등록된 계좌가 없습니다.")
+            else:
+                try:
+                    from common.config import _get_gspread_client
+                    _gc = _get_gspread_client()
+                    _sh = _gc.open_by_url(gs_url)
+                    _px = get_soxl_data()
+                    for _ak, _ad in _accts.items():
+                        _snm = _sheet_map.get(_ak, _ak)
+                        with st.spinner(f"{_ak} → '{_snm}' 전송 중..."):
+                            try:
+                                _r = _compute_ds_order(_ak, _ad, cfg, _px)
+                                _ws = _sh.worksheet(_snm)
+                                _ws.batch_clear(["L4:O13"])
+                                _rows = _ds_order_rows(_r)
+                                if _rows:
+                                    _ws.update(range_name="L4", values=_rows)
+                                _od = pd.Timestamp(_r["order_date"]).strftime("%m/%d")
+                                st.success(f"✅ {_ak} → '{_snm}' L4: {_od} 주문 {len(_rows)}건 "
+                                           f"(모드 {_r['next_mode']}) 전송 완료")
+                            except Exception as _e2:
+                                st.error(f"❌ {_ak} → '{_snm}' 실패: {_e2}")
+                except Exception as e:
+                    st.error(f"❌ 전송 실패: {e}")
+        if g3.button("💾 저장하기", use_container_width=True, key="ds_gs_save", type="primary"):
             if not gs_url:
                 st.warning("URL을 입력하세요.")
             else:
                 cfg["gs_url"] = gs_url
+                for _ak, _snm in _sheet_map.items():
+                    if _ak in cfg.get("accounts", {}):
+                        cfg["accounts"][_ak]["gs_sheet"] = _snm
                 _save_ds_config(cfg)
-                st.success("✅ 구글 스프레드시트 설정 저장 완료")
+                st.success("✅ URL + 계좌별 시트 이름 저장 완료")
 
     st.write("")
 
