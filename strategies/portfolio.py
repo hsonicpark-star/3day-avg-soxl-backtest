@@ -277,6 +277,29 @@ def annual_breakdown(norm: pd.DataFrame, amounts: dict):
     return pd.concat(frames, axis=1).reset_index()
 
 
+_MONTH_ORDER = ["1월", "2월", "3월", "4월", "5월", "6월", "7월", "8월",
+                "9월", "10월", "11월", "12월"]
+
+
+def monthly_breakdown(norm: pd.DataFrame, amounts: dict):
+    """월별 전략별 수익률% 와이드 테이블 (행=연도·월, 열=전략 + 합산)."""
+    labels = []
+    frames = []
+    for label, eq, cap in _scaled_curves(norm, amounts):
+        labels.append(label)
+        h = pd.DataFrame({"날짜": eq.index, "총자산($)": eq.values})
+        piv = compute_monthly_pivot(h, cap)   # index=Year, cols=월
+        long = piv.reset_index().melt(id_vars="Year", var_name="월", value_name=label)
+        frames.append(long.set_index(["Year", "월"]))
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, axis=1).reset_index()
+    out = out.dropna(subset=labels, how="all")
+    out["__m"] = out["월"].map({m: i for i, m in enumerate(_MONTH_ORDER, 1)})
+    out = out.sort_values(["Year", "__m"]).drop(columns="__m")
+    return out.rename(columns={"Year": "연도"}).reset_index(drop=True)
+
+
 def monthly_for(norm: pd.DataFrame, amounts: dict, label: str):
     """특정 전략(또는 '📊 합산')의 월별 수익률 pivot."""
     for lab, eq, cap in _scaled_curves(norm, amounts):
@@ -326,6 +349,7 @@ def build_excel(norm: pd.DataFrame, amounts: dict):
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         metrics_tbl.to_excel(w, sheet_name="전략별성과", index=False)
         annual_breakdown(norm, amounts).to_excel(w, sheet_name="연도별", index=False)
+        monthly_breakdown(norm, amounts).to_excel(w, sheet_name="월별전체", index=False)
         for label, _, _ in _scaled_curves(norm, amounts):
             mp = monthly_for(norm, amounts, label)
             mp.to_excel(w, sheet_name=_sheet_name(f"월별_{label}"))
@@ -592,7 +616,18 @@ def _render_forward(norm):
                             margin=dict(t=30, b=10))
         st.plotly_chart(fig_d, use_container_width=True)
 
-    st.markdown("##### 🗓️ 월별 — 전략 선택")
+    # ── 월별 — 전략별 한눈에 (와이드 통합 표) ──
+    st.markdown("##### 🗓️ 월별 — 전략별 한눈에 (수익률 %)")
+    mon_bd = monthly_breakdown(norm, amounts)
+    _mvcols = [c for c in mon_bd.columns if c not in ("연도", "월")]
+    _msty = mon_bd.style.format({c: "{:.1f}" for c in _mvcols})
+    try:
+        _msty = _msty.map(_bg_pct, subset=_mvcols)
+    except AttributeError:
+        _msty = _msty.applymap(_bg_pct, subset=_mvcols)
+    st.dataframe(_msty, use_container_width=True, hide_index=True, height=400)
+
+    st.markdown("##### 🗓️ 월별 — 전략 선택 (히트맵)")
     labels = [lab for lab, _, _ in _scaled_curves(norm, amounts)]
     sel = st.selectbox("전략", labels, index=len(labels) - 1, key="pf_monthly_sel")
     mp = monthly_for(norm, amounts, sel)
@@ -613,11 +648,11 @@ def _render_forward(norm):
     st.markdown("##### 📥 다운로드")
     _tag = norm.index[-1].strftime("%Y%m%d")
     d1, d2, d3, d4 = st.columns(4)
-    d1.download_button("연도별 CSV", ann_bd.to_csv(index=False).encode("utf-8-sig"),
+    d1.download_button("연도별 전략별 CSV", ann_bd.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"portfolio_annual_{_tag}.csv", mime="text/csv",
                        use_container_width=True)
-    d2.download_button(f"월별({sel}) CSV", mp.to_csv().encode("utf-8-sig"),
-                       file_name=f"portfolio_monthly_{_sheet_name(sel)}_{_tag}.csv", mime="text/csv",
+    d2.download_button("월별 전략별 CSV", mon_bd.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"portfolio_monthly_all_{_tag}.csv", mime="text/csv",
                        use_container_width=True)
     d3.download_button("전략별성과 CSV", table.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"portfolio_metrics_{_tag}.csv", mime="text/csv",
