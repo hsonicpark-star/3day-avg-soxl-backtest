@@ -131,8 +131,8 @@ with st.sidebar:
     st.selectbox("전략 선택", _STRATEGIES, key="strategy_radio")
     st.markdown("---")
 
-    # ── 공통 종목 선택 (Sigma·DSS·IUO·듀얼·포트폴리오 제외 — 자체 사이드바 사용) ──
-    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual and not _is_portfolio:
+    # ── 공통 종목 선택 (Sigma·DSS·IUO·듀얼·카마릴라·포트폴리오 제외 — 자체 사이드바 사용) ──
+    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual and not _is_cam and not _is_portfolio:
         st.subheader("📌 종목")
         _PRESET_TICKERS = ["SOXL", "USD", "TQQQ", "직접입력"]
         _ticker_select = st.selectbox("종목코드 (Ticker)", _PRESET_TICKERS, index=0)
