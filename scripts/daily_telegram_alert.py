@@ -10,6 +10,8 @@ Google Sheets users 탭의 모든 사용자에게
   4. Sigma매매법  (sigma_tg_chat_id / sigma_tg_token / sigma_ticker_settings)
   5. IUO 매매법   (iuo_config 내 tg_chat_id / tg_token + 계좌별 발송)
   6. 듀얼스나이퍼 (dual_sniper_config 내 tg_chat_id / tg_token + 계좌별 발송)
+  7. 카마릴라 오버레이 (cam_config 계좌별 — 출처 전략 유휴현금 기반,
+                       텔레그램: 계좌 전용 → 출처 전략 순)
 """
 
 import os, sys, json, math, time, requests
@@ -1469,6 +1471,164 @@ def build_ds_order_rows(r: dict) -> list:
 # 메인
 # ══════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════
+# 카마릴라 피봇 돌파 오버레이 관련
+# ══════════════════════════════════════════════════════════════
+
+def parse_cam_config(user: dict) -> dict:
+    """users 행에서 cam_config JSON 파싱."""
+    raw = str(user.get("cam_config", "")).strip()
+    if raw:
+        try:
+            cfg = json.loads(raw)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
+    return {}
+
+
+def _cam_adj_sum(c) -> float:
+    raw = c.get("capital_adj_history", "[]")
+    try:
+        h = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return float(sum(float(it.get("조정금액", 0)) for it in h))
+    except Exception:
+        return 0.0
+
+
+def _cam_fetch_ohlc(ticker: str, start_date: str) -> pd.DataFrame:
+    """카마릴라 저항선용 OHLC (fetch_prices는 Close만 반환하므로 별도)."""
+    end = datetime.today() + timedelta(days=1)
+    df = yf.download(ticker, start=start_date, end=end.strftime("%Y-%m-%d"),
+                     progress=False, auto_adjust=True)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df[["Open", "High", "Low", "Close"]].dropna()
+    for _c in df.columns:
+        df[_c] = df[_c].astype(float)
+    return _filter_incomplete_today(df)
+
+
+def _cam_source_state(user: dict, client, strategy: str, account: str):
+    """카마릴라 출처 전략·계좌의 현재 예수금/투자금/분할수. 실패 시 None."""
+    try:
+        if strategy == "DSS":
+            accts = parse_dss_config(user).get("accounts", {})
+            if account not in accts:
+                return None
+            r = calc_dss_order(accts[account])
+            return {"cash": float(r["cash"]), "capital": float(r["total_asset"]),
+                    "div": int(r.get("cur_divisions", 7))} if r else None
+        if strategy == "듀얼스나이퍼":
+            accts = parse_ds_config(user).get("accounts", {})
+            if account not in accts:
+                return None
+            r = calc_ds_order(client, accts[account])
+            return {"cash": float(r["cash"]), "capital": float(r["total_asset"]),
+                    "div": int(r.get("divisions", 7))} if r else None
+        if strategy == "종가평균":
+            c = parse_ticker_settings(user).get(account)
+            if not c:
+                return None
+            r = calc_today_order(
+                ticker=account, os_start=str(c.get("os_start", DEFAULT_OS_START)),
+                a_buy=float(c.get("a_buy", DEFAULT_A_BUY)), a_sell=float(c.get("a_sell", DEFAULT_A_SELL)),
+                sell_ratio=float(c.get("sell_ratio", DEFAULT_SELL_RATIO)),
+                divisions=int(float(c.get("divisions", DEFAULT_DIVISIONS))),
+                capital=float(c.get("os_capital", DEFAULT_CAPITAL)), n_days=int(float(c.get("n_days", 2))))
+            if not r:
+                return None
+            adj = _cam_adj_sum(c)
+            return {"cash": float(r["cash"]) + adj,
+                    "capital": float(c.get("os_capital", DEFAULT_CAPITAL)) + adj,
+                    "div": int(float(c.get("divisions", DEFAULT_DIVISIONS)))}
+        if strategy == "표준편차":
+            c = parse_sd_ticker_settings(user).get(account)
+            if not c:
+                return None
+            r = calc_sd_today_order(
+                ticker=account, os_start=str(c.get("os_start", DEFAULT_OS_START)),
+                k_buy=float(c.get("k_buy", SD_DEFAULT_K_BUY)), k_sell=float(c.get("k_sell", SD_DEFAULT_K_SELL)),
+                sigma_period=int(float(c.get("sigma_period", SD_DEFAULT_SIGMA_PERIOD))),
+                sell_ratio=float(c.get("sell_ratio", SD_DEFAULT_SELL_RATIO)),
+                divisions=int(float(c.get("divisions", SD_DEFAULT_DIVISIONS))),
+                renewal=int(float(c.get("renewal", SD_DEFAULT_RENEWAL))),
+                capital=float(c.get("os_capital", SD_DEFAULT_CAPITAL)))
+            if not r:
+                return None
+            adj = _cam_adj_sum(c)
+            return {"cash": float(r["cash"]) + adj,
+                    "capital": float(r.get("total_invest", 0)) + adj,
+                    "div": int(float(c.get("divisions", SD_DEFAULT_DIVISIONS)))}
+    except Exception as e:
+        print(f"      ⚠️ 출처상태 계산 실패 ({strategy}/{account}): {e}")
+    return None
+
+
+def _cam_src_telegram(user: dict, strategy: str):
+    """출처 전략에 설정된 텔레그램 (token, chat_id)."""
+    try:
+        if strategy == "DSS":
+            c = parse_dss_config(user)
+            return str(c.get("tg_token", "")).strip(), str(c.get("tg_chat_id", "")).strip()
+        if strategy == "듀얼스나이퍼":
+            c = parse_ds_config(user)
+            return str(c.get("tg_token", "")).strip(), str(c.get("tg_chat_id", "")).strip()
+        if strategy == "IUO":
+            c = parse_iuo_config(user)
+            return str(c.get("tg_token", "")).strip(), str(c.get("tg_chat_id", "")).strip()
+        if strategy == "종가평균":
+            return str(user.get("tg_token", "")).strip(), str(user.get("tg_chat_id", "")).strip()
+        if strategy == "표준편차":
+            return str(user.get("sd_tg_token", "")).strip(), str(user.get("sd_tg_chat_id", "")).strip()
+        if strategy == "Sigma":
+            return str(user.get("sigma_tg_token", "")).strip(), str(user.get("sigma_tg_chat_id", "")).strip()
+    except Exception:
+        pass
+    return "", ""
+
+
+def calc_cam_overlay(ov_ticker, coef, vol_period, vol_target, reserve_tiers, src):
+    """오버레이 오늘 주문 계산: 저항선·변동성비중·차입가능·매수수량."""
+    px = _cam_fetch_ohlc(ov_ticker, "2024-01-01")
+    if px is None or len(px) < max(int(vol_period) + 2, 25):
+        return None
+    last = px.iloc[-1]
+    H, L, C = float(last["High"]), float(last["Low"]), float(last["Close"])
+    resistance = C + (H - L) * coef
+    ret = px["Close"].pct_change().dropna()
+    rv = float(ret.iloc[-int(vol_period):].std() * (252 ** 0.5))
+    vmult = min(1.0, vol_target / rv) if rv > 0 else 1.0
+    tier = (src["capital"] / src["div"]) if src.get("div") else 0.0
+    borrowable = max(0.0, float(src["cash"]) - reserve_tiers * tier)
+    deployable = borrowable * vmult
+    shares = int(deployable / resistance) if resistance > 0 else 0
+    return {"resistance": resistance, "vmult": vmult, "borrowable": borrowable,
+            "deployable": deployable, "shares": shares, "H": H, "L": L, "C": C,
+            "last_date": str(px.index[-1].date())}
+
+
+def build_cam_message(name, ov_ticker, ov, src_strat, src_acct) -> str:
+    today = datetime.today().strftime("%Y-%m-%d")
+    lines = [
+        f"<b>📋 카마릴라 오버레이 — {name}</b> ({today})",
+        f"출처: {src_strat} {src_acct} · 종목: {ov_ticker}",
+        f"기준봉 {ov['last_date']} · 종가 ${ov['C']:,.2f} (H ${ov['H']:,.2f}/L ${ov['L']:,.2f})",
+        "━━━━━",
+    ]
+    if ov["shares"] > 0:
+        lines.append(f"🎯 자동감시 매수: 현재가 ≥ <b>${ov['resistance']:,.2f}</b> 도달 시 "
+                     f"시장가 <b>{ov['shares']:,}주</b>")
+        lines.append(f"   투입 ≈ ${ov['deployable']:,.0f} · 변동성비중 {ov['vmult']*100:.0f}% "
+                     f"(차입가능 ${ov['borrowable']:,.0f})")
+    else:
+        lines.append("🎯 매수 없음 (변동성↑로 비중 축소 또는 유휴현금 부족)")
+    lines.append("💰 매도: 보유분 있으면 다음날 시가(MOO) 전량")
+    lines.append("⭐ 유지기간 당일 1일만 · 매일 갱신")
+    return "\n".join(lines)
+
+
 def main():
     sheet_url = os.environ.get("ADMIN_SHEET_URL", "")
     if not sheet_url:
@@ -1917,6 +2077,60 @@ def main():
         else:
             print(f"  ⏭️  {username} [DualSniper]: 미설정 → 건너뜀")
             skip_count += 1
+
+        # ── 6.5 카마릴라 오버레이 발송 (출처 전략 유휴현금 기반) ──
+        cam_accounts = parse_cam_config(user).get("accounts", {}) or {}
+        if cam_accounts:
+            print(f"  👤 {username} [카마릴라]: {list(cam_accounts.keys())} 처리 중...")
+            for c_name, c_acct in cam_accounts.items():
+                c_src = c_acct.get("source_strategy", "")
+                c_sacct = c_acct.get("source_account", "")
+                if not c_src:   # 레거시 source="dss:NAME"
+                    _old = str(c_acct.get("source", ""))
+                    if _old.startswith("dss:"):
+                        c_src, c_sacct = "DSS", _old[4:]
+                _label = f"카마릴라/{c_name}"
+
+                # 텔레그램: 계좌 전용 → 출처 전략
+                c_tok = str(c_acct.get("tg_token", "")).strip()
+                c_chat = str(c_acct.get("tg_chat_id", "")).strip()
+                if not (c_tok and c_chat):
+                    c_tok, c_chat = _cam_src_telegram(user, c_src)
+                if not (c_tok and c_chat):
+                    print(f"    ⏭️  [{_label}] 텔레그램 미설정 → 스킵")
+                    skip_count += 1
+                    continue
+
+                try:
+                    if c_src == "직접 입력":
+                        _src = {"cash": float(c_acct.get("cash", 0)),
+                                "capital": float(c_acct.get("capital", 0)),
+                                "div": int(c_acct.get("div", 7))}
+                    else:
+                        _src = _cam_source_state(user, client, c_src, c_sacct)
+                    if not _src:
+                        raise RuntimeError(f"출처 {c_src}/{c_sacct} 상태 산출 실패")
+                    _ov = calc_cam_overlay(
+                        (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
+                        float(c_acct.get("coef", 0.70)), int(c_acct.get("vol_period", 20)),
+                        float(c_acct.get("vol_target", 0.70)), int(c_acct.get("reserve_tiers", 1)), _src)
+                    if not _ov:
+                        raise RuntimeError("오버레이 계산 실패(데이터 부족)")
+                except Exception as e:
+                    print(f"    ❌ [{_label}] 계산 오류 → {e}")
+                    fail_count += 1
+                    user_warnings.append(f"[{_label}] ❌ 오버레이 미발송: {e}")
+                    continue
+
+                msg = build_cam_message(c_name, (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
+                                        _ov, c_src, c_sacct)
+                ok, resp = send_telegram(c_chat, c_tok, msg, parse_mode="HTML")
+                if ok:
+                    print(f"    ✅ [{_label}] 발송 성공")
+                    ok_count += 1
+                else:
+                    print(f"    ❌ [{_label}] 발송 실패 → {resp}")
+                    fail_count += 1
 
         # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
         if user_warnings:
