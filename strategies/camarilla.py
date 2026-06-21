@@ -529,6 +529,38 @@ def _cap_adj_sum(cfg_dict) -> float:
         return 0.0
 
 
+def _src_telegram(strategy):
+    """출처 전략에 설정된 텔레그램 (token, chat_id). 미설정·미구현이면 ('', '')."""
+    try:
+        if strategy == "DSS":
+            from strategies import dss
+            c = dss._load_dss_config()
+            return c.get("tg_token", ""), c.get("tg_chat_id", "")
+        if strategy == "듀얼스나이퍼":
+            from strategies import dual_sniper as dual
+            c = dual._load_ds_config()
+            return c.get("tg_token", ""), c.get("tg_chat_id", "")
+        if strategy == "IUO":
+            from strategies import iuo
+            c = iuo._load_iuo_config()
+            return c.get("tg_token", ""), c.get("tg_chat_id", "")
+        if strategy in ("종가평균", "표준편차", "Sigma"):
+            us = dict(st.session_state.get("user_settings", {}) or {})
+            if not _IS_CLOUD:
+                try:
+                    from common.config import load_config
+                    us = {**(load_config() or {}), **us}
+                except Exception:
+                    pass
+            km = {"종가평균": ("tg_token", "tg_chat_id"),
+                  "표준편차": ("sd_tg_token", "sd_tg_chat_id"),
+                  "Sigma": ("sigma_tg_token", "sigma_tg_chat_id")}[strategy]
+            return us.get(km[0], "") or "", us.get(km[1], "") or ""
+    except Exception:
+        pass
+    return "", ""
+
+
 def _src_list_accounts(strategy):
     """해당 전략의 계좌/티커 목록. 실패 시 빈 리스트."""
     try:
@@ -725,21 +757,22 @@ def _render_cam_account(name, acct, cfg):
     o[2].metric("전일 저가", f"${pl:,.2f}")
     o[3].metric("돌파 기준가", f"${resistance:,.4f}")
 
-    # ── 텔레그램 (DSS 설정 재사용) ──
-    try:
-        from strategies import dss
-        _d = dss._load_dss_config()
-        tg_token, tg_chat = _d.get("tg_token", ""), _d.get("tg_chat_id", "")
-    except Exception:
-        tg_token = tg_chat = ""
-    txt = (f"<b>📋 카마릴라 오버레이 — {name} ({ntd})</b>\n종목: {ov_ticker}\n"
+    # ── 텔레그램 (출처 전략의 텔레그램을 따라감) ──
+    tg_token, tg_chat = _src_telegram(src_strat)
+    txt = (f"<b>📋 카마릴라 오버레이 — {name} ({ntd})</b>\n"
+           f"출처: {src_strat} {src_acct} · 종목: {ov_ticker}\n"
            f"━━━━━\n🎯 매수: ${resistance:,.4f} 돌파 시 {buy_shares:,}주 (투입 ${deployable:,.0f})\n"
            f"   변동성 비중 {vmult*100:.0f}%\n"
            f"💰 매도: {'보유 '+format(int(held),',')+'주 시가 매도' if held>0 else '없음'}")
     cb1, cb2 = st.columns([1, 3])
-    if cb1.button("📨 텔레그램 발송", disabled=not (tg_token and tg_chat), key=f"cam_tg_{sfx}"):
+    _tg_ok = bool(tg_token and tg_chat)
+    if cb1.button("📨 텔레그램 발송", disabled=not _tg_ok, key=f"cam_tg_{sfx}"):
         r = _send_telegram(tg_token, tg_chat, txt)
         st.success("✅ 발송 완료!") if r.get("ok") else st.error(f"실패: {r.get('description')}")
+    if _tg_ok:
+        cb2.caption(f"✉️ 출처 전략 **{src_strat}** 의 텔레그램으로 발송됩니다.")
+    else:
+        cb2.caption(f"※ 출처 전략 **{src_strat}** 에 텔레그램 미설정 — 해당 전략의 개인설정에 등록하면 발송됩니다.")
 
     # ── 계좌 설정 수정 / 삭제 ──
     with st.expander("⚙️ 계좌 설정 수정 / 삭제"):
@@ -1012,8 +1045,10 @@ def render_settings_tab():
 
     with st.container(border=True):
         st.markdown("#### 💬 텔레그램")
-        st.info("카마릴라 주문표는 **DSS 개인설정의 텔레그램 토큰·Chat ID를 재사용**합니다. "
-                "DSS 탭에서 한 번 설정하면 여기서도 발송됩니다.")
+        st.info("카마릴라 주문표는 각 계좌의 **출처 전략에 설정된 텔레그램**으로 발송합니다. "
+                "예) 출처가 DSS면 DSS 텔레그램, 표준편차면 표준편차 텔레그램. "
+                "출처 전략에 텔레그램이 없으면 발송 버튼이 비활성화됩니다 — "
+                "해당 전략의 개인설정 탭에서 토큰·Chat ID를 등록하세요.")
 
     with st.container(border=True):
         st.markdown("#### 🔄 데이터")
