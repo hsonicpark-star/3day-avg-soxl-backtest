@@ -587,6 +587,32 @@ def _src_get_state(strategy, account, today_str):
                 "div": int(c.get("divisions", 5)), "n_pos": max(0, int(res.get("next_tier", 1)) - 1),
                 "detail": f"표준편차 {account}"}
 
+    if strategy == "듀얼스나이퍼":
+        from strategies import dual_sniper as dual
+        accounts = dual._load_ds_config().get("accounts", {})
+        if account not in accounts:
+            raise ValueError(f"듀얼 계좌 '{account}' 없음")
+        ad = accounts[account]
+        os_start = ad.get("os_start", "2016-01-04")
+        os_capital = float(ad.get("os_capital", 10000))
+        ds_p, mode_rule = dual._acct_params(ad, {})
+        ds_p.initial_capital = os_capital   # 시뮬 시작자본 = base (render와 동일)
+        raw = ad.get("capital_adj_history", "[]")
+        try:
+            adj = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception:
+            adj = []
+        inj = {a["날짜"]: float(a["조정금액"]) for a in adj if a.get("날짜")}
+        px_df = dual.get_soxl_data()
+        mode_map = dual.build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
+                                            peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+        r = dual.build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(os_start),
+                                    mode_rule=mode_rule, forced_mode=None,
+                                    capital_injections=inj or None)
+        return {"cash": float(r["cash"]), "capital": float(r["total_asset"]),
+                "div": int(r["divisions"]), "n_pos": int(r["n_pos"]),
+                "detail": f"듀얼스나이퍼 {account} (모드 {r.get('next_mode', '')})"}
+
     raise NotImplementedError(f"'{strategy}' 자동 예수금 산출은 아직 미지원입니다. 수동 입력을 사용하세요.")
 
 
@@ -761,7 +787,7 @@ def render_ordersheet_tab(params):
         new_coef = c4.number_input("계수", 0.1, 2.0, float(cfg.get("ov_coef", 0.70)), 0.05, key="cam_new_coef")
         new_vt = c5.number_input("변동성 타겟", 0.2, 1.5, float(cfg.get("ov_vol_target", 0.70)), 0.05, key="cam_new_vt")
         st.caption("권장: 계수 0.70 · 타겟 0.70 (홀드아웃 검증된 정직 설정). "
-                   "DSS·종가평균·표준편차는 예수금 자동 산출, 나머지는 수동 입력.")
+                   "DSS·종가평균·표준편차·듀얼스나이퍼는 예수금 자동 산출, Sigma·IUO는 수동 입력.")
         if st.button("✅ 계좌 등록", type="primary", key="cam_add_acct", use_container_width=True):
             nm = new_name.strip()
             if not nm:
