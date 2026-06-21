@@ -512,47 +512,128 @@ def render_optimization_tab(params):
 # 탭 3: 오늘의 주문표 (DSS 계좌 연동)
 # ══════════════════════════════════════════════
 
-def _render_cam_account(name, acct, dss_accounts, cfg):
+# ──────────────────────────────────────────────
+# 유휴자금 출처 어댑터 (전략별) — 자동 예수금 산출
+# ──────────────────────────────────────────────
+
+_SRC_STRATEGIES = ["DSS", "종가평균", "표준편차", "Sigma", "IUO", "듀얼스나이퍼", "직접 입력"]
+
+
+def _src_list_accounts(strategy):
+    """해당 전략의 계좌/티커 목록. 실패 시 빈 리스트."""
+    try:
+        if strategy == "DSS":
+            from strategies import dss
+            return list(dss._load_dss_config().get("accounts", {}).keys())
+        if strategy == "듀얼스나이퍼":
+            from strategies import dual_sniper as dual
+            return list(dual._load_ds_config().get("accounts", {}).keys())
+        if strategy == "IUO":
+            from strategies import iuo
+            return list(iuo._load_iuo_config().keys())
+        from common.config import get_ticker_settings
+        if strategy == "종가평균":
+            return list(get_ticker_settings(prefix="", settings_key="ticker_settings").keys())
+        if strategy == "표준편차":
+            return list(get_ticker_settings(prefix="sd_", settings_key="sd_ticker_settings").keys())
+        if strategy == "Sigma":
+            return list(get_ticker_settings(prefix="sigma_", settings_key="sigma_ticker_settings").keys())
+    except Exception:
+        return []
+    return []
+
+
+@st.cache_data(show_spinner="계좌 예수금 산출 중...", ttl=120)
+def _src_get_state(strategy, account, today_str):
+    """전략·계좌의 현재 예수금/투자금/분할수/보유 산출.
+    반환 {cash, capital, div, n_pos, detail}. 미지원/실패 시 예외 발생."""
+    from common.data import load_price_data
+    from common.config import get_ticker_settings
+    today = datetime.today().date()
+
+    if strategy == "DSS":
+        from strategies import dss
+        accounts = dss._load_dss_config().get("accounts", {})
+        if account not in accounts:
+            raise ValueError(f"DSS 계좌 '{account}' 없음")
+        stt = _dss_account_state(account, json.dumps(accounts[account], ensure_ascii=False), today_str)
+        return {"cash": stt["cash"], "capital": stt["capital"], "div": stt["divisions"],
+                "n_pos": stt["n_pos"], "detail": f"DSS {account} (기준 {stt['date']})"}
+
+    if strategy == "종가평균":
+        from avg_close_engine import run_portfolio_for_ordersheet
+        c = get_ticker_settings(prefix="", settings_key="ticker_settings")[account]
+        os_start = c.get("os_start", "2024-01-01"); cap = float(c.get("os_capital", 10000))
+        pdf = load_price_data(account, os_start, today, "Yahoo Finance", None)
+        res = run_portfolio_for_ordersheet(
+            pdf, os_start, account, float(c.get("a_buy", -0.005)), float(c.get("a_sell", 0.009)),
+            float(c.get("sell_ratio", 100)), int(c.get("divisions", 5)), cap,
+            n_days=int(c.get("n_days", 2)))
+        return {"cash": res["cash"], "capital": res["current_asset"], "div": int(c.get("divisions", 5)),
+                "n_pos": len(res.get("open_tiers", [])), "detail": f"종가평균 {account}"}
+
+    if strategy == "표준편차":
+        from stdev_engine import run_stdev_ordersheet
+        c = get_ticker_settings(prefix="sd_", settings_key="sd_ticker_settings")[account]
+        os_start = c.get("os_start", "2024-01-01"); cap = float(c.get("os_capital", 20000))
+        buf = (pd.to_datetime(str(os_start)) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
+        pdf = load_price_data(account, buf, str(today), "야후파이낸스 (yfinance)", None)
+        res = run_stdev_ordersheet(
+            pdf, str(os_start), sigma_period=int(c.get("sd_sigma_period", 2)),
+            k_buy=float(c.get("sd_k_buy", 0.65)), k_sell=float(c.get("sd_k_sell", 0.45)),
+            sell_ratio=float(c.get("sell_ratio", 85)), divisions=int(c.get("divisions", 5)),
+            renewal=int(c.get("sd_renewal", 5)), initial_capital=cap)
+        return {"cash": res["cash"], "capital": res.get("total_invest", res["final_asset"]),
+                "div": int(c.get("divisions", 5)), "n_pos": max(0, int(res.get("next_tier", 1)) - 1),
+                "detail": f"표준편차 {account}"}
+
+    raise NotImplementedError(f"'{strategy}' 자동 예수금 산출은 아직 미지원입니다. 수동 입력을 사용하세요.")
+
+
+def _render_cam_account(name, acct, cfg):
     """카마릴라 계좌 1개의 오늘 주문 렌더링."""
-    sfx = name.replace(" ", "_")
+    sfx = name.replace(" ", "_").replace("/", "_")
     coef = float(acct.get("coef", 0.70))
     vt = float(acct.get("vol_target", 0.70))
     vp = int(acct.get("vol_period", 20))
     res_tiers = int(acct.get("reserve_tiers", 1))
     ov_ticker = acct.get("ov_ticker", "SOXL")
-    source = acct.get("source", "manual")
+    # 레거시 마이그레이션 (source="dss:NAME" → source_strategy/account)
+    if "source_strategy" not in acct:
+        old = acct.get("source", "manual")
+        if old.startswith("dss:"):
+            acct["source_strategy"], acct["source_account"] = "DSS", old[4:]
+        else:
+            acct["source_strategy"], acct["source_account"] = "직접 입력", ""
+    src_strat = acct.get("source_strategy", "직접 입력")
+    src_acct = acct.get("source_account", "")
 
     # ── 유휴자금 출처 상태 ──
-    cash = capital = 0.0
-    div = 7
-    if source.startswith("dss:"):
-        aname = source[4:]
-        if aname in dss_accounts:
-            try:
-                stt = _dss_account_state(aname, json.dumps(dss_accounts[aname], ensure_ascii=False),
-                                         datetime.today().strftime("%Y-%m-%d"))
-                cash, capital, div = stt["cash"], stt["capital"], stt["divisions"]
-                st.success(f"🏦 DSS **{aname}** (기준 {stt['date']}) · 예수금 ${cash:,.0f} · "
-                           f"투자금 ${capital:,.0f} · {div}분할 · 보유 {stt['n_pos']}/{div}시드")
-            except Exception as e:
-                st.error(f"DSS 계좌 '{aname}' 상태 계산 실패: {e}")
-                return
-        else:
-            st.error(f"⚠️ 연결된 DSS 계좌 '{aname}' 를 찾을 수 없습니다. 아래 계좌 설정에서 출처를 변경하세요.")
-            cash = capital = 0; div = 7
-    else:
-        st.caption("✍️ 유휴자금 직접 입력 (DSS 연동 없이 수동 관리)")
+    cash = float(acct.get("cash", 0)); capital = float(acct.get("capital", 0)); div = int(acct.get("div", 7))
+    if src_strat == "직접 입력":
+        st.caption("✍️ 유휴자금 직접 입력")
         m1, m2, m3 = st.columns(3)
-        cash = m1.number_input("예수금 ($)", 0, 10_000_000_000, int(acct.get("manual_cash", 0)),
-                               1000, key=f"cam_mc_{sfx}")
-        capital = m2.number_input("투자금 ($)", 0, 10_000_000_000, int(acct.get("manual_capital", 0)),
-                                  1000, key=f"cam_mcap_{sfx}")
-        div = m3.number_input("분할수", 1, 50, int(acct.get("manual_div", 7)), key=f"cam_mdiv_{sfx}")
-        if (int(cash), int(capital), int(div)) != (acct.get("manual_cash", 0),
-                                                   acct.get("manual_capital", 0), acct.get("manual_div", 7)):
-            acct.update(manual_cash=int(cash), manual_capital=int(capital), manual_div=int(div))
-            cfg["accounts"][name] = acct
-            _save_cam_config(cfg)
+        cash = m1.number_input("예수금 ($)", 0, 10_000_000_000, int(cash), 1000, key=f"cam_mc_{sfx}")
+        capital = m2.number_input("투자금 ($)", 0, 10_000_000_000, int(capital), 1000, key=f"cam_mcap_{sfx}")
+        div = m3.number_input("분할수", 1, 50, int(div) if div else 7, key=f"cam_mdiv_{sfx}")
+        if (int(cash), int(capital), int(div)) != (int(acct.get("cash", 0)), int(acct.get("capital", 0)), int(acct.get("div", 7))):
+            acct.update(cash=int(cash), capital=int(capital), div=int(div))
+            cfg["accounts"][name] = acct; _save_cam_config(cfg)
+    else:
+        sc1, sc2 = st.columns([3, 1])
+        sc1.markdown(f"**출처: {src_strat} · {src_acct}** — 저장된 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할")
+        if sc2.button("🔄 자동 불러오기", key=f"cam_pull_{sfx}"):
+            try:
+                stt = _src_get_state(src_strat, src_acct, datetime.today().strftime("%Y-%m-%d"))
+                acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]), div=int(stt["div"]))
+                cfg["accounts"][name] = acct; _save_cam_config(cfg)
+                cash, capital, div = stt["cash"], stt["capital"], stt["div"]
+                st.success(f"✅ {stt['detail']}: 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할 · 보유 {stt['n_pos']}/{div}")
+                st.rerun()
+            except Exception as e:
+                st.error(f"자동 산출 실패 ({e}). 아래 계좌 설정에서 출처를 확인하거나 '직접 입력'으로 바꿔 수동 관리하세요.")
+        if cash <= 0:
+            st.caption("※ '🔄 자동 불러오기'를 눌러 현재 예수금을 가져오세요.")
 
     # ── 오버레이 계산 ──
     ov_px = _get_price(ov_ticker)
@@ -621,24 +702,31 @@ def _render_cam_account(name, acct, dss_accounts, cfg):
 
     # ── 계좌 설정 수정 / 삭제 ──
     with st.expander("⚙️ 계좌 설정 수정 / 삭제"):
-        src_opts = [f"DSS: {n}" for n in dss_accounts.keys()] + ["직접 입력"]
-        cur_src = f"DSS: {source[4:]}" if source.startswith("dss:") else "직접 입력"
-        s_idx = src_opts.index(cur_src) if cur_src in src_opts else len(src_opts) - 1
         e1, e2 = st.columns(2)
-        new_src = e1.selectbox("유휴자금 출처", src_opts, index=s_idx, key=f"cam_esrc_{sfx}")
-        new_tkr = e2.text_input("오버레이 종목", value=ov_ticker, key=f"cam_etkr_{sfx}")
-        e3, e4, e5 = st.columns(3)
-        new_coef = e3.number_input("계수", 0.1, 2.0, coef, 0.05, key=f"cam_ecoef_{sfx}")
-        new_vt = e4.number_input("변동성 타겟", 0.2, 1.5, vt, 0.05, key=f"cam_evt_{sfx}")
-        new_res = e5.number_input("유보 티어수", 1, 5, res_tiers, key=f"cam_eres_{sfx}")
+        si = _SRC_STRATEGIES.index(src_strat) if src_strat in _SRC_STRATEGIES else len(_SRC_STRATEGIES) - 1
+        new_strat = e1.selectbox("유휴자금 출처 전략", _SRC_STRATEGIES, index=si, key=f"cam_estrat_{sfx}")
+        _accts = _src_list_accounts(new_strat) if new_strat != "직접 입력" else []
+        if new_strat == "직접 입력":
+            new_acct = ""
+            e2.caption("직접 입력은 계좌 탭에서 예수금을 수동 관리")
+        elif _accts:
+            _ai = _accts.index(src_acct) if src_acct in _accts else 0
+            new_acct = e2.selectbox("출처 계좌/티커", _accts, index=_ai, key=f"cam_eacct_{sfx}")
+        else:
+            new_acct = e2.text_input("출처 계좌/티커 (목록 없음 — 직접)", value=src_acct, key=f"cam_eacctt_{sfx}")
+        e3, e4, e5, e6 = st.columns(4)
+        new_tkr = e3.text_input("오버레이 종목", value=ov_ticker, key=f"cam_etkr_{sfx}")
+        new_coef = e4.number_input("계수", 0.1, 2.0, coef, 0.05, key=f"cam_ecoef_{sfx}")
+        new_vt = e5.number_input("변동성 타겟", 0.2, 1.5, vt, 0.05, key=f"cam_evt_{sfx}")
+        new_res = e6.number_input("유보 티어수", 1, 5, res_tiers, key=f"cam_eres_{sfx}")
         sv, dl = st.columns([1, 1])
         if sv.button("💾 저장", key=f"cam_esave_{sfx}", type="primary"):
-            acct.update(source=("dss:" + new_src[5:]) if new_src.startswith("DSS: ") else "manual",
+            acct.update(source_strategy=new_strat, source_account=new_acct,
                         ov_ticker=new_tkr.strip().upper(), coef=float(new_coef),
                         vol_target=float(new_vt), reserve_tiers=int(new_res))
             cfg["accounts"][name] = acct
             _save_cam_config(cfg)
-            st.success("저장되었습니다.")
+            st.success("저장되었습니다. '🔄 자동 불러오기'로 예수금을 갱신하세요.")
             st.rerun()
         if dl.button("🗑️ 이 계좌 삭제", key=f"cam_edel_{sfx}"):
             cfg["accounts"].pop(name, None)
@@ -650,15 +738,8 @@ def _render_cam_account(name, acct, dss_accounts, cfg):
 def render_ordersheet_tab(params):
     cfg = _load_cam_config()
     st.subheader(f"📋 오늘의 오버레이 주문표  ({datetime.today().strftime('%Y-%m-%d')})")
-    st.caption("카마릴라 계좌마다 **어느 DSS 계좌의 유휴 예수금**을 활용할지 설정해, 계좌별로 오늘 주문을 받습니다.")
-
-    # DSS 계좌 목록 (유휴자금 출처 후보)
-    try:
-        from strategies import dss
-        dss_accounts = dss._load_dss_config().get("accounts", {})
-    except Exception as e:
-        dss_accounts = {}
-        st.caption(f"(DSS 계좌 로드 불가: {e})")
+    st.caption("카마릴라 계좌마다 **어느 전략(DSS·종가평균·표준편차 등)의 유휴 예수금**을 활용할지 설정해, "
+               "계좌별로 오늘 주문을 받습니다.")
 
     accounts = cfg.setdefault("accounts", {})
 
@@ -666,13 +747,21 @@ def render_ordersheet_tab(params):
     with st.expander("➕ 카마릴라 계좌 추가", expanded=not accounts):
         c1, c2 = st.columns(2)
         new_name = c1.text_input("계좌 이름", placeholder="예: 메인 오버레이, ISA 오버레이", key="cam_new_name")
-        src_opts = [f"DSS: {n}" for n in dss_accounts.keys()] + ["직접 입력"]
-        src_pick = c2.selectbox("유휴자금 출처 (DSS 계좌)", src_opts, key="cam_new_src")
+        new_strat = c2.selectbox("유휴자금 출처 전략", _SRC_STRATEGIES, key="cam_new_strat")
+        _accts = _src_list_accounts(new_strat) if new_strat != "직접 입력" else []
+        if new_strat == "직접 입력":
+            new_acct = ""
+            st.caption("직접 입력: 계좌 탭에서 예수금을 수동 관리합니다.")
+        elif _accts:
+            new_acct = st.selectbox("출처 계좌/티커", _accts, key="cam_new_acct")
+        else:
+            new_acct = st.text_input(f"'{new_strat}' 계좌 목록이 없습니다 — 티커/계좌명 직접 입력", key="cam_new_acctt")
         c3, c4, c5 = st.columns(3)
         new_tkr = c3.text_input("오버레이 종목", value=cfg.get("ov_ticker", "SOXL"), key="cam_new_tkr")
         new_coef = c4.number_input("계수", 0.1, 2.0, float(cfg.get("ov_coef", 0.70)), 0.05, key="cam_new_coef")
         new_vt = c5.number_input("변동성 타겟", 0.2, 1.5, float(cfg.get("ov_vol_target", 0.70)), 0.05, key="cam_new_vt")
-        st.caption("권장: 계수 0.70 · 타겟 0.70 (홀드아웃 검증된 정직 설정). DSS 계좌가 없으면 '직접 입력' 선택.")
+        st.caption("권장: 계수 0.70 · 타겟 0.70 (홀드아웃 검증된 정직 설정). "
+                   "DSS·종가평균·표준편차는 예수금 자동 산출, 나머지는 수동 입력.")
         if st.button("✅ 계좌 등록", type="primary", key="cam_add_acct", use_container_width=True):
             nm = new_name.strip()
             if not nm:
@@ -680,17 +769,16 @@ def render_ordersheet_tab(params):
             elif nm in accounts:
                 st.warning(f"'{nm}' 계좌가 이미 존재합니다.")
             else:
-                source = ("dss:" + src_pick[5:]) if src_pick.startswith("DSS: ") else "manual"
                 accounts[nm] = {
-                    "source": source, "ov_ticker": new_tkr.strip().upper(),
-                    "coef": float(new_coef), "vol_target": float(new_vt),
-                    "vol_period": int(cfg.get("ov_vol_period", 20)),
+                    "source_strategy": new_strat, "source_account": new_acct,
+                    "ov_ticker": new_tkr.strip().upper(), "coef": float(new_coef),
+                    "vol_target": float(new_vt), "vol_period": int(cfg.get("ov_vol_period", 20)),
                     "reserve_tiers": int(cfg.get("ov_reserve_tiers", 1)),
-                    "held_qty": 0, "manual_cash": 0, "manual_capital": 0, "manual_div": 7,
+                    "held_qty": 0, "cash": 0, "capital": 0, "div": 7,
                 }
                 cfg["accounts"] = accounts
                 _save_cam_config(cfg)
-                st.success(f"✅ '{nm}' 등록 완료 (출처: {src_pick})")
+                st.success(f"✅ '{nm}' 등록 완료 (출처: {new_strat} {new_acct})")
                 st.rerun()
 
     if not accounts:
@@ -702,7 +790,7 @@ def render_ordersheet_tab(params):
     tabs = st.tabs([f"📊 {n}" for n in names])
     for nm, tb in zip(names, tabs):
         with tb:
-            _render_cam_account(nm, accounts[nm], dss_accounts, cfg)
+            _render_cam_account(nm, accounts[nm], cfg)
 
 
 # ══════════════════════════════════════════════
