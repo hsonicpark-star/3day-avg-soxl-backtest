@@ -757,8 +757,14 @@ def _render_cam_account(name, acct, cfg):
     o[2].metric("전일 저가", f"${pl:,.2f}")
     o[3].metric("돌파 기준가", f"${resistance:,.4f}")
 
-    # ── 텔레그램 (출처 전략의 텔레그램을 따라감) ──
-    tg_token, tg_chat = _src_telegram(src_strat)
+    # ── 텔레그램 (계좌 전용 우선 → 없으면 출처 전략) ──
+    _own_tok = (acct.get("tg_token", "") or "").strip()
+    _own_chat = (acct.get("tg_chat_id", "") or "").strip()
+    if _own_tok and _own_chat:
+        tg_token, tg_chat, _tg_from = _own_tok, _own_chat, "이 계좌 전용"
+    else:
+        tg_token, tg_chat = _src_telegram(src_strat)
+        _tg_from = f"출처 전략 {src_strat}"
     txt = (f"<b>📋 카마릴라 오버레이 — {name} ({ntd})</b>\n"
            f"출처: {src_strat} {src_acct} · 종목: {ov_ticker}\n"
            f"━━━━━\n🎯 매수: ${resistance:,.4f} 돌파 시 {buy_shares:,}주 (투입 ${deployable:,.0f})\n"
@@ -770,9 +776,10 @@ def _render_cam_account(name, acct, cfg):
         r = _send_telegram(tg_token, tg_chat, txt)
         st.success("✅ 발송 완료!") if r.get("ok") else st.error(f"실패: {r.get('description')}")
     if _tg_ok:
-        cb2.caption(f"✉️ 출처 전략 **{src_strat}** 의 텔레그램으로 발송됩니다.")
+        cb2.caption(f"✉️ **{_tg_from}** 텔레그램으로 발송됩니다.")
     else:
-        cb2.caption(f"※ 출처 전략 **{src_strat}** 에 텔레그램 미설정 — 해당 전략의 개인설정에 등록하면 발송됩니다.")
+        cb2.caption(f"※ **{_tg_from}** 텔레그램 미설정 — 아래 '계좌 설정'에서 "
+                    f"**이 계좌 전용 텔레그램**을 등록하거나, 해당 전략 개인설정에 등록하세요.")
 
     # ── 계좌 설정 수정 / 삭제 ──
     with st.expander("⚙️ 계좌 설정 수정 / 삭제"):
@@ -793,11 +800,21 @@ def _render_cam_account(name, acct, cfg):
         new_coef = e4.number_input("계수", 0.1, 2.0, coef, 0.05, key=f"cam_ecoef_{sfx}")
         new_vt = e5.number_input("변동성 타겟", 0.2, 1.5, vt, 0.05, key=f"cam_evt_{sfx}")
         new_res = e6.number_input("유보 티어수", 1, 5, res_tiers, key=f"cam_eres_{sfx}")
+
+        st.markdown("**📨 이 계좌 전용 텔레그램 (선택)** — 입력하면 출처 전략 대신 **이 주소로** 발송, "
+                    "비우면 출처 전략을 따라갑니다.")
+        tg1, tg2 = st.columns(2)
+        new_tgc = tg1.text_input("Chat ID", value=acct.get("tg_chat_id", ""),
+                                 placeholder="비우면 출처 전략 따라감", key=f"cam_etgc_{sfx}")
+        new_tgt = tg2.text_input("Bot Token", value=acct.get("tg_token", ""),
+                                 type="password", key=f"cam_etgt_{sfx}")
+
         sv, dl = st.columns([1, 1])
         if sv.button("💾 저장", key=f"cam_esave_{sfx}", type="primary"):
             acct.update(source_strategy=new_strat, source_account=new_acct,
                         ov_ticker=new_tkr.strip().upper(), coef=float(new_coef),
-                        vol_target=float(new_vt), reserve_tiers=int(new_res))
+                        vol_target=float(new_vt), reserve_tiers=int(new_res),
+                        tg_chat_id=new_tgc.strip(), tg_token=new_tgt.strip())
             cfg["accounts"][name] = acct
             _save_cam_config(cfg)
             st.success("저장되었습니다. '🔄 자동 불러오기'로 예수금을 갱신하세요.")
@@ -1045,10 +1062,10 @@ def render_settings_tab():
 
     with st.container(border=True):
         st.markdown("#### 💬 텔레그램")
-        st.info("카마릴라 주문표는 각 계좌의 **출처 전략에 설정된 텔레그램**으로 발송합니다. "
-                "예) 출처가 DSS면 DSS 텔레그램, 표준편차면 표준편차 텔레그램. "
-                "출처 전략에 텔레그램이 없으면 발송 버튼이 비활성화됩니다 — "
-                "해당 전략의 개인설정 탭에서 토큰·Chat ID를 등록하세요.")
+        st.info("카마릴라 주문표 텔레그램 우선순위: **① 계좌 전용 텔레그램**(주문표 탭의 "
+                "⚙️ 계좌 설정에서 입력) → 없으면 **② 출처 전략의 텔레그램**(DSS·표준편차 등). "
+                "둘 다 없으면 발송 버튼이 비활성화됩니다. "
+                "→ 듀얼스나이퍼처럼 별도 채널로 받고 싶으면 계좌 전용 텔레그램에 입력하세요.")
 
     with st.container(border=True):
         st.markdown("#### 🔄 데이터")
