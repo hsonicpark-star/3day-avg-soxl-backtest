@@ -1,0 +1,772 @@
+"""
+카마릴라 피봇 돌파 매매법 — 02 통합 모듈
+- 진입: 카마릴라 4차 저항선 돌파 (계수 0.70 권장)
+- 청산: 익일 시가 MOO (검증상 최강·갭에 robust)
+- 위험관리: 변동성 타게팅 (급락기 자동 디레버리징)
+- 운용: DSS 유휴 예수금 애드온 오버레이 + 워터폴 자금관리
+주문표는 DSS 계좌(common dss_config)를 선택해 예수금/투자금/분할수/보유를 읽어온다.
+"""
+import os
+import json
+import itertools
+from datetime import datetime, timedelta
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+from common.config import _IS_CLOUD
+from camarilla_engine import (
+    load_price_data, CamarillaParams, run_backtest, run_backtest_fast,
+    compute_metrics, yearly_returns, build_signal_mult,
+    CAMARILLA_LEVELS, FIB_LEVELS,
+)
+
+_CAM_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".camarilla")
+_CAM_CONFIG_PATH = os.path.join(_CAM_CONFIG_DIR, "config.json")
+
+_CAM_DEFAULTS = {
+    "ov_ticker": "SOXL",
+    "ov_coef": 0.70,
+    "ov_vol_period": 20,
+    "ov_vol_target": 0.70,
+    "ov_reserve_tiers": 1,
+    "ov_inject_frac": 0.70,
+    "ov_slippage": 0.001,
+}
+
+
+# ──────────────────────────────────────────────
+# 설정 (Cloud: user_settings["cam_config"] / 로컬: ~/.camarilla/config.json)
+# ──────────────────────────────────────────────
+
+def _load_cam_config() -> dict:
+    cfg = {}
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        raw = st.session_state.get("user_settings", {}).get("cam_config", "")
+        if raw:
+            try:
+                cfg = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                cfg = {}
+    elif os.path.exists(_CAM_CONFIG_PATH):
+        try:
+            with open(_CAM_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    for k, v in _CAM_DEFAULTS.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def _save_cam_config(cfg: dict):
+    try:
+        os.makedirs(_CAM_CONFIG_DIR, exist_ok=True)
+        with open(_CAM_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            cfg_json = json.dumps(cfg, ensure_ascii=False)
+            st.session_state.setdefault("user_settings", {})
+            st.session_state.user_settings["cam_config"] = cfg_json
+            from common.auth import _save_user_settings_to_sheet
+            _save_user_settings_to_sheet(st.session_state.username, {"cam_config": cfg_json})
+        except Exception as e:
+            st.warning(f"⚠️ Cloud 저장 실패 (로컬엔 저장됨): {e}")
+
+
+# ──────────────────────────────────────────────
+# 데이터 / 유틸
+# ──────────────────────────────────────────────
+
+@st.cache_data(show_spinner="가격 데이터 로딩...")
+def _get_price(ticker: str):
+    return load_price_data(ticker, "2009-06-01", "2026-12-31")
+
+
+def _vol_mult(price, period: int, target: float) -> float:
+    ret = price['Close'].pct_change().dropna()
+    if len(ret) < period:
+        return 1.0
+    rv = float(ret.iloc[-period:].std() * np.sqrt(252))
+    return float(min(1.0, target / rv)) if rv > 0 else 1.0
+
+
+def _send_telegram(token: str, chat_id: str, text: str) -> dict:
+    try:
+        import requests
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                          timeout=10)
+        return r.json()
+    except Exception as e:
+        return {"ok": False, "description": str(e)}
+
+
+def _nth_weekday(y, m, wd, n):
+    first = datetime(y, m, 1).date()
+    off = (wd - first.weekday()) % 7
+    return first + timedelta(days=off + 7 * (n - 1))
+
+
+def _last_weekday(y, m, wd):
+    nxt = datetime(y + 1, 1, 1).date() if m == 12 else datetime(y, m + 1, 1).date()
+    last = nxt - timedelta(days=1)
+    while last.weekday() != wd:
+        last -= timedelta(days=1)
+    return last
+
+
+def _us_holidays(y):
+    h = {datetime(y, 1, 1).date(), _nth_weekday(y, 1, 0, 3), _nth_weekday(y, 2, 0, 3),
+         _last_weekday(y, 5, 0), datetime(y, 6, 19).date(), datetime(y, 7, 4).date(),
+         _nth_weekday(y, 9, 0, 1), _nth_weekday(y, 11, 3, 4), datetime(y, 12, 25).date()}
+    return h
+
+
+def _next_trading_date(d=None):
+    d = d or datetime.now().date()
+    nxt = d + timedelta(days=1)
+    while nxt.weekday() >= 5 or nxt in _us_holidays(nxt.year):
+        nxt += timedelta(days=1)
+    return nxt
+
+
+@st.cache_data(show_spinner="DSS 계좌 상태 계산 중...")
+def _dss_account_state(acct_name, acct_json, today_str):
+    """선택한 DSS 계좌의 현재 예수금/투자금/분할수/보유를 DSS 엔진으로 산출."""
+    from strategies import dss
+    acct = json.loads(acct_json)
+    ap = acct.get("params", {})
+    soxl = dss.get_soxl_data()
+    ms = dss.get_mode_series(len(dss.get_qqq_data()))
+    p = dss.DSSParams(
+        sf_divisions=int(ap.get("sf_div", 7)), sf_max_hold=int(ap.get("sf_hold", 30)),
+        sf_buy_pct=float(ap.get("sf_buy", 3.0)) / 100, sf_sell_pct=float(ap.get("sf_sell", 0.2)) / 100,
+        ag_divisions=int(ap.get("ag_div", 7)), ag_max_hold=int(ap.get("ag_hold", 7)),
+        ag_buy_pct=float(ap.get("ag_buy", 5.0)) / 100, ag_sell_pct=float(ap.get("ag_sell", 2.5)) / 100,
+        initial_capital=float(acct.get("os_capital", 10000.0)),
+        fee_rate=float(ap.get("fee_rate", 0.04)) / 100,
+        renewal_period=int(ap.get("renewal_period", 10)),
+        pcr=float(ap.get("pcr", 80)) / 100, lcr=float(ap.get("lcr", 30)) / 100,
+    )
+    bt = dss.run_backtest(p, soxl, ms, str(acct.get("os_start", "2024-01-01")),
+                          today_str, capital_adj_history=acct.get("capital_adj_history", []))
+    last = bt.iloc[-1]
+    return {
+        "cash": float(last["예수금"]), "capital": float(last["투자금"]),
+        "divisions": int(last["분할수"]), "tier": float(last["1회시드"]),
+        "n_pos": int(last["보유포지션수"]), "total": float(last["총자산"]),
+        "date": str(last["날짜"])[:10],
+    }
+
+
+# ──────────────────────────────────────────────
+# 사이드바
+# ──────────────────────────────────────────────
+
+def render_sidebar():
+    cfg = _load_cam_config()
+    st.sidebar.markdown("### 🎯 카마릴라 설정")
+    ticker = st.sidebar.text_input("종목", value=cfg.get("ov_ticker", "SOXL"),
+                                   key="cam_ticker").strip().upper()
+
+    sel = st.sidebar.selectbox("저항선 레벨",
+                               ["R4 (계수 0.55)", "추천 (계수 0.70)", "사용자 지정"],
+                               index=1, key="cam_level")
+    if sel == "R4 (계수 0.55)":
+        coef = 0.55
+    elif sel == "추천 (계수 0.70)":
+        coef = 0.70
+    else:
+        coef = st.sidebar.number_input("계수", 0.1, 2.0, value=float(cfg.get("ov_coef", 0.70)),
+                                       step=0.05, format="%.2f", key="cam_coef")
+    st.sidebar.caption(f"저항선 = 전일종가 + (고가−저가)×{coef:.2f}")
+
+    st.sidebar.markdown("**변동성 타게팅** (위험 손잡이)")
+    sig_on = st.sidebar.checkbox("변동성 타게팅 사용", value=True, key="cam_sig_on")
+    vol_target = st.sidebar.slider("변동성 목표", 0.2, 1.2, float(cfg.get("ov_vol_target", 0.70)),
+                                   0.05, key="cam_vt") if sig_on else 0.7
+    vol_period = int(cfg.get("ov_vol_period", 20))
+
+    st.sidebar.markdown("### ⚙️ 백테스트 설정")
+    bc1, bc2 = st.sidebar.columns(2)
+    initial_capital = bc1.number_input("초기투자금", 1000, 1_000_000_000, 100000, 1000, key="cam_cap")
+    pos_pct = bc2.slider("투입비중(%)", 10, 100, 100, 5, key="cam_pos") / 100.0
+    dc1, dc2 = st.sidebar.columns(2)
+    start_date = dc1.date_input("시작일", value=pd.Timestamp("2010-03-12"), key="cam_start")
+    end_date = dc2.date_input("종료일", value=datetime.today().date(), key="cam_end")
+
+    return {
+        "ticker": ticker, "coef": coef, "signal": "vol" if sig_on else "none",
+        "vol_target": vol_target, "vol_period": vol_period,
+        "initial_capital": float(initial_capital), "position_pct": pos_pct,
+        "start_date": start_date, "end_date": end_date,
+        "bt_ticker": ticker, "bt_start_date": start_date, "bt_end_date": end_date,
+        "bt_initial_capital": float(initial_capital),
+    }
+
+
+def _make_params(p, **over):
+    kw = dict(coef=p["coef"], initial_capital=p["initial_capital"],
+              position_pct=p.get("position_pct", 1.0), hold_days=1,
+              signal=p.get("signal", "none"), vol_period=p.get("vol_period", 20),
+              vol_target=p.get("vol_target", 0.70))
+    kw.update(over)
+    return CamarillaParams(**kw)
+
+
+# ══════════════════════════════════════════════
+# 탭 1: 백테스트
+# ══════════════════════════════════════════════
+
+@st.cache_data(show_spinner="백테스트 실행 중...")
+def _run_bt(ticker, coef, cap, pos, signal, vt, vp, sd, ed):
+    p = CamarillaParams(coef=coef, initial_capital=cap, position_pct=pos, hold_days=1,
+                        signal=signal, vol_target=vt, vol_period=vp)
+    return run_backtest(p, _get_price(ticker), str(sd), str(ed))
+
+
+def render_backtest_tab(params):
+    p = params
+    st.subheader(f"📊 {p['ticker']} · 카마릴라 피봇 돌파 백테스트")
+    bt = _run_bt(p["ticker"], p["coef"], p["initial_capital"], p["position_pct"],
+                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"])
+    if not len(bt):
+        st.warning("데이터가 부족합니다.")
+        return
+    m = compute_metrics(bt, p["initial_capital"])
+    _sig = f" · 변동성타겟 {p['vol_target']}" if p["signal"] == "vol" else ""
+    st.caption(f"계수 {p['coef']:.2f}{_sig} · 익일시가 MOO · "
+               f"{bt['날짜'].iloc[0].date()} ~ {bt['날짜'].iloc[-1].date()} ({len(bt):,} 거래일)")
+
+    c = st.columns(6)
+    c[0].metric("최종 자산", f"${m['final_asset']:,.0f}")
+    c[1].metric("총 수익률", f"{m['total_return']*100:,.0f}%")
+    c[2].metric("CAGR", f"{m['cagr']*100:.1f}%")
+    c[3].metric("MDD", f"{m['mdd']*100:.1f}%")
+    c[4].metric("CALMAR", f"{m['calmar']:.2f}")
+    c[5].metric("승률", f"{m['win_rate']*100:.1f}%")
+    c2 = st.columns(4)
+    c2[0].metric("Sharpe", f"{m['sharpe']:.2f}")
+    c2[1].metric("Sortino", f"{m['sortino']:.2f}")
+    c2[2].metric("매도 건수", f"{m['sell_count']:,}")
+    c2[3].metric("승/패", f"{m['win_count']:,}/{m['sell_count']-m['win_count']:,}")
+
+    # 자산추이 & 낙폭
+    st.subheader("📈 총자산 추이 & 낙폭")
+    asset = bt['총자산'].values
+    dd = (asset - np.maximum.accumulate(asset)) / np.maximum.accumulate(asset) * 100
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3],
+                        vertical_spacing=0.05, subplot_titles=("총자산 (로그)", "낙폭 (%)"))
+    fig.add_trace(go.Scatter(x=bt['날짜'], y=asset, line=dict(color="#2563eb")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=bt['날짜'], y=dd, fill="tozeroy", line=dict(color="#dc2626")), row=2, col=1)
+    fig.update_yaxes(type="log", row=1, col=1)
+    fig.update_layout(height=520, showlegend=False, margin=dict(t=40, b=20))
+    st.plotly_chart(fig, use_container_width=True, key="cam_bt_eq")
+
+    # 연도별
+    st.subheader("📅 연도별 수익률")
+    yr = yearly_returns(bt, p["initial_capital"])
+    if len(yr):
+        colors = ["#16a34a" if v >= 0 else "#dc2626" for v in yr['수익률']]
+        figy = go.Figure(go.Bar(x=yr['연도'].astype(str), y=yr['수익률']*100, marker_color=colors,
+                                text=[f"{v*100:+.0f}%" for v in yr['수익률']], textposition="outside"))
+        figy.update_layout(height=320, yaxis_title="%", margin=dict(t=20, b=20))
+        st.plotly_chart(figy, use_container_width=True, key="cam_bt_yr")
+
+    # B&H 비교
+    st.subheader("📉 카마릴라 vs Buy & Hold")
+    pw = _get_price(p["ticker"])
+    pw = pw[(pw.index >= bt['날짜'].iloc[0]) & (pw.index <= bt['날짜'].iloc[-1])]
+    bh = p["initial_capital"] * (pw['Close'] / pw['Close'].iloc[0])
+    figc = go.Figure()
+    figc.add_trace(go.Scatter(x=bt['날짜'], y=asset, name="카마릴라", line=dict(color="#2563eb")))
+    figc.add_trace(go.Scatter(x=pw.index, y=bh.values, name="Buy & Hold",
+                              line=dict(color="#9ca3af", dash="dot")))
+    figc.update_yaxes(type="log")
+    figc.update_layout(height=360, margin=dict(t=20, b=20), legend=dict(orientation="h", y=1.1))
+    st.plotly_chart(figc, use_container_width=True, key="cam_bt_bh")
+
+    # 최근 매매
+    st.subheader("📑 최근 매매 내역 (30건)")
+    tr = bt[(bt['매수체결'].notna()) | (bt['매도수량'] > 0)].tail(30)[
+        ['날짜', '시가', '저항선', '고가', '종가', '매수체결', '매수수량', '매도가', '매도수량', '당일실현', '총자산']].copy()
+    tr['날짜'] = tr['날짜'].dt.strftime('%Y-%m-%d')
+    for col in ['시가', '저항선', '고가', '종가', '매수체결', '매도가']:
+        tr[col] = tr[col].map(lambda v: f"${v:,.2f}" if pd.notna(v) else "")
+    for col in ['매수수량', '매도수량']:
+        tr[col] = tr[col].map(lambda v: f"{int(v):,}" if v else "")
+    tr['당일실현'] = tr['당일실현'].map(lambda v: f"${v:,.0f}" if v else "")
+    tr['총자산'] = tr['총자산'].map(lambda v: f"${v:,.0f}")
+    st.dataframe(tr, use_container_width=True, hide_index=True)
+    st.download_button("전체 CSV 다운로드", bt.to_csv(index=False).encode('utf-8-sig'),
+                       file_name=f"camarilla_{p['ticker']}.csv", key="cam_bt_dl")
+
+
+# ══════════════════════════════════════════════
+# 탭 2: 최적화
+# ══════════════════════════════════════════════
+
+_OPT_SORT = {"CALMAR": ("CALMAR", False), "CAGR": ("CAGR", False),
+             "최종자산": ("최종자산", False), "MDD 최소화": ("MDD", False), "승률": ("승률", False)}
+
+
+def _eval(pxd, cf, pos, vt, sd, ed, cap):
+    sig = "vol" if vt > 0 else "none"
+    p = CamarillaParams(coef=float(cf), initial_capital=cap, position_pct=pos/100.0,
+                        hold_days=1, signal=sig, vol_period=20, vol_target=(vt if vt > 0 else 0.7))
+    r = run_backtest_fast(p, pxd, str(sd), str(ed))
+    if not r or r['total_days'] < 20:
+        return None
+    yrs = r['total_days'] / 252
+    cagr = (r['final_asset']/cap)**(1/yrs) - 1 if r['final_asset'] > 0 else -1
+    calmar = cagr/abs(r['mdd']) if r['mdd'] < 0 else 0
+    return {"계수": round(float(cf), 3), "투입%": pos, "변동성타겟": vt,
+            "CAGR": cagr, "MDD": r['mdd'], "CALMAR": calmar,
+            "최종자산": r['final_asset'], "승률": r['win_rate'], "매도건수": r['sell_count']}
+
+
+def render_optimization_tab(params):
+    p = params
+    st.subheader("🔍 파라미터 최적화")
+    method = st.radio("최적화 방식", ["📊 그리드 탐색", "🎲 랜덤 탐색", "📈 워크포워드", "🧠 베이지안"],
+                      horizontal=True, key="cam_opt_method")
+    _desc = {"📊 그리드 탐색": "모든 조합 완전 탐색. 조합이 적을 때 가장 정확.",
+             "🎲 랜덤 탐색": "무작위 N개 샘플링. 공간이 클 때 빠름.",
+             "📈 워크포워드": "IS(최적화)·OOS(검증) 분할 반복. 과적합 방지.",
+             "🧠 베이지안": "Optuna TPE 스마트 탐색."}
+    st.caption(_desc[method])
+
+    with st.expander("파라미터 범위", expanded=True):
+        r1, r2, r3 = st.columns(3)
+        cmin = r1.number_input("계수 최소", 0.1, 2.0, 0.40, 0.05, key="cam_o_cmin")
+        cmax = r2.number_input("계수 최대", 0.1, 2.0, 0.90, 0.05, key="cam_o_cmax")
+        cstep = r3.number_input("계수 간격", 0.01, 0.5, 0.05, 0.01, key="cam_o_cstep")
+        m1, m2 = st.columns(2)
+        opt_pos = m1.multiselect("투입비중(%)", [100, 75, 50], default=[100], key="cam_o_pos")
+        opt_vt = m2.multiselect("변동성타겟 (0=미사용)", [0, 0.4, 0.5, 0.7, 1.0],
+                                default=[0, 0.7], key="cam_o_vt")
+        metric = st.selectbox("최적화 기준", list(_OPT_SORT.keys()), key="cam_o_metric")
+    coefs = list(np.round(np.arange(cmin, cmax + 1e-9, cstep), 3))
+    opt_pos = opt_pos or [100]
+    opt_vt = opt_vt or [0]
+    sort_col, asc = _OPT_SORT[metric]
+    n_total = len(coefs) * len(opt_pos) * len(opt_vt)
+    cap = p["initial_capital"]
+
+    def _show(res, sfx):
+        d = res.copy()
+        d['CAGR'] = d['CAGR'].map(lambda v: f"{v*100:.1f}%")
+        d['MDD'] = d['MDD'].map(lambda v: f"{v*100:.1f}%")
+        d['CALMAR'] = d['CALMAR'].map(lambda v: f"{v:.2f}")
+        d['최종자산'] = d['최종자산'].map(lambda v: f"${v:,.0f}")
+        d['승률'] = d['승률'].map(lambda v: f"{v*100:.1f}%")
+        st.dataframe(d.head(30), use_container_width=True, hide_index=True)
+        figs = go.Figure(go.Scatter(
+            x=res['MDD']*100, y=res['CAGR']*100, mode="markers",
+            marker=dict(size=9, color=res['CALMAR'], colorscale="Viridis", showscale=True,
+                        colorbar=dict(title="CALMAR")),
+            text=[f"계수{c:.2f}·{pp}%·vt{v}" for c, pp, v in zip(res['계수'], res['투입%'], res['변동성타겟'])]))
+        figs.update_layout(height=400, xaxis_title="MDD (%)", yaxis_title="CAGR (%)", margin=dict(t=20, b=20))
+        st.plotly_chart(figs, use_container_width=True, key=f"cam_opt_sc_{sfx}")
+        st.download_button("CSV", res.to_csv(index=False).encode('utf-8-sig'),
+                           file_name="camarilla_opt.csv", key=f"cam_opt_dl_{sfx}")
+
+    if method == "📊 그리드 탐색":
+        st.info(f"예상 조합: {n_total:,}개")
+        if st.button("▶ 그리드 실행", type="primary", key="cam_run_grid"):
+            pxd = _get_price(p["ticker"])
+            combos = list(itertools.product(coefs, opt_pos, opt_vt))
+            prog = st.progress(0.0)
+            rows = []
+            for i, (cf, pp, vt) in enumerate(combos):
+                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap)
+                if r:
+                    rows.append(r)
+                if i % max(1, len(combos)//50) == 0:
+                    prog.progress((i+1)/len(combos))
+            prog.empty()
+            if rows:
+                st.session_state['cam_opt_res'] = pd.DataFrame(rows).sort_values(sort_col, ascending=asc).reset_index(drop=True)
+
+    elif method == "🎲 랜덤 탐색":
+        n_s = st.number_input("샘플 수", 20, 2000, 200, 20, key="cam_n_s")
+        if st.button("▶ 랜덤 실행", type="primary", key="cam_run_rand"):
+            import random
+            random.seed(42)
+            full = list(itertools.product(coefs, opt_pos, opt_vt))
+            sample = random.sample(full, min(int(n_s), len(full)))
+            pxd = _get_price(p["ticker"])
+            prog = st.progress(0.0)
+            rows = []
+            for i, (cf, pp, vt) in enumerate(sample):
+                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap)
+                if r:
+                    rows.append(r)
+                if i % max(1, len(sample)//50) == 0:
+                    prog.progress((i+1)/len(sample))
+            prog.empty()
+            if rows:
+                st.session_state['cam_opt_res'] = pd.DataFrame(rows).sort_values(sort_col, ascending=asc).reset_index(drop=True)
+
+    elif method == "📈 워크포워드":
+        w1, w2 = st.columns(2)
+        isy = w1.number_input("IS 기간(년)", 1, 10, 3, key="cam_wf_is")
+        oosy = w2.number_input("OOS 기간(년)", 1, 5, 1, key="cam_wf_oos")
+        if st.button("▶ 워크포워드 실행", type="primary", key="cam_run_wfo"):
+            pxd = _get_price(p["ticker"])
+            ts, te = pd.Timestamp(str(p["start_date"])), pd.Timestamp(str(p["end_date"]))
+            wins, cur = [], ts
+            while True:
+                ie = cur + pd.Timedelta(days=int(isy*365.25))
+                oe = ie + pd.Timedelta(days=int(oosy*365.25))
+                if oe > te:
+                    break
+                wins.append((cur, ie, ie, oe)); cur = ie
+            if not wins:
+                st.error("기간이 짧습니다.")
+            else:
+                combos = list(itertools.product(coefs, opt_pos, opt_vt))
+                prog = st.progress(0.0)
+                rows = []
+                for wi, (iss, ise, os_, oe) in enumerate(wins):
+                    best, bs = None, -1e18
+                    for cf, pp, vt in combos:
+                        r = _eval(pxd, cf, pp, vt, iss.date(), ise.date(), cap)
+                        if r:
+                            sc = (-abs(r["MDD"]) if sort_col == "MDD" else r[sort_col])
+                            if sc > bs:
+                                bs, best = sc, (cf, pp, vt)
+                    prog.progress((wi+1)/len(wins))
+                    if not best:
+                        continue
+                    oos = _eval(pxd, *best, os_.date(), oe.date(), cap)
+                    if oos:
+                        rows.append({"윈도우": wi+1, "IS": f"{iss.date()}~{ise.date()}",
+                                     "OOS": f"{os_.date()}~{oe.date()}",
+                                     "최적(계수/투입/타겟)": f"{best[0]:.2f}/{best[1]}/{best[2]}",
+                                     "OOS CAGR": oos["CAGR"], "OOS MDD": oos["MDD"], "OOS CALMAR": oos["CALMAR"]})
+                prog.empty()
+                if rows:
+                    wdf = pd.DataFrame(rows)
+                    a = st.columns(3)
+                    a[0].metric("윈도우", f"{len(wdf)}개")
+                    a[1].metric("OOS 평균 CAGR", f"{wdf['OOS CAGR'].mean()*100:.1f}%")
+                    a[2].metric("OOS 평균 MDD", f"{wdf['OOS MDD'].mean()*100:.1f}%")
+                    disp = wdf.copy()
+                    for c in ['OOS CAGR', 'OOS MDD']:
+                        disp[c] = disp[c].map(lambda v: f"{v*100:.1f}%")
+                    disp['OOS CALMAR'] = disp['OOS CALMAR'].map(lambda v: f"{v:.2f}")
+                    st.dataframe(disp, use_container_width=True, hide_index=True)
+
+    else:  # 베이지안
+        try:
+            import optuna
+            ok = True
+        except ImportError:
+            ok = False
+        if not ok:
+            st.error("`optuna` 미설치. `pip install optuna` 후 재시작.")
+        else:
+            n_tr = st.number_input("탐색 횟수", 30, 1000, 150, 10, key="cam_n_tr")
+            if st.button("▶ 베이지안 실행", type="primary", key="cam_run_bayes"):
+                pxd = _get_price(p["ticker"])
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
+                prog = st.progress(0.0)
+                rows, tc = [], [0]
+
+                def _obj(trial):
+                    cf = trial.suggest_float("계수", float(cmin), float(cmax))
+                    pp = trial.suggest_categorical("투입%", opt_pos)
+                    vt = trial.suggest_categorical("변동성타겟", opt_vt)
+                    r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap)
+                    if not r:
+                        return -1e9
+                    rows.append(r); tc[0] += 1
+                    if tc[0] % max(1, int(n_tr)//40) == 0:
+                        prog.progress(min(tc[0]/int(n_tr), 1.0))
+                    return (-abs(r["MDD"]) if sort_col == "MDD" else r[sort_col])
+                study = optuna.create_study(direction="maximize",
+                                            sampler=optuna.samplers.TPESampler(seed=42))
+                study.optimize(_obj, n_trials=int(n_tr))
+                prog.empty()
+                if rows:
+                    bp = study.best_params
+                    st.success(f"최적: 계수={bp.get('계수', 0):.3f} · 투입={bp.get('투입%')}% · 타겟={bp.get('변동성타겟')}")
+                    st.session_state['cam_opt_res'] = pd.DataFrame(rows).sort_values(sort_col, ascending=asc).reset_index(drop=True)
+
+    if 'cam_opt_res' in st.session_state and method != "📈 워크포워드":
+        st.markdown(f"**상위 결과 ({len(st.session_state['cam_opt_res'])}개)**")
+        _show(st.session_state['cam_opt_res'], method[:2])
+
+
+# ══════════════════════════════════════════════
+# 탭 3: 오늘의 주문표 (DSS 계좌 연동)
+# ══════════════════════════════════════════════
+
+def render_ordersheet_tab(params):
+    p = params
+    cfg = _load_cam_config()
+    st.subheader(f"📋 오늘의 오버레이 주문표  ({datetime.today().strftime('%Y-%m-%d')})")
+    st.caption("DSS 계좌의 유휴 예수금에 카마릴라 오버레이를 얹는 실전 주문 가이드입니다.")
+
+    ov_ticker = cfg.get("ov_ticker", "SOXL")
+    ov_coef = float(cfg.get("ov_coef", 0.70))
+    ov_vp = int(cfg.get("ov_vol_period", 20))
+    ov_vt = float(cfg.get("ov_vol_target", 0.70))
+    ov_res_tiers = int(cfg.get("ov_reserve_tiers", 1))
+
+    # ── 1) 계좌 선택 (DSS 연동 or 직접 입력) ──
+    st.markdown("#### 1️⃣ 계좌 선택")
+    try:
+        from strategies import dss
+        dss_cfg = dss._load_dss_config()
+        accounts = dss_cfg.get("accounts", {})
+    except Exception as e:
+        accounts = {}
+        st.caption(f"(DSS 계좌 로드 불가: {e})")
+
+    acct_names = list(accounts.keys())
+    options = [f"DSS: {n}" for n in acct_names] + ["✍️ 직접 입력"]
+    pick = st.selectbox("계좌", options, key="cam_acct_pick")
+
+    if pick.startswith("DSS: "):
+        aname = pick[5:]
+        today_str = datetime.today().strftime("%Y-%m-%d")
+        try:
+            stt = _dss_account_state(aname, json.dumps(accounts[aname], ensure_ascii=False), today_str)
+            dss_cash, dss_capital, dss_div = stt["cash"], stt["capital"], stt["divisions"]
+            held_qty = 0
+            st.success(f"✅ '{aname}' 불러옴 (기준 {stt['date']}): "
+                       f"예수금 ${dss_cash:,.0f} · 투자금 ${dss_capital:,.0f} · "
+                       f"{dss_div}분할 · 보유 {stt['n_pos']}/{dss_div}시드 · 총자산 ${stt['total']:,.0f}")
+        except Exception as e:
+            st.error(f"계좌 상태 계산 실패: {e}")
+            dss_cash = dss_capital = 0; dss_div = 7; held_qty = 0
+    else:
+        a1, a2, a3, a4 = st.columns(4)
+        dss_cash = a1.number_input("예수금 ($)", 0, 10_000_000_000, 0, 1000, key="cam_m_cash")
+        dss_capital = a2.number_input("투자금 ($)", 0, 10_000_000_000, 0, 1000, key="cam_m_cap")
+        dss_div = a3.number_input("분할수", 1, 50, 7, key="cam_m_div")
+        held_qty = a4.number_input("오버레이 보유수량", 0, 100_000_000, 0, 1, key="cam_m_held")
+
+    held_qty = st.number_input("오버레이 보유수량 (어제 매수분, 있으면 시가 매도)", 0, 100_000_000,
+                               value=int(held_qty) if pick == "✍️ 직접 입력" else 0, key="cam_held2")
+
+    # ── 2) 오버레이 계산 ──
+    ov_px = _get_price(ov_ticker)
+    last = ov_px.iloc[-1]
+    last_date = ov_px.index[-1].date()
+    ntd = _next_trading_date(last_date)
+    ph, pl, pc = float(last['High']), float(last['Low']), float(last['Close'])
+    resistance = pc + (ph - pl) * ov_coef
+    vmult = _vol_mult(ov_px, ov_vp, ov_vt)
+    tier = dss_capital / dss_div if dss_div else 0
+    reserve = ov_res_tiers * tier
+    borrowable = max(0.0, dss_cash - reserve)
+    deployable = borrowable * vmult
+    buy_shares = int(deployable / resistance) if resistance > 0 else 0
+
+    st.markdown(f"#### 2️⃣ 오버레이 계산 — `{ov_ticker}` · {last_date} → 적용일 {ntd}")
+    b = st.columns(4)
+    b[0].metric("1티어 금액", f"${tier:,.0f}")
+    b[1].metric(f"유보 ({ov_res_tiers}티어)", f"${reserve:,.0f}")
+    b[2].metric("차입가능 유휴현금", f"${borrowable:,.0f}")
+    b[3].metric("변동성 비중", f"{vmult*100:.0f}%",
+                help=f"최근 {ov_vp}일 변동성 기준, 목표 {ov_vt} 대비 자동 축소")
+
+    # ── 3) 주문 ──
+    st.markdown("#### 3️⃣ 오늘 주문")
+    if held_qty > 0:
+        st.warning(f"💰 **매도**: 보유 {held_qty:,}주 → 시가(MOO) 전량 매도 (≈ ${held_qty*pc:,.0f})")
+    else:
+        st.caption("💰 매도: 보유 오버레이 없음")
+    if buy_shares > 0:
+        st.success(
+            f"🎯 **매수 주문** ({ov_ticker})\n\n"
+            f"- 저항선(돌파 기준가): **${resistance:,.4f}**\n"
+            f"- 장중 ${resistance:,.4f} 돌파 시 → **{buy_shares:,}주** 매수 (지정가 stop-buy)\n"
+            f"- 시가 갭상승 시 → 시가 매수\n"
+            f"- 투입 ≈ **${deployable:,.0f}** (차입 ${borrowable:,.0f} × 변동성 {vmult*100:.0f}%)")
+    else:
+        st.error("매수 가능 금액 없음 — 계좌 정보를 확인하세요.")
+
+    o = st.columns(4)
+    o[0].metric("전일 종가", f"${pc:,.2f}")
+    o[1].metric("전일 고가", f"${ph:,.2f}")
+    o[2].metric("전일 저가", f"${pl:,.2f}")
+    o[3].metric("돌파 기준가", f"${resistance:,.4f}")
+
+    # ── 텔레그램 (DSS 설정 재사용) ──
+    try:
+        from strategies import dss
+        _d = dss._load_dss_config()
+        tg_token, tg_chat = _d.get("tg_token", ""), _d.get("tg_chat_id", "")
+    except Exception:
+        tg_token = tg_chat = ""
+    txt = (f"<b>📋 카마릴라 오버레이 ({ntd})</b>\n종목: {ov_ticker} · 계좌: {pick}\n"
+           f"━━━━━\n🎯 매수: ${resistance:,.4f} 돌파 시 {buy_shares:,}주 (투입 ${deployable:,.0f})\n"
+           f"   변동성 비중 {vmult*100:.0f}%\n"
+           f"💰 매도: {'보유 '+format(held_qty,',')+'주 시가 매도' if held_qty>0 else '없음'}")
+    if st.button("📨 텔레그램 발송", disabled=not (tg_token and tg_chat), key="cam_tg_send"):
+        r = _send_telegram(tg_token, tg_chat, txt)
+        st.success("✅ 발송 완료!") if r.get("ok") else st.error(f"실패: {r.get('description')}")
+    if not (tg_token and tg_chat):
+        st.caption("※ 텔레그램은 DSS 개인설정의 토큰/Chat ID를 재사용합니다.")
+
+
+# ══════════════════════════════════════════════
+# 탭 4: 전략 소개 & 성과
+# ══════════════════════════════════════════════
+
+def render_intro_tab(params=None):
+    st.subheader("📖 전략 소개 & 성과")
+    t = st.tabs(["① 무엇인가", "② 매매 규칙", "③ 왜 이 설정", "④ 애드온 운용", "⑤ 검증 성과", "⑥ 주의사항"])
+    with t[0]:
+        st.markdown("""
+### 카마릴라 피봇 돌파 매매법
+전일 **고가·저가·종가**만으로 오늘의 저항선을 계산해, **강한 상승 돌파가 나오면 사서 다음날 아침에 판다.**
+완두콩님 원전략에 **변동성 위험관리 + 유휴현금 애드온 + 정직한 체결 검증**을 더했습니다.
+""")
+        st.code("저항선 = 전일종가 + (전일고가 − 전일저가) × 계수\n"
+                "계수 0.55 = R4(원전략) / 0.70 = 우리 운용값(강한 돌파 선별)", language="text")
+    with t[1]:
+        st.markdown("""
+### 매일 하는 일 (한국 시간 기준)
+미국 장은 **한국 새벽에 마감**되고 **한국 밤에 개장**합니다. 그래서:
+
+**🌅 새벽 (미국 마감, 5~6시경) — 저항선 확정**
+직전 미국봉(고가·저가·종가)이 확정되면 저항선이 정해집니다.
+```
+저항선 = 직전 종가 + (직전 고가 − 직전 저가) × 0.70
+```
+돌파가격이 **미리 확정**되므로, 아침에 확인 후 stop-buy 주문을 걸어둘 수 있습니다. (손매매 친화적)
+
+**☀️ 낮 — 투입비중 결정**
+```
+매수비중 = min(100%, 목표0.7 ÷ 최근20일 변동성)
+```
+변동성이 치솟은 날은 비중을 자동 축소 → 위기 때 발 빼기.
+
+**🌙 밤 (미국 개장, 10:30~11:30시경) — 주문 실행**
+- 보유분 있으면 → **개장 시가(MOO)로 전량 매도**
+- 장중 저항선 돌파 → 그 가격에 매수 (갭상승이면 시가 매수)
+
+**🔁 다음날 새벽 다시 매도 → 반복** — 보유기간 딱 **하룻밤(1거래일)**
+
+> ※ 서머타임(3~11월): 개장 ≈ 밤 10:30 / 마감 ≈ 새벽 5:00. 겨울(11~3월): 개장 ≈ 밤 11:30 / 마감 ≈ 새벽 6:00.
+""")
+    with t[2]:
+        st.markdown("""
+### 검증으로 도달한 설정
+- **청산 = 익일 시가 MOO**: 당일종가·익일종가·트레일링·손절 전부 비교 → 3구간 홀드아웃 모두 CALMAR 1위.
+  익일종가(MOC)는 되돌림에 MDD −78%, 트레일링은 휩쏘로 마이너스.
+- **계수 0.70 + 변동성타겟 0.7**: 손절 없어 갭 가정이 없는 **정직한 수치**. 3구간 모두 CAGR~68%·MDD−28%.
+- **버린 것**: 손절 기반 고CAGR은 "갭 무시 −5% 체결" 가정으로 부풀려진 것(보정 시 CALMAR 2.86→1.15).
+  타인의 CAGR 198%/Calmar 6.93은 과적합 트릭(거의 항상보유 + 잔량누적 + 종가MDD).
+""")
+    with t[3]:
+        st.markdown("""
+### 유휴 예수금 애드온 + 워터폴
+- DSS는 평소 자산의 절반 이상을 예수금으로 보유 → 그 유휴현금에 오버레이
+- 오버레이는 **유휴현금만** 사용, DSS가 살 수 있게 **1티어는 유보**
+- 손익 → 별도 수익계좌 / 쌓이면 연말 일정%를 DSS 증액
+- 공격형 DSS는 MDD가 증액과 무관히 ~−50% 고정 → **증액 70%가 CALMAR 정점**
+""")
+        st.info("주문표 탭에서 DSS 계좌를 선택하면 예수금·투자금·분할수를 자동으로 읽어와 오늘 주문을 계산합니다.")
+    with t[4]:
+        st.markdown("""
+### 백테스트 성과 (SOXL 2010~2026, 현실 체결·홀드아웃)
+**추천: 계수0.70 · MOO · 변동성타겟0.7**
+
+| 구간 | CAGR | MDD | CALMAR |
+|------|:----:|:----:|:----:|
+| 전체 | 68.6% | −28.0% | 2.45 |
+| 전반(10~18) | 69.8% | −27.5% | 2.53 |
+| 후반(19~26) | 67.2% | −28.0% | 2.40 |
+
+→ 두 반기 거의 동일 = **robust(과적합 아님)**
+
+**합산(공격형 DSS + 오버레이 + 증액70%, 2015~26)**: CAGR~96% / MDD~−50% / 자산 +132%
+""")
+    with t[5]:
+        st.markdown("""
+### ⚠️ 위험
+1. **SOXL = 3배 레버리지 단일종목** (실제 B&H MDD −90%). DSS와 동시급락 위험 — 오버레이는 위험분산 X, 수익만 추가
+2. **돌파 슬리피지** — 백테스트 0.1% 반영, 실거래는 더 클 수 있음
+3. **MDD −28~50% 실재** — 변동성타게팅이 낮추지만 0 아님
+4. **과적합 경계** — 실거래 데이터 쌓이면 주기적 재점검
+5. **워터폴 버퍼** — 증액 많을수록 손실보전 버퍼 더 필요, 처음엔 작게 시작
+""")
+
+
+# ══════════════════════════════════════════════
+# 탭 5: DB 조회 (간단 매매기록)
+# ══════════════════════════════════════════════
+
+def render_db_tab(params):
+    p = params
+    st.subheader("📂 DB 조회 — 일별 매매 기록")
+    st.caption("백테스트 결과를 일자별로 조회합니다.")
+    bt = _run_bt(p["ticker"], p["coef"], p["initial_capital"], p["position_pct"],
+                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"])
+    if not len(bt):
+        st.warning("데이터 없음")
+        return
+    show = bt[['날짜', '시가', '고가', '저가', '종가', '저항선', '매수체결', '매수수량',
+               '매도가', '매도수량', '보유수량', '예수금', '총자산', '당일실현']].copy()
+    show['날짜'] = show['날짜'].dt.strftime('%Y-%m-%d')
+    st.dataframe(show, use_container_width=True, hide_index=True, height=560)
+    st.download_button("CSV 다운로드", show.to_csv(index=False).encode('utf-8-sig'),
+                       file_name=f"camarilla_db_{p['ticker']}.csv", key="cam_db_dl")
+
+
+# ══════════════════════════════════════════════
+# 탭 6: 개인 설정
+# ══════════════════════════════════════════════
+
+def render_settings_tab():
+    st.subheader("⚙️ 개인 설정")
+    cfg = _load_cam_config()
+    st.success(f"🖥️ 설정 저장 위치: 로컬 `{_CAM_CONFIG_PATH}`" +
+               (" + 클라우드 동기화" if _IS_CLOUD else ""))
+
+    with st.container(border=True):
+        st.markdown("#### 🎯 오버레이 운용 설정 (확정 기본값)")
+        v = st.columns(3)
+        o_tkr = v[0].text_input("오버레이 종목", value=cfg.get("ov_ticker", "SOXL"), key="cam_s_tkr")
+        o_coef = v[1].number_input("저항선 계수", 0.1, 2.0, float(cfg.get("ov_coef", 0.70)),
+                                   0.05, format="%.2f", key="cam_s_coef")
+        o_vt = v[2].number_input("변동성 타겟", 0.2, 1.5, float(cfg.get("ov_vol_target", 0.70)),
+                                 0.05, format="%.2f", key="cam_s_vt")
+        v2 = st.columns(3)
+        o_vp = v2[0].number_input("변동성 측정기간", 5, 120, int(cfg.get("ov_vol_period", 20)), key="cam_s_vp")
+        o_res = v2[1].number_input("유보 티어수", 1, 5, int(cfg.get("ov_reserve_tiers", 1)), key="cam_s_res")
+        o_inj = v2[2].number_input("DSS 증액 비율 (%)", 0, 100,
+                                   int(cfg.get("ov_inject_frac", 0.70)*100), 5, key="cam_s_inj")
+        st.caption("권장: 계수 0.70 · 타겟 0.70 · 유보 1티어 · 증액 70%(공격형 DSS) — 홀드아웃 검증된 정직 설정")
+        if st.button("💾 오버레이 설정 저장", type="primary", key="cam_s_save"):
+            cfg.update({"ov_ticker": o_tkr.strip().upper(), "ov_coef": float(o_coef),
+                        "ov_vol_target": float(o_vt), "ov_vol_period": int(o_vp),
+                        "ov_reserve_tiers": int(o_res), "ov_inject_frac": o_inj/100.0})
+            _save_cam_config(cfg)
+            st.success("저장되었습니다.")
+
+    with st.container(border=True):
+        st.markdown("#### 💬 텔레그램")
+        st.info("카마릴라 주문표는 **DSS 개인설정의 텔레그램 토큰·Chat ID를 재사용**합니다. "
+                "DSS 탭에서 한 번 설정하면 여기서도 발송됩니다.")
+
+    with st.container(border=True):
+        st.markdown("#### 🔄 데이터")
+        if st.button("가격 데이터 캐시 초기화", key="cam_s_cache"):
+            st.cache_data.clear()
+            st.success("캐시를 비웠습니다.")

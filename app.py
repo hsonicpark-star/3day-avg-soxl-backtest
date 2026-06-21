@@ -29,7 +29,7 @@ except Exception as _import_err:
     st.stop()
 
 # ── 전략 목록 ────────────────────────────────────────────────
-_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🧩 포트폴리오 합산"]
+_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🎲 카마릴라 돌파", "🧩 포트폴리오 합산"]
 
 # ── 전략 판별 ────────────────────────────────────────────────
 _strategy_title = st.session_state.get("strategy_radio", "📐 표준편차매매")
@@ -38,6 +38,7 @@ _is_sigma = (_strategy_title == "📐 Sigma매매")
 _is_dss = (_strategy_title == "🌊 DSS 동파법")
 _is_iuo = (_strategy_title == "📊 IUO 매매법")
 _is_dual = (_strategy_title == "🎯 듀얼스나이퍼")
+_is_cam = (_strategy_title == "🎲 카마릴라 돌파")
 _is_portfolio = (_strategy_title == "🧩 포트폴리오 합산")
 
 # ── 포트폴리오 합산 lazy import (선택 시에만 로드) ─────────────
@@ -76,6 +77,18 @@ if _is_iuo:
         import traceback
         st.code(traceback.format_exc())
 
+# ── 카마릴라 lazy import (선택 시에만 로드) ───────────────────
+cam = None
+if _is_cam:
+    try:
+        from strategies import camarilla as cam
+        import importlib
+        importlib.reload(cam)
+    except Exception as _cam_err:
+        st.error(f"⚠️ 카마릴라 모듈 로드 실패: {_cam_err}")
+        import traceback
+        st.code(traceback.format_exc())
+
 # ── 듀얼스나이퍼 lazy import (선택 시에만 로드) ───────────────
 dual = None
 if _is_dual:
@@ -94,6 +107,8 @@ if _is_dual:
 # ── 타이틀 ───────────────────────────────────────────────────
 if _is_dual:
     st.title("🎯 Dual Sniper Pro 백테스터")
+elif _is_cam:
+    st.title("🎲 카마릴라 피봇 돌파 백테스터")
 elif _is_iuo:
     st.title("📊 IUO 매매법 백테스터")
 elif _is_dss:
@@ -192,6 +207,22 @@ with st.sidebar:
         initial_capital = params.get("bt_initial_capital", 100000.0)
         data_source = "야후 파이낸스 (yfinance)"
         excel_file = None
+
+    elif _is_cam and cam:
+        # 카마릴라: 자체 사이드바 (돌파 + 변동성 타게팅)
+        params = cam.render_sidebar()
+        ticker = params.get("bt_ticker", "SOXL")
+        start_date = params.get("bt_start_date")
+        end_date = params.get("bt_end_date")
+        initial_capital = params.get("bt_initial_capital", 100000.0)
+        data_source = "야후 파이낸스 (yfinance)"
+        excel_file = None
+
+    elif _is_cam and not cam:
+        st.warning("카마릴라 모듈 로드 실패. 위 에러를 확인하세요.")
+        params = {}; ticker = "SOXL"
+        start_date = datetime(2010, 3, 12).date(); end_date = datetime.today().date()
+        initial_capital = 100000.0; data_source = "야후 파이낸스 (yfinance)"; excel_file = None
 
     elif _is_iuo and iuo:
         # IUO: 자체 사이드바 (SOXL 전용, QQQ 추세 옵션)
@@ -317,6 +348,14 @@ elif _is_dss and dss:
 elif _is_dss and not dss:
     st.warning("⚠️ DSS 모듈을 로드하지 못했습니다.")
     st.stop()
+elif _is_cam and cam:
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표",
+        "📖 전략 소개 & 성과", "📂 DB 조회", "⚙️ 개인 설정",
+    ])
+elif _is_cam and not cam:
+    st.warning("⚠️ 카마릴라 모듈을 로드하지 못했습니다.")
+    st.stop()
 elif _is_sigma:
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 백테스트", "📈 매도 전략 가이드", "📋 주문표 & 계좌관리",
@@ -337,6 +376,8 @@ else:
 with tab1:
     if _is_dual and dual:
         dual.render_backtest_tab(params)
+    elif _is_cam and cam:
+        cam.render_backtest_tab(params)
     elif _is_iuo and iuo:
         iuo.render_backtest_tab(params)
     elif _is_dss and dss:
@@ -353,6 +394,8 @@ with tab1:
 with tab2:
     if _is_dual and dual:
         dual.render_optimization_tab(params)
+    elif _is_cam and cam:
+        cam.render_optimization_tab(params)
     elif _is_iuo and iuo:
         iuo.render_optimization_tab(params)
     elif _is_dss and dss:
@@ -369,6 +412,8 @@ with tab2:
 with tab3:
     if _is_dual and dual:
         dual.render_ordersheet_tab(params)
+    elif _is_cam and cam:
+        cam.render_ordersheet_tab(params)
     elif _is_iuo and iuo:
         iuo.render_ordersheet_tab(params)
     elif _is_dss and dss:
@@ -385,6 +430,8 @@ with tab3:
 with tab4:
     if _is_dual and dual:
         dual.render_intro_tab(params)
+    elif _is_cam and cam:
+        cam.render_intro_tab(params)
     elif _is_iuo and iuo:
         iuo.render_intro_tab(params)
     elif _is_dss and dss:
@@ -401,6 +448,8 @@ with tab4:
 with tab5:
     if _is_dual and dual:
         dual.render_db_tab(params)
+    elif _is_cam and cam:
+        cam.render_db_tab(params)
     elif _is_iuo and iuo:
         iuo.render_db_tab(params)
     elif _is_dss and dss:
@@ -412,10 +461,13 @@ with tab5:
     else:
         avg_close.render_settings_tab()
 
-# 6번째 탭 (설정) — IUO / DSS / 듀얼
+# 6번째 탭 (설정) — IUO / DSS / 듀얼 / 카마릴라
 if _is_dual and dual:
     with tab6:
         dual.render_settings_tab()
+elif _is_cam and cam:
+    with tab6:
+        cam.render_settings_tab()
 elif _is_iuo and iuo:
     with tab6:
         iuo.render_settings_tab()
