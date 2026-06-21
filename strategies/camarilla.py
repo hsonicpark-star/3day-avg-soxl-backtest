@@ -519,6 +519,16 @@ def render_optimization_tab(params):
 _SRC_STRATEGIES = ["DSS", "종가평균", "표준편차", "Sigma", "IUO", "듀얼스나이퍼", "직접 입력"]
 
 
+def _cap_adj_sum(cfg_dict) -> float:
+    """capital_adj_history(증액/감액 이력)의 순합. 종가평균·표준편차용(백테스트 후 합산)."""
+    raw = cfg_dict.get("capital_adj_history", "[]")
+    try:
+        hist = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return float(sum(float(it.get("조정금액", 0)) for it in hist))
+    except Exception:
+        return 0.0
+
+
 def _src_list_accounts(strategy):
     """해당 전략의 계좌/티커 목록. 실패 시 빈 리스트."""
     try:
@@ -569,8 +579,11 @@ def _src_get_state(strategy, account, today_str):
             pdf, os_start, account, float(c.get("a_buy", -0.005)), float(c.get("a_sell", 0.009)),
             float(c.get("sell_ratio", 100)), int(c.get("divisions", 5)), cap,
             n_days=int(c.get("n_days", 2)))
-        return {"cash": res["cash"], "capital": res["current_asset"], "div": int(c.get("divisions", 5)),
-                "n_pos": len(res.get("open_tiers", [])), "detail": f"종가평균 {account}"}
+        adj = _cap_adj_sum(c)   # 증액/감액 반영 (그쪽 주문표와 동일 방식)
+        return {"cash": res["cash"] + adj, "capital": res["current_asset"] + adj,
+                "div": int(c.get("divisions", 5)),
+                "n_pos": len(res.get("open_tiers", [])),
+                "detail": f"종가평균 {account}" + (f" (조정 {adj:+,.0f})" if adj else "")}
 
     if strategy == "표준편차":
         from stdev_engine import run_stdev_ordersheet
@@ -583,9 +596,10 @@ def _src_get_state(strategy, account, today_str):
             k_buy=float(c.get("sd_k_buy", 0.65)), k_sell=float(c.get("sd_k_sell", 0.45)),
             sell_ratio=float(c.get("sell_ratio", 85)), divisions=int(c.get("divisions", 5)),
             renewal=int(c.get("sd_renewal", 5)), initial_capital=cap)
-        return {"cash": res["cash"], "capital": res.get("total_invest", res["final_asset"]),
+        adj = _cap_adj_sum(c)   # 증액/감액 반영
+        return {"cash": res["cash"] + adj, "capital": res.get("total_invest", res["final_asset"]) + adj,
                 "div": int(c.get("divisions", 5)), "n_pos": max(0, int(res.get("next_tier", 1)) - 1),
-                "detail": f"표준편차 {account}"}
+                "detail": f"표준편차 {account}" + (f" (조정 {adj:+,.0f})" if adj else "")}
 
     if strategy == "듀얼스나이퍼":
         from strategies import dual_sniper as dual
