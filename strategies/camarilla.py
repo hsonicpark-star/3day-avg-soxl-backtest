@@ -893,6 +893,13 @@ def render_intro_tab(params=None):
 - 갭상승만 잡으면 안 되는 이유: 장중돌파가 거래의 **76%·수익의 대부분** →
   갭상승만 하면 CAGR 68%→16%로 급락. 그래서 자동감시(역지정가) 매수가 **필수**입니다.
 """)
+        st.markdown("##### 📷 메리츠 자동매수 감시주문 설정 예시")
+        _img = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "meritz_autobuy.png")
+        if os.path.exists(_img):
+            st.image(_img, width=400,
+                     caption="①현재가 ≥ 저항선  ②시장가  ③유지=당일 — 위 화면 그대로 따라 입력")
+        else:
+            st.info("이미지 로딩 중이거나 아직 배포 반영 전입니다. 새로고침(Ctrl+Shift+R) 후 다시 확인해 주세요.")
     with t[3]:
         st.markdown("""
 ### 검증으로 도달한 설정
