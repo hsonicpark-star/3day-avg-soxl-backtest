@@ -86,9 +86,17 @@ def _save_cam_config(cfg: dict):
 # 데이터 / 유틸
 # ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner="가격 데이터 로딩...")
+@st.cache_data(show_spinner="가격 데이터 로딩...", ttl=1800)
 def _get_price(ticker: str):
-    df = load_price_data(ticker, "2009-06-01", "2026-12-31")
+    # yfinance 일시 실패 대비 재시도 (빈 결과가 캐시에 굳는 것 방지)
+    df = None
+    for _att in range(3):
+        try:
+            df = load_price_data(ticker, "2009-06-01", "2026-12-31")
+        except Exception:
+            df = None
+        if df is not None and len(df) > 50:
+            break
     # SOXL: yfinance 확정 종가 누락 시 백업 구글시트(DB)로 보충 — DSS/듀얼/표준편차와 동일 백업
     if str(ticker).upper() == "SOXL" and df is not None and len(df):
         try:
@@ -259,7 +267,11 @@ def render_backtest_tab(params):
     bt = _run_bt(p["ticker"], p["coef"], p["initial_capital"], p["position_pct"],
                  p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"], _slip)
     if not len(bt):
-        st.warning("데이터가 부족합니다.")
+        st.warning(f"⚠️ **{p['ticker']}** 가격 데이터를 불러오지 못했습니다 — yfinance 일시 오류 가능성이 큽니다.")
+        if st.button("🔄 데이터 캐시 초기화 후 재시도", key="cam_bt_retry", type="primary"):
+            st.cache_data.clear()
+            st.rerun()
+        st.caption("버튼을 눌러도 안 되면 1~2분 후 다시 시도해 주세요 (yfinance 회복 대기).")
         return
     m = compute_metrics(bt, p["initial_capital"])
     _sig = f" · 변동성타겟 {p['vol_target']}" if p["signal"] == "vol" else ""
