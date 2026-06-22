@@ -1050,22 +1050,32 @@ def render_ordersheet_tab(params):
 # 탭 4: 전략 소개 & 성과
 # ══════════════════════════════════════════════
 
-def _overlay_table_html(title, sub, growth_col, rows):
-    """애드온 비교 스타일 표(크림 헤더). rows=[(구성, CAGR, MDD, CALMAR, 자산증가, 강조?)]."""
-    th = ("background:#F6EFD6;color:#5b4a1f;font-weight:700;"
-          "border:1px solid #e3d9b8;padding:7px 10px;text-align:center")
-    base_td = "border:1px solid #ECECEC;padding:7px 10px;text-align:center;color:#333"
-    head = (f"<div style='font-weight:700;margin:16px 0 5px;color:#222'>{title}"
-            f" <span style='font-weight:400;color:#999;font-size:0.85em'>{sub}</span></div>")
-    cols = ["구성", "CAGR", "MDD", "CALMAR", growth_col]
-    hrow = "".join(f"<th style='{th}'>{c}</th>" for c in cols)
+_TBL_TH = ("background:#F6EFD6;color:#5b4a1f;font-weight:700;"
+           "border:1px solid #e3d9b8;padding:7px 10px;text-align:center")
+_TBL_TD = "border:1px solid #ECECEC;padding:7px 10px;text-align:center;color:#333"
+
+
+def _styled_table_html(headers, rows, title=None, sub=None):
+    """크림 헤더 스타일 표. rows=[(cells_list, 강조?)]. title/sub 선택."""
+    head = ""
+    if title:
+        head = (f"<div style='font-weight:700;margin:16px 0 5px;color:#222'>{title}"
+                + (f" <span style='font-weight:400;color:#999;font-size:0.85em'>{sub}</span>" if sub else "")
+                + "</div>")
+    hrow = "".join(f"<th style='{_TBL_TH}'>{c}</th>" for c in headers)
     body = ""
-    for label, cagr, mdd, cal, grw, bold in rows:
+    for cells, bold in rows:
         extra = ("font-weight:700;background:#FCFBF5;" if bold else "")
-        cells = "".join(f"<td style='{base_td};{extra}'>{v}</td>" for v in (label, cagr, mdd, cal, grw))
-        body += f"<tr>{cells}</tr>"
-    return (head + "<table style='border-collapse:collapse;width:100%;font-size:0.9em'>"
+        tds = "".join(f"<td style='{_TBL_TD};{extra}'>{v}</td>" for v in cells)
+        body += f"<tr>{tds}</tr>"
+    return (head + "<table style='border-collapse:collapse;width:100%;font-size:0.9em;margin:6px 0'>"
             f"<tr>{hrow}</tr>{body}</table>")
+
+
+def _overlay_table_html(title, sub, growth_col, rows):
+    """애드온 비교 스타일 표. rows=[(구성, CAGR, MDD, CALMAR, 자산증가, 강조?)]."""
+    return _styled_table_html(["구성", "CAGR", "MDD", "CALMAR", growth_col],
+                              [(r[:5], r[5]) for r in rows], title=title, sub=sub)
 
 
 def render_intro_tab(params=None):
@@ -1193,85 +1203,80 @@ def render_intro_tab(params=None):
 """)
         st.info("주문표 탭에서 출처 전략·계좌를 선택하면 예수금·투자금·분할수를 자동으로 읽어와 오늘 주문을 계산합니다.")
     with t[5]:
-        st.markdown("""
-## 📊 카마릴라 단독 성과 (상세)
-**설정: 계수0.70 · 익일시가 MOO · 단기 4일·일간σ목표 0.030 · 슬리피지 0.1% · SOXL 2010-03~2026-06**
+        st.markdown("## 📊 카마릴라 단독 성과 (상세)")
+        st.caption("계수0.70 · 익일시가 MOO · 단기 4일·일간σ목표 0.030 · 슬리피지 0.1% · SOXL 2010-03~2026-06")
 
-### ① 핵심 지표 (전체기간 16.3년)
-| 지표 | 값 | 지표 | 값 |
-|---|:--:|---|:--:|
-| **CAGR** | **59.5%** | **MDD** | **−26.3%** |
-| **CALMAR** | **2.26** | 총수익률 | +195,300% |
-| Sharpe | 1.62 | Sortino | 2.08 |
-| 최종자산(초기 $100k) | $195.4M | 최장 언더워터 | 275일(~13개월) |
+        st.markdown("**① 핵심 지표** (전체기간 16.3년)")
+        st.markdown(_styled_table_html(
+            ["지표", "값", "지표", "값"], [
+                (["CAGR", "59.5%", "MDD", "−26.3%"], True),
+                (["CALMAR", "2.26", "총수익률", "+195,300%"], True),
+                (["Sharpe", "1.62", "Sortino", "2.08"], False),
+                (["최종자산(초기 $100k)", "$195.4M", "최장 언더워터", "275일(~13개월)"], False),
+            ]), unsafe_allow_html=True)
+        st.caption("절대 $는 전액 재투자·세금/인출 제외 가정. 핵심은 비율 지표(CAGR·MDD·CALMAR).")
 
-*절대 $는 전액 재투자·세금/인출 제외 가정. 핵심은 비율 지표(CAGR·MDD·CALMAR).*
+        st.markdown("**② 거래 통계**")
+        st.markdown(_styled_table_html(
+            ["항목", "값", "항목", "값"], [
+                (["승률", "59.2%", "매도 건수", "1,494건 (승885/패609)"], True),
+                (["연 거래횟수", "~92회", "Profit Factor", "1.44"], True),
+                (["평균이익", "+$723,773", "평균손실", "−$731,099"], False),
+                (["손익비(Payoff)", "0.99", "양수 연도", "16 / 17"], False),
+            ]), unsafe_allow_html=True)
+        st.markdown("""→ 손익비는 ~1.0(이익·손실 크기 대칭)인데 **승률 59%**라 누적 우위(PF 1.44).
+즉 **큰 한 방이 아니라 "이기는 빈도"가 엔진**. 1일 보유라 한 거래의 손익이 작고 분산이 커, 잦은 승리로 쌓는 구조.""")
 
-### ② 거래 통계
-| 항목 | 값 | 항목 | 값 |
-|---|:--:|---|:--:|
-| 승률 | **59.2%** | 매도 건수 | 1,494건 (승 885 / 패 609) |
-| 연 거래횟수 | ~92회 | Profit Factor | **1.44** |
-| 평균이익 | +$723,773 | 평균손실 | −$731,099 |
-| 손익비(Payoff) | 0.99 | 양수 연도 | **16 / 17** |
+        st.markdown("**③ 구간 안정성** (과적합 검증)")
+        st.markdown(_styled_table_html(
+            ["구간", "CAGR", "MDD", "CALMAR", "Sharpe", "승률"], [
+                (["전반 2010~2018", "57.5%", "−25.7%", "2.24", "1.78", "60.0%"], False),
+                (["후반 2019~2026", "61.8%", "−26.3%", "2.35", "1.50", "58.4%"], False),
+            ]), unsafe_allow_html=True)
+        st.markdown("→ 두 반기 거의 동일(CAGR 57.5 vs 61.8, CALMAR 2.24 vs 2.35) = **robust, 과적합 아님**.")
 
-→ 손익비는 ~1.0(이익·손실 크기 대칭)인데 **승률 59%**라 누적 우위(PF 1.44). 즉 **큰 한 방이 아니라
-"이기는 빈도"가 엔진**. 1일 보유라 한 거래의 손익이 작고 분산이 커, 잦은 승리로 쌓는 구조.
+        st.markdown("**④ σ 방식 비교** (왜 4일인가)")
+        st.markdown(_styled_table_html(
+            ["σ 방식", "CAGR", "MDD", "CALMAR", "최저구간 CALMAR"], [
+                (["★ 단기 4일·0.030", "59.5%", "−26.3%", "2.26", "1.70~1.80"], True),
+                (["단기 4일·0.0283(안정형)", "54.5%", "−23.9%", "2.28", "1.80"], False),
+                (["20일 연환산·0.70", "56.0%", "−30.2%", "1.86", "1.09"], False),
+            ]), unsafe_allow_html=True)
+        st.markdown("""→ 기간×목표×계수 합동 최적화 결과 **4일·계수0.70**이 최적.
+20일은 2021~ 변동장에서 디레버리징이 늦어 CALMAR 1.09로 약화, 단기 4일은 1.80 유지.""")
 
-### ③ 구간 안정성 (과적합 검증)
-| 구간 | CAGR | MDD | CALMAR | Sharpe | 승률 |
-|---|:--:|:--:|:--:|:--:|:--:|
-| 전반 2010~2018 | 57.5% | −25.7% | 2.24 | 1.78 | 60.0% |
-| 후반 2019~2026 | 61.8% | −26.3% | 2.35 | 1.50 | 58.4% |
+        st.markdown("**⑤ 연도별 수익률** (음수해 단 1번)")
+        st.markdown(_styled_table_html(
+            ["연도", "수익", "연도", "수익", "연도", "수익"], [
+                (["2010", "+45%", "2016", "+68%", "2022", "−4%"], False),
+                (["2011", "+105%", "2017", "+64%", "2023", "+40%"], False),
+                (["2012", "+71%", "2018", "+5%", "2024", "+16%"], False),
+                (["2013", "+57%", "2019", "+146%", "2025", "+51%"], False),
+                (["2014", "+69%", "2020", "+102%", "2026※", "+95%"], False),
+                (["2015", "+41%", "2021", "+57%", "", ""], False),
+            ]), unsafe_allow_html=True)
+        st.caption("※2026은 6/17까지 · 17년 중 16년 양수, 유일한 음수해 2022도 −4%로 경미.")
 
-→ 두 반기 거의 동일(CAGR 57.5 vs 61.8, CALMAR 2.24 vs 2.35) = **robust, 과적합 아님**.
+        st.markdown("**⑥ Buy & Hold 대비**")
+        st.markdown(_styled_table_html(
+            ["", "CAGR", "MDD"], [
+                (["카마릴라 단독", "59.5%", "−26.3%"], True),
+                (["B&H SOXL", "44.6%", "−90.5%"], False),
+            ]), unsafe_allow_html=True)
+        st.markdown("→ CAGR는 더 높고 MDD는 1/3 수준. 3배 레버리지를 **−90% 낙폭 없이** 굴리는 게 핵심 가치.")
 
-### ④ σ 방식 비교 (왜 4일인가)
-| σ 방식 | CAGR | MDD | CALMAR | 최저구간 CALMAR |
-|---|:--:|:--:|:--:|:--:|
-| **★ 단기 4일·0.030** | **59.5%** | −26.3% | **2.26** | 1.70~1.80 |
-| 단기 4일·0.0283(안정형) | 54.5% | **−23.9%** | 2.28 | 1.80 |
-| 20일 연환산·0.70 | 56.0% | −30.2% | 1.86 | **1.09** |
-
-→ 기간×목표×계수 합동 최적화 결과 **4일·계수0.70**이 최적. 20일은 2021~ 변동장에서 디레버리징이
-늦어 CALMAR 1.09로 약화, 단기 4일은 1.80 유지.
-
-### ⑤ 연도별 수익률 (음수해 단 1번)
-| 연도 | 수익 | 연도 | 수익 | 연도 | 수익 |
-|---|:--:|---|:--:|---|:--:|
-| 2010 | +45% | 2016 | +68% | 2022 | **−4%** |
-| 2011 | +105% | 2017 | +64% | 2023 | +40% |
-| 2012 | +71% | 2018 | +5% | 2024 | +16% |
-| 2013 | +57% | 2019 | **+146%** | 2025 | +51% |
-| 2014 | +69% | 2020 | +102% | 2026※ | +95% |
-| 2015 | +41% | 2021 | +57% | | |
-
-※2026은 6/17까지 · 17년 중 **16년 양수**, 유일한 음수해 2022도 −4%로 경미.
-
-### ⑥ Buy & Hold 대비
-| | CAGR | MDD |
-|---|:--:|:--:|
-| 카마릴라 단독 | 59.5% | **−26.3%** |
-| B&H SOXL | 44.6% | −90.5% |
-
-→ CAGR는 더 높고 MDD는 1/3 수준. 3배 레버리지를 **−90% 낙폭 없이** 굴리는 게 핵심 가치.
-
----
-
-## 🌊 워터폴 합산 성과 (애드온 + 연말 증액)
-**DSS 공격형 + 카마릴라 오버레이(4일·0.030) + 수확익 70% 연말 DSS 증액 · 2015~2026 · 슬리피지 0.1%**
-
-| 구성 | CAGR | MDD | CALMAR | 최종자산 |
-|---|:--:|:--:|:--:|:--:|
-| DSS 공격형 단독 | 82.2% | −50.1% | 1.64 | $95.4M |
-| **+오버레이+증액70%** | **96.8%** | −50.9% | **1.90** | **$229.7M** |
-
-→ **자산 +141%** (오버레이 순익 $71.9M · DSS 증액 누적 $4.45M). MDD는 거의 그대로(공격형 DSS의
-−50%는 증액과 무관히 고정), 그 위에 유휴현금 수확분이 복리로 얹힘 → CALMAR 1.64→1.90.
-
-⚠️ **슬리피지 주의**: 1일 보유라 거래가 잦아(연 ~92회) 슬리피지 민감도가 큽니다. 기본값 0.1% 기준이며,
-실거래 체결이 더 나쁘면 성과도 비례해 줄어듭니다 (사이드바에서 조절 가능).
-""")
+        st.divider()
+        st.markdown("## 🌊 워터폴 합산 성과 (애드온 + 연말 증액)")
+        st.caption("DSS 공격형 + 카마릴라 오버레이(4일·0.030) + 수확익 70% 연말 DSS 증액 · 2015~2026 · 슬리피지 0.1%")
+        st.markdown(_styled_table_html(
+            ["구성", "CAGR", "MDD", "CALMAR", "최종자산"], [
+                (["DSS 공격형 단독", "82.2%", "−50.1%", "1.64", "$95.4M"], False),
+                (["+오버레이+증액70%", "96.8%", "−50.9%", "1.90", "$229.7M"], True),
+            ]), unsafe_allow_html=True)
+        st.markdown("""→ **자산 +141%** (오버레이 순익 $71.9M · DSS 증액 누적 $4.45M). MDD는 거의 그대로
+(공격형 DSS의 −50%는 증액과 무관히 고정), 그 위에 유휴현금 수확분이 복리로 얹힘 → CALMAR 1.64→1.90.""")
+        st.warning("⚠️ **슬리피지 주의**: 1일 보유라 거래가 잦아(연 ~92회) 슬리피지 민감도가 큽니다. "
+                   "기본값 0.1% 기준이며, 실거래 체결이 더 나쁘면 성과도 비례해 줄어듭니다 (사이드바에서 조절 가능).")
     with t[6]:
         st.markdown("""
 ### ⚠️ 위험
