@@ -667,46 +667,68 @@ def _src_get_state(strategy, account, today_str):
                 "detail": f"표준편차 {account}" + (f" (조정 {adj:+,.0f})" if adj else "")}
 
     if strategy == "듀얼스나이퍼":
+        # 자동발송 calc_ds_order와 동일 로직 (params 직접구성·자본조정·모드소스)
         from strategies import dual_sniper as dual
         accounts = dual._load_ds_config().get("accounts", {})
         if account not in accounts:
             raise ValueError(f"듀얼 계좌 '{account}' 없음")
         ad = accounts[account]
-        os_start = ad.get("os_start", "2016-01-04")
-        os_capital = float(ad.get("os_capital", 10000))
-        ds_p, mode_rule = dual._acct_params(ad, {})
-        ds_p.initial_capital = os_capital   # 시뮬 시작자본 = base (render와 동일)
-        raw = ad.get("capital_adj_history", "[]")
+        ap = ad.get("params", {}) or {}
+        def _g(k, d):
+            return ap.get(k, d)
+        sf_div = int(_g("sf_div", 5))
         try:
-            adj = json.loads(raw) if isinstance(raw, str) else (raw or [])
+            weights = tuple(float(x.strip()) for x in str(_g("sf_weights", "6, 13, 20, 27, 34")).split(",") if x.strip())
         except Exception:
-            adj = []
-        inj = {a["날짜"]: float(a["조정금액"]) for a in adj if a.get("날짜")}
+            weights = (6, 13, 20, 27, 34)
+        if len(weights) != sf_div:
+            weights = tuple([6, 13, 20, 27, 34, 40, 46, 52][:sf_div]) or (100.0,)
+        p_ds = dual.DualSniperParams(
+            ag_divisions=int(_g("ag_div", 6)), ag_buy_pct=float(_g("ag_buy", 8.0)),
+            ag_sell_alpha=float(_g("ag_sell_alpha", 0.4)), ag_hold_alpha=float(_g("ag_hold_alpha", 2.0)),
+            sf_divisions=sf_div, sf_buy_pct1=float(_g("sf_buy1", -0.6)), sf_buy_pct2=float(_g("sf_buy2", 5.5)),
+            sf_sell_pct=float(_g("sf_sell", 0.7)), sf_ma_base=int(_g("sf_ma_base", 3)), sf_hold=int(_g("sf_hold", 8)),
+            sf_tier_weights=weights, initial_capital=float(ad.get("os_capital", 10000)),
+            fee_rate=0.0, sec_fee_rate=0.0, ag_buy_inclusive=False, sf_buy_inclusive=False)
+        mode_rule = {"ma_weeks": int(_g("ma_weeks", 36)), "peak_thr": float(_g("peak_thr", 66.0)),
+                     "dn": float(_g("dn", 42.0))}
         px_df = dual.get_soxl_data()
-        # ★ 계좌의 모드 소스에 맞춰 모드맵 선택 (render_ds_account와 동일)
-        m_src = ad.get("mode_source", "자동")
+        src = str(ad.get("mode_source", "자동"))
+        src = "원본시트" if "원본" in src else "공격" if "공격" in src else "방어" if "방어" in src else "자동"
+        inj = {}
         try:
-            m_src = dual._normalize_src(m_src)
+            for it in (json.loads(ad.get("capital_adj_history", "[]")) or []):
+                _d = str(it.get("날짜"))
+                inj[_d] = inj.get(_d, 0.0) + float(it.get("조정금액", 0))
         except Exception:
             pass
-        if m_src == "자동":
+        try:
+            shared = dict(dual._load_shared_modes())
+        except Exception:
+            shared = {}
+        nd = dual.next_trading_days(px_df.index[-1], 1)
+        apply_d = str((nd[0] if len(nd) else px_df.index[-1]).date())
+        forced = None
+        if src in ("공격", "방어"):
+            forced = src
+        elif src == "원본시트":
+            forced = shared.get(apply_d)
+        if src == "자동":
             mode_map = dual.build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
                                                 peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
-            _mr, forced = mode_rule, None
-        else:   # 원본시트 / 공격 / 방어 → 원전략 실제모드(번들+공유)
-            try:
-                extra = dict(dual._load_shared_modes())
-            except Exception:
-                extra = {}
+            _mr = mode_rule
+        else:
+            extra = dict(shared)
+            if forced and src == "원본시트":
+                extra[apply_d] = forced
             mode_map = dual.build_original_mode_map(px_df, extra_modes=extra)
             _mr = None
-            forced = m_src if m_src in ("공격", "방어") else None
-        r = dual.build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(os_start),
-                                    mode_rule=_mr, forced_mode=forced,
-                                    capital_injections=inj or None)
+        r = dual.build_today_orders(px_df, p_ds, mode_map=mode_map,
+                                    start_date=str(ad.get("os_start", "2016-01-04")),
+                                    mode_rule=_mr, forced_mode=forced, capital_injections=inj or None)
         return {"cash": float(r["cash"]), "capital": float(r["total_asset"]),
                 "div": int(r["divisions"]), "n_pos": int(r["n_pos"]),
-                "detail": f"듀얼스나이퍼 {account} (모드 {r.get('next_mode', '')}·출처 {m_src})"}
+                "detail": f"듀얼스나이퍼 {account} (모드 {r.get('next_mode', '')}·{src})"}
 
     raise NotImplementedError(f"'{strategy}' 자동 예수금 산출은 아직 미지원입니다. 수동 입력을 사용하세요.")
 
