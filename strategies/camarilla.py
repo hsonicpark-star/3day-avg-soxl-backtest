@@ -694,7 +694,7 @@ def _render_cam_account(name, acct, cfg):
     vt = float(acct.get("vol_target", 0.70))
     vp = int(acct.get("vol_period", 20))
     res_tiers = int(acct.get("reserve_tiers", 1))
-    ov_ticker = acct.get("ov_ticker", "SOXL")
+    ov_ticker = (acct.get("ov_ticker") or "SOXL").strip().upper()
     # 레거시 마이그레이션 (source="dss:NAME" → source_strategy/account)
     if "source_strategy" not in acct:
         old = acct.get("source", "manual")
@@ -734,6 +734,19 @@ def _render_cam_account(name, acct, cfg):
 
     # ── 오버레이 계산 ──
     ov_px = _get_price(ov_ticker)
+    if ov_px is None or len(ov_px) == 0:
+        st.error(f"오버레이 종목 **'{ov_ticker or '(빈값)'}'** 가격 데이터를 불러오지 못했습니다. "
+                 f"아래 **⚙️ 계좌 설정**에서 종목(예: SOXL)을 확인하거나, 개인설정에서 "
+                 f"**가격 데이터 캐시 초기화** 후 다시 시도하세요.")
+        with st.expander("⚙️ 계좌 설정 수정 / 삭제"):
+            _nt = st.text_input("오버레이 종목", value=ov_ticker, key=f"cam_fixtkr_{sfx}")
+            if st.button("💾 종목 저장", key=f"cam_fixsave_{sfx}", type="primary"):
+                acct["ov_ticker"] = _nt.strip().upper() or "SOXL"
+                cfg["accounts"][name] = acct
+                _save_cam_config(cfg)
+                st.cache_data.clear()
+                st.rerun()
+        return
     last = ov_px.iloc[-1]
     last_date = ov_px.index[-1].date()
     ntd = _next_trading_date(last_date)
