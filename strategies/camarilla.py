@@ -657,10 +657,10 @@ def _src_get_state(strategy, account, today_str):
         buf = (pd.to_datetime(str(os_start)) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
         pdf = load_price_data(account, buf, str(today), "야후파이낸스 (yfinance)", None)
         res = run_stdev_ordersheet(
-            pdf, str(os_start), sigma_period=int(c.get("sd_sigma_period", 2)),
-            k_buy=float(c.get("sd_k_buy", 0.65)), k_sell=float(c.get("sd_k_sell", 0.45)),
+            pdf, str(os_start), sigma_period=int(c.get("sigma_period", 2)),
+            k_buy=float(c.get("k_buy", 0.65)), k_sell=float(c.get("k_sell", 0.45)),
             sell_ratio=float(c.get("sell_ratio", 85)), divisions=int(c.get("divisions", 5)),
-            renewal=int(c.get("sd_renewal", 5)), initial_capital=cap)
+            renewal=int(c.get("renewal", 5)), initial_capital=cap)
         adj = _cap_adj_sum(c)   # 증액/감액 반영
         return {"cash": res["cash"] + adj, "capital": res.get("total_invest", res["final_asset"]) + adj,
                 "div": int(c.get("divisions", 5)), "n_pos": max(0, int(res.get("next_tier", 1)) - 1),
