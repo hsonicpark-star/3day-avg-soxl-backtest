@@ -1498,16 +1498,22 @@ def _cam_adj_sum(c) -> float:
 
 
 def _cam_fetch_ohlc(ticker: str, start_date: str) -> pd.DataFrame:
-    """카마릴라 저항선용 OHLC (fetch_prices는 Close만 반환하므로 별도)."""
-    end = datetime.today() + timedelta(days=1)
-    df = yf.download(ticker, start=start_date, end=end.strftime("%Y-%m-%d"),
-                     progress=False, auto_adjust=True)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    df = df[["Open", "High", "Low", "Close"]].dropna()
-    for _c in df.columns:
-        df[_c] = df[_c].astype(float)
-    return _filter_incomplete_today(df)
+    """카마릴라 저항선/변동성용 OHLC.
+    ★ 웹앱(strategies/camarilla.py:_get_price)과 동일 소스로 통일 —
+      camarilla_engine.load_price_data(auto_adjust=True+intraday필터) + SOXL 백업.
+      (이전엔 별도 yfinance라 변동성/수량이 웹과 미세하게 어긋났음)"""
+    from camarilla_engine import load_price_data as _cam_load
+    df = _cam_load(ticker, "2009-06-01", "2026-12-31")
+    if df is not None and len(df) and str(ticker).upper() == "SOXL":
+        try:
+            from backup_close import check_and_patch_soxl
+            df, _w, _r = check_and_patch_soxl(df.copy(), gc=None)  # Actions=env 인증
+            for _c in ("Open", "High", "Low"):
+                if _c in df.columns:
+                    df[_c] = df[_c].fillna(df["Close"])
+        except Exception:
+            pass
+    return df if df is not None else pd.DataFrame()
 
 
 def _cam_source_state(user: dict, client, strategy: str, account: str):
