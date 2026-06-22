@@ -88,7 +88,19 @@ def _save_cam_config(cfg: dict):
 
 @st.cache_data(show_spinner="가격 데이터 로딩...")
 def _get_price(ticker: str):
-    return load_price_data(ticker, "2009-06-01", "2026-12-31")
+    df = load_price_data(ticker, "2009-06-01", "2026-12-31")
+    # SOXL: yfinance 확정 종가 누락 시 백업 구글시트(DB)로 보충 — DSS/듀얼/표준편차와 동일 백업
+    if str(ticker).upper() == "SOXL" and df is not None and len(df):
+        try:
+            from common.data import _maybe_patch_soxl_backup
+            df = _maybe_patch_soxl_backup(df, ticker)
+            # 백업으로 추가된 행은 Close만 존재(O/H/L=NaN) → Close로 채워 평평한 봉 처리
+            for _c in ("Open", "High", "Low"):
+                if _c in df.columns:
+                    df[_c] = df[_c].fillna(df["Close"])
+        except Exception:
+            pass
+    return df
 
 
 def _vol_mult(price, period: int, target: float) -> float:
