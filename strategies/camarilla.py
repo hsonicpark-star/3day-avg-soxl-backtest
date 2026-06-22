@@ -1050,6 +1050,24 @@ def render_ordersheet_tab(params):
 # 탭 4: 전략 소개 & 성과
 # ══════════════════════════════════════════════
 
+def _overlay_table_html(title, sub, growth_col, rows):
+    """애드온 비교 스타일 표(크림 헤더). rows=[(구성, CAGR, MDD, CALMAR, 자산증가, 강조?)]."""
+    th = ("background:#F6EFD6;color:#5b4a1f;font-weight:700;"
+          "border:1px solid #e3d9b8;padding:7px 10px;text-align:center")
+    base_td = "border:1px solid #ECECEC;padding:7px 10px;text-align:center;color:#333"
+    head = (f"<div style='font-weight:700;margin:16px 0 5px;color:#222'>{title}"
+            f" <span style='font-weight:400;color:#999;font-size:0.85em'>{sub}</span></div>")
+    cols = ["구성", "CAGR", "MDD", "CALMAR", growth_col]
+    hrow = "".join(f"<th style='{th}'>{c}</th>" for c in cols)
+    body = ""
+    for label, cagr, mdd, cal, grw, bold in rows:
+        extra = ("font-weight:700;background:#FCFBF5;" if bold else "")
+        cells = "".join(f"<td style='{base_td};{extra}'>{v}</td>" for v in (label, cagr, mdd, cal, grw))
+        body += f"<tr>{cells}</tr>"
+    return (head + "<table style='border-collapse:collapse;width:100%;font-size:0.9em'>"
+            f"<tr>{hrow}</tr>{body}</table>")
+
+
 def render_intro_tab(params=None):
     st.subheader("📖 전략 소개 & 성과")
     t = st.tabs(["① 무엇인가", "② 매매 규칙", "🛒 실전 주문법", "③ 왜 이 설정",
@@ -1146,34 +1164,29 @@ def render_intro_tab(params=None):
 - 오버레이는 **유휴현금만** 사용, 원전략이 살 수 있게 **1티어는 유보**
 - 손익 → 별도 수익계좌 / 쌓이면 연말 일정%를 원전략 증액
 - 공격형 DSS는 MDD가 증액과 무관히 ~−50% 고정 → **증액 70%가 CALMAR 정점**
-
-### 전략별 애드온 합산 효과 (계수0.70·MOO·1티어유보·슬리피지0.1% · 초기 $100,000)
-σ 방식별 비교: **단독 / +20일·0.70(이전) / +4일·0.030(신규 최적)**
-
-**DSS 공격형** (2010-03~, 예수금 ~50%)
-
-| 구성 | CAGR | MDD | CALMAR | 자산증가 |
-|---|:--:|:--:|:--:|:--:|
-| 단독 | 73.8% | −49.6% | 1.49 | — |
-| +20일·0.70 | 79.8% | −34.2% | 2.34 | +75% |
-| **+4일·0.030** | **80.7%** | **−34.1%** | **2.37** | **+89%** |
-
-**표준편차 Sonic형** (2014-01~, 예수금 ~65%)
-
-| 구성 | CAGR | MDD | CALMAR | 자산증가 |
-|---|:--:|:--:|:--:|:--:|
-| 단독 | 78.8% | −35.8% | 2.20 | — |
-| +20일·0.70 | 85.8% | −21.0% | 4.08 | +61% |
-| **+4일·0.030** | **86.6%** | −21.5% | 4.03 | **+70%** |
-
-**듀얼스나이퍼 원본시트** (2016-01~, 예수금 ~69%)
-
-| 구성 | CAGR | MDD | CALMAR | 자산증가 |
-|---|:--:|:--:|:--:|:--:|
-| 단독 | 93.5% | −26.2% | 3.57 | — |
-| +20일·0.70 | 101.1% | −17.4% | 5.79 | +49% |
-| **+4일·0.030** | **102.5%** | **−17.1%** | **6.00** | **+60%** |
-
+""")
+        st.markdown("#### 4일 일간 σ = 0.03 애드온 시 각 전략의 성과 변화 비교")
+        st.caption("SOXL · 계수0.70 · MOO · 1티어 유보 · 슬리피지 0.1% · 초기 $100,000 · 종료 2026-06-17 "
+                   "／ **각 전략 시작일이 달라 개별 표**로 표시 (단독 / +20일·0.70 / +4일·0.030)")
+        st.markdown(_overlay_table_html(
+            "DSS 공격형", "2010-03~ · 예수금 ~50%", "오버레이 자산증가", [
+                ("단독", "73.8%", "−49.6%", "1.49", "—", False),
+                ("+20일·0.70", "79.8%", "−34.2%", "2.34", "+75%", False),
+                ("+4일·0.030", "80.7%", "−34.1%", "2.37", "+89%", True),
+            ]), unsafe_allow_html=True)
+        st.markdown(_overlay_table_html(
+            "표준편차 Sonic형", "2014-01~ · 예수금 ~65%", "자산증가", [
+                ("단독", "78.8%", "−35.8%", "2.20", "—", False),
+                ("+20일·0.70", "85.8%", "−21.0%", "4.08", "+61%", False),
+                ("+4일·0.030", "86.6%", "−21.5%", "4.03", "+70%", True),
+            ]), unsafe_allow_html=True)
+        st.markdown(_overlay_table_html(
+            "듀얼스나이퍼 원본시트", "2016-01~ · 예수금 ~69%", "자산증가", [
+                ("단독", "93.5%", "−26.2%", "3.57", "—", False),
+                ("+20일·0.70", "101.1%", "−17.4%", "5.79", "+49%", False),
+                ("+4일·0.030", "102.5%", "−17.1%", "6.00", "+60%", True),
+            ]), unsafe_allow_html=True)
+        st.markdown("""
 → 단독 대비 **MDD 대폭 축소 + CAGR 상승**. 거기서 **4일·0.030이 같은 위험으로 더 많이 수확**
 (자산증가 DSS +89% · 표준편차 +70% · 듀얼 +60%). 단기 4일 창이 평온할 땐 덜 보수적,
 급변할 땐 더 빨리 디레버리징 → 누적 효율 우위.
