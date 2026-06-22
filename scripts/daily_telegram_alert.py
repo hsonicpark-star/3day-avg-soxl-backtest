@@ -1596,7 +1596,7 @@ def _cam_src_telegram(user: dict, strategy: str):
 
 
 def calc_cam_overlay(ov_ticker, coef, vol_period, vol_target, reserve_tiers, src,
-                     vol_mode="vol", vol3_period=3, vol3_target=0.030):
+                     vol_mode="vol", vol3_period=4, vol3_target=0.030):
     """오버레이 오늘 주문 계산: 저항선·변동성비중·차입가능·매수수량.
     vol_mode='vol'=20일 연환산(ddof=1,×√252) | 'vol3'=표준편차매매식 직전 N일 일간σ(ddof=0,비연환산)."""
     _per = int(vol3_period) if vol_mode == "vol3" else int(vol_period)
@@ -2128,7 +2128,7 @@ def main():
                         float(c_acct.get("coef", 0.70)), int(c_acct.get("vol_period", 20)),
                         float(c_acct.get("vol_target", 0.70)), int(c_acct.get("reserve_tiers", 1)), _src,
                         vol_mode=c_acct.get("vol_mode", "vol"),
-                        vol3_period=int(c_acct.get("vol3_period", 3)),
+                        vol3_period=int(c_acct.get("vol3_period", 4)),
                         vol3_target=float(c_acct.get("vol3_target", 0.030)))
                     if not _ov:
                         raise RuntimeError("오버레이 계산 실패(데이터 부족)")

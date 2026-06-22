@@ -105,7 +105,7 @@ class CamarillaParams:
     fi_period: int = 13              # fi 신호: Force Index EMA 기간
     vol_period: int = 20             # vol 신호: 변동성 측정 기간
     vol_target: float = 0.50         # vol 신호: 연환산 목표 변동성
-    vol3_period: int = 3             # vol3 신호: 표준편차식 σ 기간(거래일)
+    vol3_period: int = 4             # vol3 신호: 단기 일간σ 기간(거래일, 최적 4)
     vol3_target: float = 0.030       # vol3 신호: 일간 목표 σ(비연환산)
     risk_off_mult: float = 0.0       # 신호 위험구간 비중 배수 (0=스킵, 0.5=절반)
 
