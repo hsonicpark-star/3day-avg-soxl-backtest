@@ -200,6 +200,10 @@ def render_sidebar():
     bc1, bc2 = st.sidebar.columns(2)
     initial_capital = bc1.number_input("초기투자금", 1000, 1_000_000_000, 100000, 1000, key="cam_cap")
     pos_pct = bc2.slider("투입비중(%)", 10, 100, 100, 5, key="cam_pos") / 100.0
+    slippage = st.sidebar.number_input(
+        "슬리피지 (왕복, %)", 0.0, 2.0, float(cfg.get("ov_slippage_pct", 0.1)), 0.05,
+        format="%.2f", key="cam_slip",
+        help="돌파매매 체결 슬리피지(왕복 기준). 기본 0.1% 권장 — 1일 보유라 거래가 잦아 성과에 영향이 큽니다.")
     dc1, dc2 = st.sidebar.columns(2)
     start_date = dc1.date_input("시작일", value=pd.Timestamp("2010-03-12"), key="cam_start")
     end_date = dc2.date_input("종료일", value=datetime.today().date(), key="cam_end")
@@ -208,6 +212,7 @@ def render_sidebar():
         "ticker": ticker, "coef": coef, "signal": "vol" if sig_on else "none",
         "vol_target": vol_target, "vol_period": vol_period,
         "initial_capital": float(initial_capital), "position_pct": pos_pct,
+        "slippage": float(slippage),
         "start_date": start_date, "end_date": end_date,
         "bt_ticker": ticker, "bt_start_date": start_date, "bt_end_date": end_date,
         "bt_initial_capital": float(initial_capital),
@@ -228,23 +233,25 @@ def _make_params(p, **over):
 # ══════════════════════════════════════════════
 
 @st.cache_data(show_spinner="백테스트 실행 중...")
-def _run_bt(ticker, coef, cap, pos, signal, vt, vp, sd, ed):
+def _run_bt(ticker, coef, cap, pos, signal, vt, vp, sd, ed, slip=0.1):
+    # slip = 왕복 슬리피지(%) → fee_rate(편도) = slip/100/2 = slip/200
     p = CamarillaParams(coef=coef, initial_capital=cap, position_pct=pos, hold_days=1,
-                        signal=signal, vol_target=vt, vol_period=vp)
+                        signal=signal, vol_target=vt, vol_period=vp, fee_rate=slip / 200.0)
     return run_backtest(p, _get_price(ticker), str(sd), str(ed))
 
 
 def render_backtest_tab(params):
     p = params
+    _slip = float(p.get("slippage", 0.1))
     st.subheader(f"📊 {p['ticker']} · 카마릴라 피봇 돌파 백테스트")
     bt = _run_bt(p["ticker"], p["coef"], p["initial_capital"], p["position_pct"],
-                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"])
+                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"], _slip)
     if not len(bt):
         st.warning("데이터가 부족합니다.")
         return
     m = compute_metrics(bt, p["initial_capital"])
     _sig = f" · 변동성타겟 {p['vol_target']}" if p["signal"] == "vol" else ""
-    st.caption(f"계수 {p['coef']:.2f}{_sig} · 익일시가 MOO · "
+    st.caption(f"계수 {p['coef']:.2f}{_sig} · 익일시가 MOO · **슬리피지 {_slip:.2f}% 적용** · "
                f"{bt['날짜'].iloc[0].date()} ~ {bt['날짜'].iloc[-1].date()} ({len(bt):,} 거래일)")
 
     c = st.columns(6)
@@ -319,10 +326,11 @@ _OPT_SORT = {"CALMAR": ("CALMAR", False), "CAGR": ("CAGR", False),
              "최종자산": ("최종자산", False), "MDD 최소화": ("MDD", False), "승률": ("승률", False)}
 
 
-def _eval(pxd, cf, pos, vt, sd, ed, cap):
+def _eval(pxd, cf, pos, vt, sd, ed, cap, slip=0.1):
     sig = "vol" if vt > 0 else "none"
     p = CamarillaParams(coef=float(cf), initial_capital=cap, position_pct=pos/100.0,
-                        hold_days=1, signal=sig, vol_period=20, vol_target=(vt if vt > 0 else 0.7))
+                        hold_days=1, signal=sig, vol_period=20, vol_target=(vt if vt > 0 else 0.7),
+                        fee_rate=slip / 200.0)
     r = run_backtest_fast(p, pxd, str(sd), str(ed))
     if not r or r['total_days'] < 20:
         return None
@@ -361,6 +369,7 @@ def render_optimization_tab(params):
     sort_col, asc = _OPT_SORT[metric]
     n_total = len(coefs) * len(opt_pos) * len(opt_vt)
     cap = p["initial_capital"]
+    _oslip = float(p.get("slippage", 0.1))
 
     def _show(res, sfx):
         d = res.copy()
@@ -388,7 +397,7 @@ def render_optimization_tab(params):
             prog = st.progress(0.0)
             rows = []
             for i, (cf, pp, vt) in enumerate(combos):
-                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap)
+                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip)
                 if r:
                     rows.append(r)
                 if i % max(1, len(combos)//50) == 0:
@@ -408,7 +417,7 @@ def render_optimization_tab(params):
             prog = st.progress(0.0)
             rows = []
             for i, (cf, pp, vt) in enumerate(sample):
-                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap)
+                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip)
                 if r:
                     rows.append(r)
                 if i % max(1, len(sample)//50) == 0:
@@ -440,7 +449,7 @@ def render_optimization_tab(params):
                 for wi, (iss, ise, os_, oe) in enumerate(wins):
                     best, bs = None, -1e18
                     for cf, pp, vt in combos:
-                        r = _eval(pxd, cf, pp, vt, iss.date(), ise.date(), cap)
+                        r = _eval(pxd, cf, pp, vt, iss.date(), ise.date(), cap, _oslip)
                         if r:
                             sc = (-abs(r["MDD"]) if sort_col == "MDD" else r[sort_col])
                             if sc > bs:
@@ -448,7 +457,7 @@ def render_optimization_tab(params):
                     prog.progress((wi+1)/len(wins))
                     if not best:
                         continue
-                    oos = _eval(pxd, *best, os_.date(), oe.date(), cap)
+                    oos = _eval(pxd, *best, os_.date(), oe.date(), cap, _oslip)
                     if oos:
                         rows.append({"윈도우": wi+1, "IS": f"{iss.date()}~{ise.date()}",
                                      "OOS": f"{os_.date()}~{oe.date()}",
@@ -487,7 +496,7 @@ def render_optimization_tab(params):
                     cf = trial.suggest_float("계수", float(cmin), float(cmax))
                     pp = trial.suggest_categorical("투입%", opt_pos)
                     vt = trial.suggest_categorical("변동성타겟", opt_vt)
-                    r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap)
+                    r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip)
                     if not r:
                         return -1e9
                     rows.append(r); tc[0] += 1
@@ -984,18 +993,21 @@ def render_intro_tab(params=None):
         st.info("주문표 탭에서 DSS 계좌를 선택하면 예수금·투자금·분할수를 자동으로 읽어와 오늘 주문을 계산합니다.")
     with t[5]:
         st.markdown("""
-### 백테스트 성과 (SOXL 2010~2026, 현실 체결·홀드아웃)
+### 백테스트 성과 (SOXL 2010~2026, 홀드아웃 검증)
 **추천: 계수0.70 · MOO · 변동성타겟0.7**
 
-| 구간 | CAGR | MDD | CALMAR |
-|------|:----:|:----:|:----:|
-| 전체 | 68.6% | −28.0% | 2.45 |
-| 전반(10~18) | 69.8% | −27.5% | 2.53 |
-| 후반(19~26) | 67.2% | −28.0% | 2.40 |
+| 구간 | CAGR (슬리피지 0%) | CAGR (0.1% 적용) | MDD | CALMAR(0%/0.1%) |
+|------|:----:|:----:|:----:|:----:|
+| 전체 | 68.6% | **56.0%** | −28~30% | 2.45 / 1.86 |
+| 전반(10~18) | 69.8% | ~58% | −27.5% | 2.53 / ~2.0 |
+| 후반(19~26) | 67.2% | ~54% | −28% | 2.40 / ~1.8 |
 
 → 두 반기 거의 동일 = **robust(과적합 아님)**
 
-**합산(공격형 DSS + 오버레이 + 증액70%, 2015~26)**: CAGR~96% / MDD~−50% / 자산 +132%
+⚠️ **슬리피지 주의**: 1일 보유라 거래가 잦아(연 ~93회) 슬리피지 민감도가 큽니다.
+기본값 **0.1% 적용 시 CAGR ~56%·CALMAR ~1.86** 가 현실적 기대치입니다 (사이드바에서 조절 가능).
+
+**합산(공격형 DSS + 오버레이 + 증액70%, 2015~26, 슬리피지0.1%)**: CAGR~96% / MDD~−50% / 자산 +132%
 """)
     with t[6]:
         st.markdown("""
@@ -1015,9 +1027,10 @@ def render_intro_tab(params=None):
 def render_db_tab(params):
     p = params
     st.subheader("📂 DB 조회 — 일별 매매 기록")
-    st.caption("백테스트 결과를 일자별로 조회합니다.")
+    st.caption(f"백테스트 결과를 일자별로 조회합니다. (슬리피지 {float(p.get('slippage', 0.1)):.2f}% 적용)")
     bt = _run_bt(p["ticker"], p["coef"], p["initial_capital"], p["position_pct"],
-                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"])
+                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"],
+                 float(p.get("slippage", 0.1)))
     if not len(bt):
         st.warning("데이터 없음")
         return
