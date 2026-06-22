@@ -659,14 +659,30 @@ def _src_get_state(strategy, account, today_str):
             adj = []
         inj = {a["날짜"]: float(a["조정금액"]) for a in adj if a.get("날짜")}
         px_df = dual.get_soxl_data()
-        mode_map = dual.build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
-                                            peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+        # ★ 계좌의 모드 소스에 맞춰 모드맵 선택 (render_ds_account와 동일)
+        m_src = ad.get("mode_source", "자동")
+        try:
+            m_src = dual._normalize_src(m_src)
+        except Exception:
+            pass
+        if m_src == "자동":
+            mode_map = dual.build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
+                                                peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
+            _mr, forced = mode_rule, None
+        else:   # 원본시트 / 공격 / 방어 → 원전략 실제모드(번들+공유)
+            try:
+                extra = dict(dual._load_shared_modes())
+            except Exception:
+                extra = {}
+            mode_map = dual.build_original_mode_map(px_df, extra_modes=extra)
+            _mr = None
+            forced = m_src if m_src in ("공격", "방어") else None
         r = dual.build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(os_start),
-                                    mode_rule=mode_rule, forced_mode=None,
+                                    mode_rule=_mr, forced_mode=forced,
                                     capital_injections=inj or None)
         return {"cash": float(r["cash"]), "capital": float(r["total_asset"]),
                 "div": int(r["divisions"]), "n_pos": int(r["n_pos"]),
-                "detail": f"듀얼스나이퍼 {account} (모드 {r.get('next_mode', '')})"}
+                "detail": f"듀얼스나이퍼 {account} (모드 {r.get('next_mode', '')}·출처 {m_src})"}
 
     raise NotImplementedError(f"'{strategy}' 자동 예수금 산출은 아직 미지원입니다. 수동 입력을 사용하세요.")
 
