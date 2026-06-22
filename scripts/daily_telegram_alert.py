@@ -1595,17 +1595,24 @@ def _cam_src_telegram(user: dict, strategy: str):
     return "", ""
 
 
-def calc_cam_overlay(ov_ticker, coef, vol_period, vol_target, reserve_tiers, src):
-    """오버레이 오늘 주문 계산: 저항선·변동성비중·차입가능·매수수량."""
+def calc_cam_overlay(ov_ticker, coef, vol_period, vol_target, reserve_tiers, src,
+                     vol_mode="vol", vol3_period=3, vol3_target=0.030):
+    """오버레이 오늘 주문 계산: 저항선·변동성비중·차입가능·매수수량.
+    vol_mode='vol'=20일 연환산(ddof=1,×√252) | 'vol3'=표준편차매매식 직전 N일 일간σ(ddof=0,비연환산)."""
+    _per = int(vol3_period) if vol_mode == "vol3" else int(vol_period)
     px = _cam_fetch_ohlc(ov_ticker, "2024-01-01")
-    if px is None or len(px) < max(int(vol_period) + 2, 25):
+    if px is None or len(px) < max(_per + 2, 25):
         return None
     last = px.iloc[-1]
     H, L, C = float(last["High"]), float(last["Low"]), float(last["Close"])
     resistance = C + (H - L) * coef
     ret = px["Close"].pct_change().dropna()
-    rv = float(ret.iloc[-int(vol_period):].std() * (252 ** 0.5))
-    vmult = min(1.0, vol_target / rv) if rv > 0 else 1.0
+    if vol_mode == "vol3":
+        rv = float(ret.iloc[-_per:].std(ddof=0))            # 일간 σ, 비연환산
+        vmult = min(1.0, vol3_target / rv) if rv > 0 else 1.0
+    else:
+        rv = float(ret.iloc[-_per:].std() * (252 ** 0.5))   # 20일 연환산
+        vmult = min(1.0, vol_target / rv) if rv > 0 else 1.0
     tier = (src["capital"] / src["div"]) if src.get("div") else 0.0
     borrowable = max(0.0, float(src["cash"]) - reserve_tiers * tier)
     deployable = borrowable * vmult
@@ -2119,7 +2126,10 @@ def main():
                     _ov = calc_cam_overlay(
                         (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
                         float(c_acct.get("coef", 0.70)), int(c_acct.get("vol_period", 20)),
-                        float(c_acct.get("vol_target", 0.70)), int(c_acct.get("reserve_tiers", 1)), _src)
+                        float(c_acct.get("vol_target", 0.70)), int(c_acct.get("reserve_tiers", 1)), _src,
+                        vol_mode=c_acct.get("vol_mode", "vol"),
+                        vol3_period=int(c_acct.get("vol3_period", 3)),
+                        vol3_target=float(c_acct.get("vol3_target", 0.030)))
                     if not _ov:
                         raise RuntimeError("오버레이 계산 실패(데이터 부족)")
                 except Exception as e:

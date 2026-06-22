@@ -32,6 +32,9 @@ _CAM_DEFAULTS = {
     "ov_coef": 0.70,
     "ov_vol_period": 20,
     "ov_vol_target": 0.70,
+    "ov_vol_mode": "vol",
+    "ov_vol3_period": 3,
+    "ov_vol3_target": 0.030,
     "ov_reserve_tiers": 1,
     "ov_inject_frac": 0.70,
     "ov_slippage": 0.001,
@@ -111,11 +114,15 @@ def _get_price(ticker: str):
     return df
 
 
-def _vol_mult(price, period: int, target: float) -> float:
+def _vol_mult(price, period: int, target: float, mode: str = "vol") -> float:
+    """실시간 매수비중 배수. mode='vol'=20일 연환산(ddof=1), 'vol3'=표준편차매매식 직전 N일 일간σ(ddof=0)."""
     ret = price['Close'].pct_change().dropna()
     if len(ret) < period:
         return 1.0
-    rv = float(ret.iloc[-period:].std() * np.sqrt(252))
+    if mode == "vol3":
+        rv = float(ret.iloc[-period:].std(ddof=0))           # 일간 σ, 비연환산
+    else:
+        rv = float(ret.iloc[-period:].std() * np.sqrt(252))  # 20일 연환산
     return float(min(1.0, target / rv)) if rv > 0 else 1.0
 
 
@@ -210,11 +217,27 @@ def render_sidebar():
                                        step=0.05, format="%.2f", key="cam_coef")
     st.sidebar.caption(f"저항선 = 전일종가 + (고가−저가)×{coef:.2f}")
 
-    st.sidebar.markdown("**변동성 타게팅** (위험 손잡이)")
-    sig_on = st.sidebar.checkbox("변동성 타게팅 사용", value=True, key="cam_sig_on")
-    vol_target = st.sidebar.slider("변동성 목표", 0.2, 1.2, float(cfg.get("ov_vol_target", 0.70)),
-                                   0.05, key="cam_vt") if sig_on else 0.7
+    st.sidebar.markdown("**변동성 비중조절** (위험 손잡이)")
+    sig_on = st.sidebar.checkbox("변동성 비중조절 사용", value=True, key="cam_sig_on")
+    vol_mode = "vol"
+    vol_target = float(cfg.get("ov_vol_target", 0.70))
+    vol3_target = float(cfg.get("ov_vol3_target", 0.030))
+    if sig_on:
+        _ml = st.sidebar.radio(
+            "σ 방식", ["20일 연환산", "3일 표준편차식"],
+            index=(1 if cfg.get("ov_vol_mode", "vol") == "vol3" else 0),
+            key="cam_volmode", horizontal=True)
+        if _ml == "3일 표준편차식":
+            vol_mode = "vol3"
+            vol3_target = st.sidebar.slider("일간 목표 σ", 0.010, 0.080, vol3_target, 0.005,
+                                            format="%.3f", key="cam_vt3")
+            st.sidebar.caption("표준편차매매식 — 직전 3거래일 일간수익률 σ(ddof=0, 비연환산). 권장 0.030")
+        else:
+            vol_mode = "vol"
+            vol_target = st.sidebar.slider("연환산 목표 변동성", 0.2, 1.2, vol_target, 0.05, key="cam_vt")
+            st.sidebar.caption("20일 일간수익률 표준편차×√252. 권장 0.70")
     vol_period = int(cfg.get("ov_vol_period", 20))
+    vol3_period = int(cfg.get("ov_vol3_period", 3))
 
     st.sidebar.markdown("### ⚙️ 백테스트 설정")
     bc1, bc2 = st.sidebar.columns(2)
@@ -229,8 +252,9 @@ def render_sidebar():
     end_date = dc2.date_input("종료일", value=datetime.today().date(), key="cam_end")
 
     return {
-        "ticker": ticker, "coef": coef, "signal": "vol" if sig_on else "none",
+        "ticker": ticker, "coef": coef, "signal": (vol_mode if sig_on else "none"),
         "vol_target": vol_target, "vol_period": vol_period,
+        "vol3_target": vol3_target, "vol3_period": vol3_period,
         "initial_capital": float(initial_capital), "position_pct": pos_pct,
         "slippage": float(slippage),
         "start_date": start_date, "end_date": end_date,
@@ -243,7 +267,8 @@ def _make_params(p, **over):
     kw = dict(coef=p["coef"], initial_capital=p["initial_capital"],
               position_pct=p.get("position_pct", 1.0), hold_days=1,
               signal=p.get("signal", "none"), vol_period=p.get("vol_period", 20),
-              vol_target=p.get("vol_target", 0.70))
+              vol_target=p.get("vol_target", 0.70),
+              vol3_period=p.get("vol3_period", 3), vol3_target=p.get("vol3_target", 0.030))
     kw.update(over)
     return CamarillaParams(**kw)
 
@@ -253,10 +278,11 @@ def _make_params(p, **over):
 # ══════════════════════════════════════════════
 
 @st.cache_data(show_spinner="백테스트 실행 중...")
-def _run_bt(ticker, coef, cap, pos, signal, vt, vp, sd, ed, slip=0.1):
+def _run_bt(ticker, coef, cap, pos, signal, vt, vp, sd, ed, slip=0.1, vt3=0.030, vp3=3):
     # slip = 왕복 슬리피지(%) → fee_rate(편도) = slip/100/2 = slip/200
     p = CamarillaParams(coef=coef, initial_capital=cap, position_pct=pos, hold_days=1,
-                        signal=signal, vol_target=vt, vol_period=vp, fee_rate=slip / 200.0)
+                        signal=signal, vol_target=vt, vol_period=vp,
+                        vol3_target=vt3, vol3_period=vp3, fee_rate=slip / 200.0)
     return run_backtest(p, _get_price(ticker), str(sd), str(ed))
 
 
@@ -265,7 +291,8 @@ def render_backtest_tab(params):
     _slip = float(p.get("slippage", 0.1))
     st.subheader(f"📊 {p['ticker']} · 카마릴라 피봇 돌파 백테스트")
     bt = _run_bt(p["ticker"], p["coef"], p["initial_capital"], p["position_pct"],
-                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"], _slip)
+                 p["signal"], p["vol_target"], p["vol_period"], p["start_date"], p["end_date"], _slip,
+                 p.get("vol3_target", 0.030), p.get("vol3_period", 3))
     if not len(bt):
         st.warning(f"⚠️ **{p['ticker']}** 가격 데이터를 불러오지 못했습니다 — yfinance 일시 오류 가능성이 큽니다.")
         if st.button("🔄 데이터 캐시 초기화 후 재시도", key="cam_bt_retry", type="primary"):
@@ -274,7 +301,12 @@ def render_backtest_tab(params):
         st.caption("버튼을 눌러도 안 되면 1~2분 후 다시 시도해 주세요 (yfinance 회복 대기).")
         return
     m = compute_metrics(bt, p["initial_capital"])
-    _sig = f" · 변동성타겟 {p['vol_target']}" if p["signal"] == "vol" else ""
+    if p["signal"] == "vol":
+        _sig = f" · 20일σ 타겟 {p['vol_target']}"
+    elif p["signal"] == "vol3":
+        _sig = f" · 3일σ 타겟 {p.get('vol3_target', 0.030):.3f}"
+    else:
+        _sig = ""
     st.caption(f"계수 {p['coef']:.2f}{_sig} · 익일시가 MOO · **슬리피지 {_slip:.2f}% 적용** · "
                f"{bt['날짜'].iloc[0].date()} ~ {bt['날짜'].iloc[-1].date()} ({len(bt):,} 거래일)")
 
@@ -350,10 +382,13 @@ _OPT_SORT = {"CALMAR": ("CALMAR", False), "CAGR": ("CAGR", False),
              "최종자산": ("최종자산", False), "MDD 최소화": ("MDD", False), "승률": ("승률", False)}
 
 
-def _eval(pxd, cf, pos, vt, sd, ed, cap, slip=0.1):
-    sig = "vol" if vt > 0 else "none"
+def _eval(pxd, cf, pos, vt, sd, ed, cap, slip=0.1, mode="vol"):
+    # mode='vol'(20일 연환산) | 'vol3'(3일 표준편차식). vt는 해당 방식의 목표값(0=미사용)
+    sig = (mode if vt > 0 else "none")
     p = CamarillaParams(coef=float(cf), initial_capital=cap, position_pct=pos/100.0,
-                        hold_days=1, signal=sig, vol_period=20, vol_target=(vt if vt > 0 else 0.7),
+                        hold_days=1, signal=sig, vol_period=20,
+                        vol_target=(vt if (mode == "vol" and vt > 0) else 0.7),
+                        vol3_period=3, vol3_target=(vt if (mode == "vol3" and vt > 0) else 0.030),
                         fee_rate=slip / 200.0)
     r = run_backtest_fast(p, pxd, str(sd), str(ed))
     if not r or r['total_days'] < 20:
@@ -382,10 +417,16 @@ def render_optimization_tab(params):
         cmin = r1.number_input("계수 최소", 0.1, 2.0, 0.40, 0.05, key="cam_o_cmin")
         cmax = r2.number_input("계수 최대", 0.1, 2.0, 0.90, 0.05, key="cam_o_cmax")
         cstep = r3.number_input("계수 간격", 0.01, 0.5, 0.05, 0.01, key="cam_o_cstep")
+        _smode_lbl = st.radio("σ 방식", ["20일 연환산", "3일 표준편차식"], horizontal=True, key="cam_o_smode")
+        _omode = "vol3" if _smode_lbl == "3일 표준편차식" else "vol"
         m1, m2 = st.columns(2)
         opt_pos = m1.multiselect("투입비중(%)", [100, 75, 50], default=[100], key="cam_o_pos")
-        opt_vt = m2.multiselect("변동성타겟 (0=미사용)", [0, 0.4, 0.5, 0.7, 1.0],
-                                default=[0, 0.7], key="cam_o_vt")
+        if _omode == "vol3":
+            opt_vt = m2.multiselect("일간목표σ (0=미사용)", [0, 0.020, 0.025, 0.030, 0.035, 0.040, 0.050],
+                                    default=[0, 0.030], key="cam_o_vt3")
+        else:
+            opt_vt = m2.multiselect("변동성타겟 (0=미사용)", [0, 0.4, 0.5, 0.7, 1.0],
+                                    default=[0, 0.7], key="cam_o_vt")
         metric = st.selectbox("최적화 기준", list(_OPT_SORT.keys()), key="cam_o_metric")
     coefs = list(np.round(np.arange(cmin, cmax + 1e-9, cstep), 3))
     opt_pos = opt_pos or [100]
@@ -421,7 +462,7 @@ def render_optimization_tab(params):
             prog = st.progress(0.0)
             rows = []
             for i, (cf, pp, vt) in enumerate(combos):
-                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip)
+                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip, _omode)
                 if r:
                     rows.append(r)
                 if i % max(1, len(combos)//50) == 0:
@@ -441,7 +482,7 @@ def render_optimization_tab(params):
             prog = st.progress(0.0)
             rows = []
             for i, (cf, pp, vt) in enumerate(sample):
-                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip)
+                r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip, _omode)
                 if r:
                     rows.append(r)
                 if i % max(1, len(sample)//50) == 0:
@@ -473,7 +514,7 @@ def render_optimization_tab(params):
                 for wi, (iss, ise, os_, oe) in enumerate(wins):
                     best, bs = None, -1e18
                     for cf, pp, vt in combos:
-                        r = _eval(pxd, cf, pp, vt, iss.date(), ise.date(), cap, _oslip)
+                        r = _eval(pxd, cf, pp, vt, iss.date(), ise.date(), cap, _oslip, _omode)
                         if r:
                             sc = (-abs(r["MDD"]) if sort_col == "MDD" else r[sort_col])
                             if sc > bs:
@@ -481,7 +522,7 @@ def render_optimization_tab(params):
                     prog.progress((wi+1)/len(wins))
                     if not best:
                         continue
-                    oos = _eval(pxd, *best, os_.date(), oe.date(), cap, _oslip)
+                    oos = _eval(pxd, *best, os_.date(), oe.date(), cap, _oslip, _omode)
                     if oos:
                         rows.append({"윈도우": wi+1, "IS": f"{iss.date()}~{ise.date()}",
                                      "OOS": f"{os_.date()}~{oe.date()}",
@@ -520,7 +561,7 @@ def render_optimization_tab(params):
                     cf = trial.suggest_float("계수", float(cmin), float(cmax))
                     pp = trial.suggest_categorical("투입%", opt_pos)
                     vt = trial.suggest_categorical("변동성타겟", opt_vt)
-                    r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip)
+                    r = _eval(pxd, cf, pp, vt, p["start_date"], p["end_date"], cap, _oslip, _omode)
                     if not r:
                         return -1e9
                     rows.append(r); tc[0] += 1
@@ -739,6 +780,13 @@ def _render_cam_account(name, acct, cfg):
     coef = float(acct.get("coef", 0.70))
     vt = float(acct.get("vol_target", 0.70))
     vp = int(acct.get("vol_period", 20))
+    vmode = acct.get("vol_mode", "vol")
+    vt3 = float(acct.get("vol3_target", 0.030))
+    vp3 = int(acct.get("vol3_period", 3))
+    if vmode == "vol3":
+        eff_period, eff_target, mode_lbl = vp3, vt3, "3일σ"
+    else:
+        eff_period, eff_target, mode_lbl = vp, vt, "20일σ"
     res_tiers = int(acct.get("reserve_tiers", 1))
     ov_ticker = (acct.get("ov_ticker") or "SOXL").strip().upper()
     # 레거시 마이그레이션 (source="dss:NAME" → source_strategy/account)
@@ -798,21 +846,22 @@ def _render_cam_account(name, acct, cfg):
     ntd = _next_trading_date(last_date)
     ph, pl, pc = float(last['High']), float(last['Low']), float(last['Close'])
     resistance = pc + (ph - pl) * coef
-    vmult = _vol_mult(ov_px, vp, vt)
+    vmult = _vol_mult(ov_px, eff_period, eff_target, vmode)
     tier = capital / div if div else 0
     reserve = res_tiers * tier
     borrowable = max(0.0, cash - reserve)
     deployable = borrowable * vmult
     buy_shares = int(deployable / resistance) if resistance > 0 else 0
 
-    st.markdown(f"**오버레이 계산** — `{ov_ticker}` · 계수 {coef:.2f} · 타겟 {vt} · "
+    _tgt_txt = f"{eff_target:.3f}" if vmode == "vol3" else f"{eff_target:g}"
+    st.markdown(f"**오버레이 계산** — `{ov_ticker}` · 계수 {coef:.2f} · {mode_lbl} 타겟 {_tgt_txt} · "
                 f"{last_date} → 적용 {ntd}")
     b = st.columns(4)
     b[0].metric("1티어", f"${tier:,.0f}")
     b[1].metric(f"유보 ({res_tiers}티어)", f"${reserve:,.0f}")
     b[2].metric("차입가능 유휴", f"${borrowable:,.0f}")
     b[3].metric("변동성 비중", f"{vmult*100:.0f}%",
-                help=f"최근 {vp}일 변동성 기준, 목표 {vt} 대비 자동 축소")
+                help=f"{mode_lbl}({eff_period}일) 기준, 목표 {_tgt_txt} 대비 자동 축소")
 
     held = st.number_input("오버레이 보유수량 (어제 매수분, 있으면 시가 매도)", 0, 100_000_000,
                            int(acct.get("held_qty", 0)), 1, key=f"cam_held_{sfx}")
@@ -879,11 +928,20 @@ def _render_cam_account(name, acct, cfg):
             new_acct = e2.selectbox("출처 계좌/티커", _accts, index=_ai, key=f"cam_eacct_{sfx}")
         else:
             new_acct = e2.text_input("출처 계좌/티커 (목록 없음 — 직접)", value=src_acct, key=f"cam_eacctt_{sfx}")
-        e3, e4, e5, e6 = st.columns(4)
+        e3, e4, e6 = st.columns(3)
         new_tkr = e3.text_input("오버레이 종목", value=ov_ticker, key=f"cam_etkr_{sfx}")
         new_coef = e4.number_input("계수", 0.1, 2.0, coef, 0.05, key=f"cam_ecoef_{sfx}")
-        new_vt = e5.number_input("변동성 타겟", 0.2, 1.5, vt, 0.05, key=f"cam_evt_{sfx}")
         new_res = e6.number_input("유보 티어수", 1, 5, res_tiers, key=f"cam_eres_{sfx}")
+        v1, v2 = st.columns([1.3, 1])
+        _vm_lbl = v1.radio("σ 방식", ["20일 연환산", "3일 표준편차식"],
+                           index=(1 if vmode == "vol3" else 0), horizontal=True, key=f"cam_evm_{sfx}")
+        new_vmode = "vol3" if _vm_lbl == "3일 표준편차식" else "vol"
+        if new_vmode == "vol3":
+            new_vt = vt
+            new_vt3 = v2.number_input("일간 목표 σ", 0.010, 0.080, vt3, 0.005, format="%.3f", key=f"cam_evt3_{sfx}")
+        else:
+            new_vt = v2.number_input("연환산 변동성 타겟", 0.2, 1.5, vt, 0.05, key=f"cam_evt_{sfx}")
+            new_vt3 = vt3
 
         st.markdown("**📨 이 계좌 전용 텔레그램 (선택)** — 입력하면 출처 전략 대신 **이 주소로** 발송, "
                     "비우면 출처 전략을 따라갑니다.")
@@ -897,7 +955,9 @@ def _render_cam_account(name, acct, cfg):
         if sv.button("💾 저장", key=f"cam_esave_{sfx}", type="primary"):
             acct.update(source_strategy=new_strat, source_account=new_acct,
                         ov_ticker=new_tkr.strip().upper(), coef=float(new_coef),
-                        vol_target=float(new_vt), reserve_tiers=int(new_res),
+                        vol_mode=new_vmode, vol_target=float(new_vt),
+                        vol3_target=float(new_vt3), vol3_period=int(acct.get("vol3_period", 3)),
+                        reserve_tiers=int(new_res),
                         tg_chat_id=new_tgc.strip(), tg_token=new_tgt.strip())
             cfg["accounts"][name] = acct
             _save_cam_config(cfg)
@@ -931,11 +991,21 @@ def render_ordersheet_tab(params):
             new_acct = st.selectbox("출처 계좌/티커", _accts, key="cam_new_acct")
         else:
             new_acct = st.text_input(f"'{new_strat}' 계좌 목록이 없습니다 — 티커/계좌명 직접 입력", key="cam_new_acctt")
-        c3, c4, c5 = st.columns(3)
+        c3, c4 = st.columns(2)
         new_tkr = c3.text_input("오버레이 종목", value=cfg.get("ov_ticker", "SOXL"), key="cam_new_tkr")
         new_coef = c4.number_input("계수", 0.1, 2.0, float(cfg.get("ov_coef", 0.70)), 0.05, key="cam_new_coef")
-        new_vt = c5.number_input("변동성 타겟", 0.2, 1.5, float(cfg.get("ov_vol_target", 0.70)), 0.05, key="cam_new_vt")
-        st.caption("권장: 계수 0.70 · 타겟 0.70 (홀드아웃 검증된 정직 설정). "
+        nv1, nv2 = st.columns([1.3, 1])
+        _nvm_lbl = nv1.radio("σ 방식", ["20일 연환산", "3일 표준편차식"], horizontal=True, key="cam_new_vmode")
+        new_vmode = "vol3" if _nvm_lbl == "3일 표준편차식" else "vol"
+        if new_vmode == "vol3":
+            new_vt = float(cfg.get("ov_vol_target", 0.70))
+            new_vt3 = nv2.number_input("일간 목표 σ", 0.010, 0.080, float(cfg.get("ov_vol3_target", 0.030)),
+                                       0.005, format="%.3f", key="cam_new_vt3")
+        else:
+            new_vt = nv2.number_input("연환산 변동성 타겟", 0.2, 1.5, float(cfg.get("ov_vol_target", 0.70)),
+                                      0.05, key="cam_new_vt")
+            new_vt3 = float(cfg.get("ov_vol3_target", 0.030))
+        st.caption("권장: 계수 0.70 · 20일σ 타겟 0.70 **또는** 3일σ 타겟 0.030 (둘 다 홀드아웃 검증). "
                    "DSS·종가평균·표준편차·듀얼스나이퍼는 예수금 자동 산출, Sigma·IUO는 수동 입력.")
         if st.button("✅ 계좌 등록", type="primary", key="cam_add_acct", use_container_width=True):
             nm = new_name.strip()
@@ -947,7 +1017,9 @@ def render_ordersheet_tab(params):
                 accounts[nm] = {
                     "source_strategy": new_strat, "source_account": new_acct,
                     "ov_ticker": new_tkr.strip().upper(), "coef": float(new_coef),
+                    "vol_mode": new_vmode,
                     "vol_target": float(new_vt), "vol_period": int(cfg.get("ov_vol_period", 20)),
+                    "vol3_target": float(new_vt3), "vol3_period": int(cfg.get("ov_vol3_period", 3)),
                     "reserve_tiers": int(cfg.get("ov_reserve_tiers", 1)),
                     "held_qty": 0, "cash": 0, "capital": 0, "div": 7,
                 }

@@ -100,11 +100,13 @@ class CamarillaParams:
     stop_loss_pct: float = 0.0       # 손절 % (보유 중 이탈 시, 0 = 미사용)
     ma_filter_period: int = 0        # 추세필터: 전일종가 ≥ SMA(n) 일 때만 진입 (0 = 미사용)
     # ── 신호 기반 매수비중 조절 (애드온 오버레이용) ──
-    signal: str = "none"             # "none" | "ma" | "fi" | "vol"
+    signal: str = "none"             # "none" | "ma" | "fi" | "vol" | "vol3"
     signal_ma: int = 200             # ma 신호: SMA 기간
     fi_period: int = 13              # fi 신호: Force Index EMA 기간
     vol_period: int = 20             # vol 신호: 변동성 측정 기간
     vol_target: float = 0.50         # vol 신호: 연환산 목표 변동성
+    vol3_period: int = 3             # vol3 신호: 표준편차식 σ 기간(거래일)
+    vol3_target: float = 0.030       # vol3 신호: 일간 목표 σ(비연환산)
     risk_off_mult: float = 0.0       # 신호 위험구간 비중 배수 (0=스킵, 0.5=절반)
 
     def resistance(self, prev_high: float, prev_low: float,
@@ -123,7 +125,8 @@ def build_signal_mult(df: pd.DataFrame, params: 'CamarillaParams') -> Optional[p
 
     - ma : 전일종가 ≥ 전일 SMA → 1.0, 아니면 risk_off_mult
     - fi : 전일 Force Index EMA > 0 → 1.0, 아니면 risk_off_mult
-    - vol: 목표변동성/실현변동성(전일) 로 연속 축소 (상한 1.0)
+    - vol: 목표변동성/실현변동성(전일) 로 연속 축소 (상한 1.0). 20일 연환산(×√252, ddof=1)
+    - vol3: 표준편차매매식 σ — 직전 N거래일 일간수익률 표준편차(ddof=0, 비연환산)로 축소
     NaN(데이터 부족) 구간은 1.0(중립)으로 둔다. signal="none"이면 None.
     """
     sig = params.signal
@@ -147,6 +150,16 @@ def build_signal_mult(df: pd.DataFrame, params: 'CamarillaParams') -> Optional[p
         m = (params.vol_target / rv).clip(upper=1.0)
         m = m.where(rv.notna() & (rv > 0), 1.0)
         # risk_off_mult을 하한으로 사용(완전 0 방지 옵션)
+        if ro > 0:
+            m = m.clip(lower=ro)
+        return m.shift(1)
+    if sig == "vol3":
+        # 표준편차매매와 동일 로직: 직전 N거래일 일간수익률 σ(ddof=0, 비연환산)
+        # rolling(N).std(ddof=0)는 오늘 포함 창 → shift(1)로 '전일까지 N일' 정렬
+        ret = close.pct_change()
+        rv = ret.rolling(params.vol3_period).std(ddof=0)
+        m = (params.vol3_target / rv).clip(upper=1.0)
+        m = m.where(rv.notna() & (rv > 0), 1.0)
         if ro > 0:
             m = m.clip(lower=ro)
         return m.shift(1)
