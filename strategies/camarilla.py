@@ -1061,7 +1061,8 @@ def _render_pnl_tab(cfg, account_names):
     fc = st.columns([1.1, 1.3, 1.3])
     in_date = fc[0].date_input("날짜", value=datetime.today().date(), key="cam_pnl_date")
     in_acc = fc[1].selectbox("계좌", acc_opts, key="cam_pnl_acc")
-    in_mode = fc[2].radio("입력 방식", ["매수·매도가 자동", "금액 직접"], key="cam_pnl_mode", horizontal=True)
+    in_mode = fc[2].radio("입력 방식", ["금액 직접", "매수·매도가 자동"], key="cam_pnl_mode", horizontal=True,
+                          help="기본은 실현손익 금액만 입력. 매수·매도가로 자동계산도 선택 가능.")
     if in_mode == "매수·매도가 자동":
         mc = st.columns(4)
         in_buy = mc[0].number_input("매수가 $", 0.0, 1e7, 0.0, 0.01, format="%.4f", key="cam_pnl_buy")
@@ -1072,8 +1073,9 @@ def _render_pnl_tab(cfg, account_names):
         _mode = "auto"
     else:
         mc = st.columns([1, 2])
-        in_amt = mc[0].number_input("실현손익 $ (이익+/손실−)", -1e9, 1e9, 0.0, 1.0, key="cam_pnl_amt")
-        mc[1].caption("배당·수동정산 등 금액을 직접 입력합니다.")
+        in_amt = mc[0].number_input("실현손익 $", -1e9, 1e9, 0.0, 1.0, key="cam_pnl_amt",
+                                    help="이 거래의 실현손익만 입력 (이익 +, 손실 −). 매수·매도가는 필요 없음.")
+        mc[1].caption("👍 이익은 **+**, 손실은 **−** 로 금액만 입력하면 끝. 날짜·계좌만 맞춰주세요.")
         in_buy = in_sell = 0.0; in_qty = 0; _mode = "manual"
     in_note = st.text_input("메모 (선택)", key="cam_pnl_note", placeholder="예: 갭상승 미체결분 제외 / 부분체결")
     if st.button("기록 추가", type="primary", key="cam_pnl_add"):
