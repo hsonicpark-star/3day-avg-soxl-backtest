@@ -858,6 +858,23 @@ def _render_cam_account(name, acct, cfg):
     buy_shares = int(deployable / resistance) if resistance > 0 else 0
 
     _tgt_txt = f"{eff_target:.3f}" if vmode == "vol3" else f"{eff_target:g}"
+    # ── 실측 변동성 σ (표시·설명용) ──
+    _ret = ov_px['Close'].pct_change().dropna()
+    if len(_ret) >= eff_period:
+        if vmode == "vol3":
+            _sig = float(_ret.iloc[-eff_period:].std(ddof=0))          # 일간 σ(비연환산)
+            _sig_txt = f"{_sig*100:.2f}%"
+            _calc = (f"min(100%, 목표 {eff_target:.3f} ÷ 일간σ {_sig:.4f}) = **{vmult*100:.0f}%**")
+            _sig_help = (f"최근 {eff_period}거래일 일간수익률 표준편차(모, ddof=0) = {_sig*100:.2f}%. "
+                         f"목표 {eff_target:.3f}을 이 값으로 나눠 비중 산출(상한 100%). 비연환산.")
+        else:
+            _sig = float(_ret.iloc[-eff_period:].std() * np.sqrt(252))  # 연환산 σ
+            _sig_txt = f"{_sig*100:.0f}%"
+            _calc = (f"min(100%, 목표 {eff_target:g} ÷ 연환산σ {_sig:.2f}) = **{vmult*100:.0f}%**")
+            _sig_help = (f"최근 {eff_period}일 일간수익률 표준편차×√252 = {_sig*100:.0f}%(연환산). "
+                         f"목표 {eff_target:g}을 이 값으로 나눠 비중 산출(상한 100%).")
+    else:
+        _sig_txt, _calc, _sig_help = "—", "데이터 부족", "변동성 계산용 데이터가 부족합니다."
     st.markdown(f"**오버레이 계산** — `{ov_ticker}` · 계수 {coef:.2f} · {mode_lbl} 타겟 {_tgt_txt} · "
                 f"{last_date} → 적용 {ntd}")
     b = st.columns(4)
@@ -865,7 +882,9 @@ def _render_cam_account(name, acct, cfg):
     b[1].metric(f"유보 ({res_tiers}티어)", f"${reserve:,.0f}")
     b[2].metric("차입가능 유휴", f"${borrowable:,.0f}")
     b[3].metric("변동성 비중", f"{vmult*100:.0f}%",
-                help=f"{mode_lbl}({eff_period}일) 기준, 목표 {_tgt_txt} 대비 자동 축소")
+                delta=f"{mode_lbl} {_sig_txt}", delta_color="off", help=_sig_help)
+    st.caption(f"📐 **변동성 비중 산출**: {_calc} · 최근 {eff_period}거래일 {mode_lbl} = **{_sig_txt}** "
+               f"／ σ가 높을수록 비중↓(위기 자동 디레버리징). 투입 = 차입가능 ${borrowable:,.0f} × {vmult*100:.0f}%")
 
     held = st.number_input("오버레이 보유수량 (어제 매수분, 있으면 시가 매도)", 0, 100_000_000,
                            int(acct.get("held_qty", 0)), 1, key=f"cam_held_{sfx}")
@@ -874,19 +893,27 @@ def _render_cam_account(name, acct, cfg):
         cfg["accounts"][name] = acct
         _save_cam_config(cfg)
 
-    # ── 오늘 주문 ──
-    if held > 0:
-        st.warning(f"💰 **매도**: 보유 {held:,}주 → 시가(MOO) 전량 매도 (≈ ${held*pc:,.0f})")
+    # ── 오늘 주문 (① 매도 먼저 → ② 매수) ──
+    sell_qty = int(held)
+    if sell_qty > 0:
+        st.warning(
+            f"💰 **① 매도 — MOO(개장 시가 전량)** ({ov_ticker})\n\n"
+            f"- 주문유형: **개장 시가(MOO)** · 수량: **{sell_qty:,}주** (어제 매수분 전량 청산)\n"
+            f"- 시점: **{ntd} 개장 즉시** 매도\n"
+            f"- 예상 회수 ≈ **${sell_qty*pc:,.0f}** (전일 종가 ${pc:,.2f} 기준 · 실제는 개장가)")
+    else:
+        st.caption("💰 **① 매도**: 보유 0주 — 오늘 MOO 매도 없음 (보유수량 입력 시 자동 표시)")
     if buy_shares > 0:
         st.success(
-            f"🎯 **매수 — 자동감시주문(역지정가)** ({ov_ticker})\n\n"
+            f"🎯 **② 매수 — 자동감시주문(역지정가)** ({ov_ticker})\n\n"
             f"- 감시조건: **현재가 ≥ ${resistance:,.2f} 이상** 도달 시\n"
             f"- 주문유형: **시장가** · 수량: **{buy_shares:,}주**\n"
             f"- 유지기간: ⭐ **다음 거래일 1일만** (갭상승·장중돌파 모두 자동 체결)\n"
             f"- 투입 ≈ **${deployable:,.0f}** (차입 ${borrowable:,.0f} × 변동성 {vmult*100:.0f}%)")
-        st.caption("💡 매도는 체결된 다음날 **MOO(개장 시가)** 전량 매도. 상세는 소개 탭의 **🛒 실전 주문법** 참고.")
+        st.caption("💡 오늘 매수가 체결되면, **다음날** 그 수량을 위 ①번처럼 MOO 전량 매도. "
+                   "상세는 소개 탭의 **🛒 실전 주문법** 참고.")
     else:
-        st.info("매수 가능 금액 없음 (변동성↑로 비중 축소 또는 유휴현금 부족)")
+        st.info("**② 매수**: 매수 가능 금액 없음 (변동성↑로 비중 축소 또는 유휴현금 부족)")
 
     o = st.columns(4)
     o[0].metric("전일 종가", f"${pc:,.2f}")
@@ -902,11 +929,14 @@ def _render_cam_account(name, acct, cfg):
     else:
         tg_token, tg_chat = _src_telegram(src_strat)
         _tg_from = f"출처 전략 {src_strat}"
+    _sell_line = (f"💰 ① 매도(MOO): 보유 {int(held):,}주 개장 시가 전량 청산"
+                  if held > 0 else "💰 ① 매도(MOO): 없음 (보유 0주)")
     txt = (f"<b>📋 카마릴라 오버레이 — {name} ({ntd})</b>\n"
            f"출처: {src_strat} {src_acct} · 종목: {ov_ticker}\n"
-           f"━━━━━\n🎯 매수: ${resistance:,.4f} 돌파 시 {buy_shares:,}주 (투입 ${deployable:,.0f})\n"
-           f"   변동성 비중 {vmult*100:.0f}%\n"
-           f"💰 매도: {'보유 '+format(int(held),',')+'주 시가 매도' if held>0 else '없음'}")
+           f"━━━━━\n"
+           f"{_sell_line}\n"
+           f"🎯 ② 매수: ${resistance:,.4f} 돌파 시 {buy_shares:,}주 (투입 ${deployable:,.0f})\n"
+           f"   변동성 비중 {vmult*100:.0f}% (최근 {eff_period}일 {mode_lbl} σ {_sig_txt})")
     cb1, cb2 = st.columns([1, 3])
     _tg_ok = bool(tg_token and tg_chat)
     if cb1.button("📨 텔레그램 발송", disabled=not _tg_ok, key=f"cam_tg_{sfx}"):
