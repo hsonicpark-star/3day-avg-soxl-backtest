@@ -1005,6 +1005,147 @@ def _render_cam_account(name, acct, cfg):
             st.rerun()
 
 
+def _pnl_next_id(records):
+    return max([int(r.get("id", 0)) for r in records], default=0) + 1
+
+
+def _render_pnl_tab(cfg, account_names):
+    st.markdown("### 💰 수익관리 — 오버레이 손익 & 워터폴 증액")
+    st.caption("각 카마릴라 계좌의 실현손익을 기록·합산하고, 쌓인 수익으로 워터폴 증액을 관리합니다. "
+               "기록은 자동 저장(클라우드 동기화)되며 과거 기록은 보존됩니다.")
+    pnl = cfg.setdefault("pnl_history", [])
+    inj = cfg.setdefault("injection_history", [])
+
+    df = pd.DataFrame(pnl)
+    total_pnl = float(df["pnl"].sum()) if len(df) else 0.0
+    total_inj = sum(float(x.get("amount", 0)) for x in inj)
+    balance = total_pnl - total_inj
+    n_tr = len(df); n_win = int((df["pnl"] > 0).sum()) if len(df) else 0
+
+    # ── 요약 ──
+    c = st.columns(4)
+    c[0].metric("누적 실현손익", f"${total_pnl:,.0f}")
+    c[1].metric("누적 증액", f"${total_inj:,.0f}")
+    c[2].metric("수익계좌 잔액", f"${balance:,.0f}", help="누적손익 − 누적증액 = 아직 증액 안 한 수익")
+    c[3].metric("거래 / 승률", f"{n_tr}건 · {(n_win/n_tr*100 if n_tr else 0):.0f}%")
+
+    if len(df):
+        by = df.groupby("account")["pnl"].agg(["sum", "count"]).reset_index()
+        _mx = by["sum"].max()
+        st.markdown("**계좌별 누적 손익**")
+        st.markdown(_styled_table_html(
+            ["계좌", "누적손익", "거래수"],
+            [([r["account"], f"${r['sum']:,.0f}", int(r["count"])], float(r["sum"]) == _mx)
+             for _, r in by.iterrows()]), unsafe_allow_html=True)
+
+        # 누적손익 추이
+        d2 = df.copy(); d2["date"] = pd.to_datetime(d2["date"]); d2 = d2.sort_values("date")
+        fig = go.Figure()
+        g = d2.groupby("date")["pnl"].sum().cumsum()
+        fig.add_trace(go.Scatter(x=g.index, y=g.values, name="합산",
+                                 line=dict(color="#2563eb", width=2.5)))
+        for acc in d2["account"].unique():
+            s = d2[d2["account"] == acc].set_index("date")["pnl"].cumsum()
+            fig.add_trace(go.Scatter(x=s.index, y=s.values, name=str(acc),
+                                     line=dict(width=1, dash="dot")))
+        fig.update_layout(height=300, margin=dict(t=20, b=20),
+                          legend=dict(orientation="h", y=1.12), yaxis_title="누적 실현손익 ($)")
+        st.plotly_chart(fig, use_container_width=True, key="cam_pnl_chart")
+    else:
+        st.info("아직 손익 기록이 없습니다. 아래에서 첫 거래를 기록해 보세요.")
+
+    st.divider()
+    # ── 손익 기록 추가 (자동계산 / 금액직접 둘 다) ──
+    st.markdown("#### ➕ 손익 기록 추가")
+    acc_opts = account_names or ["(계좌없음)"]
+    fc = st.columns([1.1, 1.3, 1.3])
+    in_date = fc[0].date_input("날짜", value=datetime.today().date(), key="cam_pnl_date")
+    in_acc = fc[1].selectbox("계좌", acc_opts, key="cam_pnl_acc")
+    in_mode = fc[2].radio("입력 방식", ["매수·매도가 자동", "금액 직접"], key="cam_pnl_mode", horizontal=True)
+    if in_mode == "매수·매도가 자동":
+        mc = st.columns(4)
+        in_buy = mc[0].number_input("매수가 $", 0.0, 1e7, 0.0, 0.01, format="%.4f", key="cam_pnl_buy")
+        in_sell = mc[1].number_input("매도가 $", 0.0, 1e7, 0.0, 0.01, format="%.4f", key="cam_pnl_sell")
+        in_qty = mc[2].number_input("수량", 0, 10_000_000, 0, 1, key="cam_pnl_qty")
+        in_amt = (in_sell - in_buy) * in_qty
+        mc[3].metric("실현손익(예상)", f"${in_amt:,.0f}")
+        _mode = "auto"
+    else:
+        mc = st.columns([1, 2])
+        in_amt = mc[0].number_input("실현손익 $ (이익+/손실−)", -1e9, 1e9, 0.0, 1.0, key="cam_pnl_amt")
+        mc[1].caption("배당·수동정산 등 금액을 직접 입력합니다.")
+        in_buy = in_sell = 0.0; in_qty = 0; _mode = "manual"
+    in_note = st.text_input("메모 (선택)", key="cam_pnl_note", placeholder="예: 갭상승 미체결분 제외 / 부분체결")
+    if st.button("기록 추가", type="primary", key="cam_pnl_add"):
+        pnl.append({"id": _pnl_next_id(pnl), "date": str(in_date), "account": in_acc,
+                    "buy": float(in_buy), "sell": float(in_sell), "qty": int(in_qty),
+                    "pnl": float(in_amt), "mode": _mode, "note": in_note.strip()})
+        cfg["pnl_history"] = pnl; _save_cam_config(cfg)
+        st.success(f"✅ 기록 추가: {in_acc} · {in_date} · ${in_amt:,.0f}")
+        st.rerun()
+
+    # ── 내역 + 수정/삭제 ──
+    if len(df):
+        st.markdown("#### 📑 손익 내역")
+        show = df.sort_values("date", ascending=False)[
+            ["date", "account", "buy", "sell", "qty", "pnl", "note"]].copy()
+        show.columns = ["날짜", "계좌", "매수가", "매도가", "수량", "실현손익", "메모"]
+        st.dataframe(show, hide_index=True, use_container_width=True, height=240)
+        with st.expander("✏️ 기록 수정 / 삭제 (매수 놓침·오타 정정)"):
+            opts = {f"[{r['id']}] {r['date']} · {r['account']} · ${r['pnl']:,.0f}": r["id"] for r in pnl}
+            sel = st.selectbox("기록 선택", list(opts.keys()), key="cam_pnl_sel")
+            rec = next(r for r in pnl if r["id"] == opts[sel])
+            ec = st.columns(4)
+            e_date = ec[0].date_input("날짜", value=pd.to_datetime(rec["date"]).date(), key="cam_pnl_edate")
+            _ai = acc_opts.index(rec["account"]) if rec["account"] in acc_opts else 0
+            e_acc = ec[1].selectbox("계좌", acc_opts, index=_ai, key="cam_pnl_eacc")
+            e_pnl = ec[2].number_input("실현손익 $", -1e9, 1e9, float(rec["pnl"]), 1.0, key="cam_pnl_epnl")
+            e_note = ec[3].text_input("메모", value=rec.get("note", ""), key="cam_pnl_enote")
+            uc1, uc2 = st.columns(2)
+            if uc1.button("💾 수정 저장", key="cam_pnl_upd"):
+                rec.update(date=str(e_date), account=e_acc, pnl=float(e_pnl), note=e_note.strip())
+                cfg["pnl_history"] = pnl; _save_cam_config(cfg)
+                st.success("수정되었습니다."); st.rerun()
+            if uc2.button("🗑️ 이 기록 삭제", key="cam_pnl_del"):
+                cfg["pnl_history"] = [r for r in pnl if r["id"] != opts[sel]]
+                _save_cam_config(cfg); st.warning("삭제되었습니다."); st.rerun()
+
+    st.divider()
+    # ── 워터폴 증액 관리 ──
+    st.markdown("#### 🌊 워터폴 증액 관리")
+    frac = st.slider("증액 비율 (수익계좌 잔액 대비)", 0, 100, 70, 5, key="cam_inj_frac") / 100.0
+    avail = max(0.0, balance) * frac
+    ic = st.columns(3)
+    ic[0].metric("수익계좌 잔액", f"${balance:,.0f}")
+    ic[1].metric(f"증액 가능액 ({frac*100:.0f}%)", f"${avail:,.0f}")
+    ic[2].metric("누적 증액", f"${total_inj:,.0f}")
+    st.caption("쌓인 수익의 일부를 원전략(DSS·표준편차·듀얼 등)에 증액하면 복리 성장. "
+               "증액 실행 시 아래에 기록하면 수익계좌 잔액에서 차감됩니다.")
+    jc = st.columns([1.1, 1.4, 1, 1.4])
+    j_date = jc[0].date_input("증액일", value=datetime.today().date(), key="cam_inj_date")
+    j_target = jc[1].text_input("대상 전략/계좌", placeholder="예: DSS-pjh", key="cam_inj_target")
+    j_amt = jc[2].number_input("증액액 $", 0.0, 1e9, 0.0, 100.0, key="cam_inj_amt")
+    j_note = jc[3].text_input("메모", key="cam_inj_note")
+    if st.button("증액 기록 추가", key="cam_inj_add"):
+        if j_amt > 0:
+            inj.append({"id": _pnl_next_id(inj), "date": str(j_date), "target": j_target.strip(),
+                        "amount": float(j_amt), "note": j_note.strip()})
+            cfg["injection_history"] = inj; _save_cam_config(cfg)
+            st.success(f"✅ 증액 기록: {j_target or '(대상미입력)'} · ${j_amt:,.0f}"); st.rerun()
+        else:
+            st.warning("증액액을 입력하세요.")
+    if inj:
+        idf = pd.DataFrame(inj).sort_values("date", ascending=False)[["date", "target", "amount", "note"]].copy()
+        idf.columns = ["증액일", "대상", "증액액", "메모"]
+        st.dataframe(idf, hide_index=True, use_container_width=True)
+        with st.expander("🗑️ 증액 기록 삭제"):
+            iopts = {f"[{r['id']}] {r['date']} · {r['target']} · ${r['amount']:,.0f}": r["id"] for r in inj}
+            isel = st.selectbox("기록 선택", list(iopts.keys()), key="cam_inj_sel")
+            if st.button("삭제", key="cam_inj_del"):
+                cfg["injection_history"] = [r for r in inj if r["id"] != iopts[isel]]
+                _save_cam_config(cfg); st.warning("삭제되었습니다."); st.rerun()
+
+
 def render_ordersheet_tab(params):
     cfg = _load_cam_config()
     st.subheader(f"📋 오늘의 오버레이 주문표  ({datetime.today().strftime('%Y-%m-%d')})")
@@ -1068,12 +1209,14 @@ def render_ordersheet_tab(params):
         st.info("등록된 카마릴라 계좌가 없습니다. 위 **➕ 카마릴라 계좌 추가**에서 만들어 주세요.")
         return
 
-    # ── 계좌별 탭 ──
+    # ── 계좌별 탭 + 수익관리 탭(맨 끝) ──
     names = list(accounts.keys())
-    tabs = st.tabs([f"📊 {n}" for n in names])
-    for nm, tb in zip(names, tabs):
+    tabs = st.tabs([f"📊 {n}" for n in names] + ["💰 수익관리"])
+    for nm, tb in zip(names, tabs[:-1]):
         with tb:
             _render_cam_account(nm, accounts[nm], cfg)
+    with tabs[-1]:
+        _render_pnl_tab(cfg, names)
 
 
 # ══════════════════════════════════════════════
