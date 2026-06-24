@@ -38,6 +38,7 @@ _CAM_DEFAULTS = {
     "ov_reserve_tiers": 1,
     "ov_inject_frac": 0.70,
     "ov_slippage": 0.001,
+    "auto_pull": True,
 }
 
 
@@ -815,9 +816,24 @@ def _render_cam_account(name, acct, cfg):
             acct.update(cash=int(cash), capital=int(capital), div=int(div))
             cfg["accounts"][name] = acct; _save_cam_config(cfg)
     else:
-        sc1, sc2 = st.columns([3, 1])
         _today_str = datetime.today().strftime("%Y-%m-%d")
         _last_pull = acct.get("last_pull", "")
+        # ── 자동 갱신: stale일 때 1일 1회 (실패해도 기존값 유지) ──
+        _autokey = f"cam_autopulled_{sfx}_{_today_str}"
+        if (cfg.get("auto_pull", True) and (not _last_pull or _last_pull < _today_str)
+                and not st.session_state.get(_autokey)):
+            st.session_state[_autokey] = True   # 이번 세션·오늘 1회만 시도 (실패 시 재시도 안 함→수동 버튼으로)
+            try:
+                with st.spinner(f"{name} 예수금 자동 갱신 중..."):
+                    stt = _src_get_state(src_strat, src_acct, _today_str)
+                acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]),
+                            div=int(stt["div"]), last_pull=_today_str)
+                cfg["accounts"][name] = acct
+                _save_cam_config(cfg)
+                st.rerun()
+            except Exception:
+                pass  # 실패 시 저장값 유지 + 아래 경고가 안내
+        sc1, sc2 = st.columns([3, 1])
         sc1.markdown(f"**출처: {src_strat} · {src_acct}** — 저장된 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할")
         if sc2.button("🔄 자동 불러오기", key=f"cam_pull_{sfx}"):
             try:
@@ -1164,6 +1180,14 @@ def render_ordersheet_tab(params):
     st.subheader(f"📋 오늘의 오버레이 주문표  ({datetime.today().strftime('%Y-%m-%d')})")
     st.caption("카마릴라 계좌마다 **어느 전략(DSS·종가평균·표준편차 등)의 유휴 예수금**을 활용할지 설정해, "
                "계좌별로 오늘 주문을 받습니다.")
+
+    _ap = st.checkbox("🔄 주문표 열 때 예수금 자동 갱신 (오래된 계좌만, 하루 1회)",
+                      value=cfg.get("auto_pull", True), key="cam_auto_pull_toggle",
+                      help="켜두면 갱신일이 오늘이 아닌 계좌를 열 때 자동으로 최신 예수금을 불러옵니다 "
+                           "(그날 첫 로딩이 몇 초 느려질 수 있음). 끄면 수동 '🔄 자동 불러오기' 버튼으로만 갱신.")
+    if _ap != cfg.get("auto_pull", True):
+        cfg["auto_pull"] = _ap
+        _save_cam_config(cfg)
 
     accounts = cfg.setdefault("accounts", {})
 
