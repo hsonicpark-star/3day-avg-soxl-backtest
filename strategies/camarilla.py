@@ -1288,6 +1288,38 @@ def _overlay_table_html(title, sub, growth_col, rows):
                               [(r[:5], r[5]) for r in rows], title=title, sub=sub)
 
 
+@st.cache_data(show_spinner="연도별·월별 성과 계산 중...")
+def _perf_bt():
+    """검증 성과용 고정 추천설정(4일·0.030·계수0.70·슬리피지0.1%) 백테스트."""
+    p = CamarillaParams(coef=0.70, signal="vol3", vol3_period=4, vol3_target=0.030,
+                        position_pct=1.0, hold_days=1, fee_rate=0.0005, initial_capital=100000.0)
+    return run_backtest(p, _get_price("SOXL"), "2010-03-12", datetime.today().strftime("%Y-%m-%d"))
+
+
+def _monthly_perf(bt):
+    """월별 전략수익률 vs SOXL B&H 월수익률 + 월승률 (월말 대비 월말, 첫 달은 시작값 기준)."""
+    b = bt.copy(); b['날짜'] = pd.to_datetime(b['날짜'])
+    b['ym'] = b['날짜'].dt.to_period('M')
+    me = b.groupby('ym')['총자산'].last()
+    me_prev = me.shift(1); me_prev.iloc[0] = 100000.0
+    strat = me / me_prev - 1
+    px = _get_price("SOXL")
+    pxb = px[(px.index >= b['날짜'].min()) & (px.index <= b['날짜'].max())].copy()
+    pxb['ym'] = pxb.index.to_period('M')
+    sme = pxb.groupby('ym')['Close'].last()
+    sme_prev = sme.shift(1); sme_prev.iloc[0] = float(pxb['Close'].iloc[0])
+    soxl = sme / sme_prev - 1
+    sells = b[b['매도수량'] > 0]
+    wr = sells.groupby('ym').apply(lambda g: float((g['당일실현'] > 0).mean())) if len(sells) else pd.Series(dtype=float)
+    rows = []
+    for ym in me.index:
+        rows.append({"년": int(ym.year), "월": int(ym.month),
+                     "전략": float(strat.get(ym, np.nan)),
+                     "SOXL": float(soxl.get(ym, np.nan)),
+                     "월승률": float(wr.get(ym, np.nan)) if ym in wr.index else np.nan})
+    return pd.DataFrame(rows)
+
+
 def render_intro_tab(params=None):
     st.subheader("📖 전략 소개 & 성과")
     t = st.tabs(["① 무엇인가", "② 매매 규칙", "🛒 실전 주문법", "③ 왜 이 설정",
@@ -1475,6 +1507,37 @@ def render_intro_tab(params=None):
                 (["B&H SOXL", "44.6%", "−90.5%"], False),
             ]), unsafe_allow_html=True)
         st.markdown("→ CAGR는 더 높고 MDD는 1/3 수준. 3배 레버리지를 **−90% 낙폭 없이** 굴리는 게 핵심 가치.")
+
+        # ── 실시간 연도별·월별 상세 (4일·0.030 기준) ──
+        st.divider()
+        st.markdown("### 📊 연도별·월별 상세 (실시간 · 4일·0.030 기준)")
+        try:
+            _pbt = _perf_bt()
+        except Exception as _e:
+            _pbt = None
+            st.info(f"성과 데이터를 불러오지 못했습니다 ({_e}). 잠시 후 다시 시도해 주세요.")
+        if _pbt is not None and len(_pbt):
+            _yr = yearly_returns(_pbt, 100000.0)
+            _cols = ['#d32f2f' if v >= 0 else '#1565c0' for v in _yr['수익률']]
+            _figy = go.Figure(go.Bar(
+                x=_yr['연도'].astype(str), y=_yr['수익률'] * 100, marker_color=_cols,
+                text=[f"{v*100:+.0f}%" for v in _yr['수익률']], textposition="outside"))
+            _figy.update_layout(height=330, yaxis_title="연수익률 (%)", margin=dict(t=36, b=20),
+                                title="연도별 수익률 (전략, 빨강 +/파랑 −)")
+            st.plotly_chart(_figy, use_container_width=True, key="cam_perf_yr")
+
+            st.markdown("**월별 성과 — 전략 vs SOXL Buy & Hold**")
+            _mdf = _monthly_perf(_pbt).sort_values(["년", "월"], ascending=False)
+
+            def _csign(v):
+                if pd.isna(v):
+                    return ''
+                return 'color:#d32f2f;font-weight:600' if v >= 0 else 'color:#1565c0;font-weight:600'
+            _sty = (_mdf.style.map(_csign, subset=["전략", "SOXL"])
+                    .format({"전략": "{:+.1%}", "SOXL": "{:+.1%}", "월승률": "{:.0%}"}))
+            st.dataframe(_sty, hide_index=True, use_container_width=True, height=430)
+            st.caption("월수익률=월말 총자산 대비(첫 달은 시작자본 기준) · SOXL=같은 달 종가 월수익률(B&H) · "
+                       "월승률=그 달 매도 거래 중 이익 비율 · 빨강 +, 파랑 − (한국식)")
 
         st.divider()
         st.markdown("## 🌊 워터폴 합산 성과 (애드온 + 연말 증액)")
