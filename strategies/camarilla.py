@@ -816,11 +816,14 @@ def _render_cam_account(name, acct, cfg):
             cfg["accounts"][name] = acct; _save_cam_config(cfg)
     else:
         sc1, sc2 = st.columns([3, 1])
+        _today_str = datetime.today().strftime("%Y-%m-%d")
+        _last_pull = acct.get("last_pull", "")
         sc1.markdown(f"**출처: {src_strat} · {src_acct}** — 저장된 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할")
         if sc2.button("🔄 자동 불러오기", key=f"cam_pull_{sfx}"):
             try:
-                stt = _src_get_state(src_strat, src_acct, datetime.today().strftime("%Y-%m-%d"))
-                acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]), div=int(stt["div"]))
+                stt = _src_get_state(src_strat, src_acct, _today_str)
+                acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]), div=int(stt["div"]),
+                            last_pull=_today_str)
                 cfg["accounts"][name] = acct; _save_cam_config(cfg)
                 cash, capital, div = stt["cash"], stt["capital"], stt["div"]
                 st.success(f"✅ {stt['detail']}: 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할 · 보유 {stt['n_pos']}/{div}")
@@ -828,7 +831,15 @@ def _render_cam_account(name, acct, cfg):
             except Exception as e:
                 st.error(f"자동 산출 실패 ({e}). 아래 계좌 설정에서 출처를 확인하거나 '직접 입력'으로 바꿔 수동 관리하세요.")
         if cash <= 0:
-            st.caption("※ '🔄 자동 불러오기'를 눌러 현재 예수금을 가져오세요.")
+            sc1.caption("※ '🔄 자동 불러오기'를 눌러 현재 예수금을 가져오세요.")
+        elif not _last_pull:
+            st.warning("⚠️ 예수금 갱신 기록이 없습니다. **🔄 자동 불러오기**를 눌러 최신 값으로 맞춰 주세요 "
+                       "(저장된 값은 과거 매수/매도를 반영 못 했을 수 있음).")
+        elif _last_pull < _today_str:
+            st.warning(f"⚠️ 예수금이 **{_last_pull}** 기준입니다(오늘 {_today_str} 아님). 어제 이후 매수/매도가 "
+                       f"있었다면 반영이 안 됐을 수 있으니 **🔄 자동 불러오기**로 갱신하세요.")
+        else:
+            sc1.caption(f"🟢 예수금 갱신: **오늘({_last_pull})** 기준 — 최신")
 
     # ── 오버레이 계산 ──
     ov_px = _get_price(ov_ticker)
