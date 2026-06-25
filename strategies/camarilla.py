@@ -679,7 +679,8 @@ def _src_get_state(strategy, account, today_str):
             raise ValueError(f"DSS 계좌 '{account}' 없음")
         stt = _dss_account_state(account, json.dumps(accounts[account], ensure_ascii=False), today_str)
         return {"cash": stt["cash"], "capital": stt["capital"], "div": stt["divisions"],
-                "n_pos": stt["n_pos"], "detail": f"DSS {account} (기준 {stt['date']})"}
+                "n_pos": stt["n_pos"], "invested": max(0.0, stt["total"] - stt["cash"]),
+                "detail": f"DSS {account} (기준 {stt['date']})"}
 
     if strategy == "종가평균":
         from avg_close_engine import run_portfolio_for_ordersheet
@@ -694,6 +695,7 @@ def _src_get_state(strategy, account, today_str):
         return {"cash": res["cash"] + adj, "capital": res["current_asset"] + adj,
                 "div": int(c.get("divisions", 5)),
                 "n_pos": len(res.get("open_tiers", [])),
+                "invested": max(0.0, res["current_asset"] - res["cash"]),
                 "detail": f"종가평균 {account}" + (f" (조정 {adj:+,.0f})" if adj else "")}
 
     if strategy == "표준편차":
@@ -710,6 +712,7 @@ def _src_get_state(strategy, account, today_str):
         adj = _cap_adj_sum(c)   # 증액/감액 반영
         return {"cash": res["cash"] + adj, "capital": res.get("total_invest", res["final_asset"]) + adj,
                 "div": int(c.get("divisions", 5)), "n_pos": max(0, int(res.get("next_tier", 1)) - 1),
+                "invested": max(0.0, res["final_asset"] - res["cash"]),
                 "detail": f"표준편차 {account}" + (f" (조정 {adj:+,.0f})" if adj else "")}
 
     if strategy == "듀얼스나이퍼":
@@ -774,6 +777,7 @@ def _src_get_state(strategy, account, today_str):
                                     mode_rule=_mr, forced_mode=forced, capital_injections=inj or None)
         return {"cash": float(r["cash"]), "capital": float(r["total_asset"]),
                 "div": int(r["divisions"]), "n_pos": int(r["n_pos"]),
+                "invested": max(0.0, float(r["total_asset"]) - float(r["cash"])),
                 "detail": f"듀얼스나이퍼 {account} (모드 {r.get('next_mode', '')}·{src})"}
 
     raise NotImplementedError(f"'{strategy}' 자동 예수금 산출은 아직 미지원입니다. 수동 입력을 사용하세요.")
@@ -827,7 +831,8 @@ def _render_cam_account(name, acct, cfg):
                 with st.spinner(f"{name} 예수금 자동 갱신 중..."):
                     stt = _src_get_state(src_strat, src_acct, _today_str)
                 acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]),
-                            div=int(stt["div"]), n_pos=int(stt.get("n_pos", 0)), last_pull=_today_str)
+                            div=int(stt["div"]), n_pos=int(stt.get("n_pos", 0)),
+                            invested=float(stt.get("invested", 0.0)), last_pull=_today_str)
                 cfg["accounts"][name] = acct
                 _save_cam_config(cfg)
                 st.rerun()
@@ -835,14 +840,15 @@ def _render_cam_account(name, acct, cfg):
                 pass  # 실패 시 저장값 유지 + 아래 경고가 안내
         sc1, sc2 = st.columns([3, 1])
         _npos = int(acct.get("n_pos", 0))
-        _tierval = (capital / div) if div else 0.0
-        _held_txt = (f" · **보유 {_npos}/{div}티어 (≈ ${_npos*_tierval:,.0f})**" if _npos > 0 else "")
+        _inv = float(acct.get("invested", 0.0))
+        _held_txt = (f" · **보유 {_npos}/{div}티어 (투입 ${_inv:,.0f})**" if (_npos > 0 or _inv > 0) else "")
         sc1.markdown(f"**출처: {src_strat} · {src_acct}** — 저장된 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할{_held_txt}")
         if sc2.button("🔄 자동 불러오기", key=f"cam_pull_{sfx}"):
             try:
                 stt = _src_get_state(src_strat, src_acct, _today_str)
                 acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]), div=int(stt["div"]),
-                            n_pos=int(stt.get("n_pos", 0)), last_pull=_today_str)
+                            n_pos=int(stt.get("n_pos", 0)), invested=float(stt.get("invested", 0.0)),
+                            last_pull=_today_str)
                 cfg["accounts"][name] = acct; _save_cam_config(cfg)
                 cash, capital, div = stt["cash"], stt["capital"], stt["div"]
                 st.success(f"✅ {stt['detail']}: 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할 · 보유 {stt['n_pos']}/{div}")
@@ -908,11 +914,15 @@ def _render_cam_account(name, acct, cfg):
     st.markdown(f"**오버레이 계산** — `{ov_ticker}` · 계수 {coef:.2f} · {mode_lbl} 타겟 {_tgt_txt} · "
                 f"{last_date} → 적용 {ntd}")
     _npos2 = int(acct.get("n_pos", 0))
+    _inv2 = float(acct.get("invested", 0.0))
     b = st.columns(4)
-    b[0].metric("1티어", f"${tier:,.0f}", help="원전략 1회 매수분 = 투자금 ÷ 분할수")
+    b[0].metric(f"보유 {_npos2}티어", f"${_inv2:,.0f}",
+                help=f"원전략이 이미 매수한 {_npos2}티어의 투입금(총자산−예수금). "
+                     f"듀얼 방어모드처럼 티어별 비중이 달라도 실제 투입액을 그대로 반영. "
+                     f"1티어 단위 금액은 '유보' 카드 참고.")
     b[1].metric(f"유보 ({res_tiers}티어)", f"${reserve:,.0f}",
-                help=f"원전략의 '다음 매수' 1회분을 남겨두는 현금(설정값). "
-                     f"현재 보유 {_npos2}티어(이미 매수분)와는 별개 — 보유분은 주식이라 예수금에 없음.")
+                help=f"원전략의 '다음 매수' 1회분(1티어=${tier:,.0f})을 남겨두는 현금(설정값). "
+                     f"이미 매수한 {_npos2}티어(주식)와는 별개.")
     b[2].metric("차입가능 유휴", f"${borrowable:,.0f}")
     b[3].metric("변동성 비중", f"{vmult*100:.0f}%",
                 delta=f"{mode_lbl} {_sig_txt}", delta_color="off", help=_sig_help)
