@@ -827,19 +827,22 @@ def _render_cam_account(name, acct, cfg):
                 with st.spinner(f"{name} 예수금 자동 갱신 중..."):
                     stt = _src_get_state(src_strat, src_acct, _today_str)
                 acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]),
-                            div=int(stt["div"]), last_pull=_today_str)
+                            div=int(stt["div"]), n_pos=int(stt.get("n_pos", 0)), last_pull=_today_str)
                 cfg["accounts"][name] = acct
                 _save_cam_config(cfg)
                 st.rerun()
             except Exception:
                 pass  # 실패 시 저장값 유지 + 아래 경고가 안내
         sc1, sc2 = st.columns([3, 1])
-        sc1.markdown(f"**출처: {src_strat} · {src_acct}** — 저장된 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할")
+        _npos = int(acct.get("n_pos", 0))
+        _tierval = (capital / div) if div else 0.0
+        _held_txt = (f" · **보유 {_npos}/{div}티어 (≈ ${_npos*_tierval:,.0f})**" if _npos > 0 else "")
+        sc1.markdown(f"**출처: {src_strat} · {src_acct}** — 저장된 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할{_held_txt}")
         if sc2.button("🔄 자동 불러오기", key=f"cam_pull_{sfx}"):
             try:
                 stt = _src_get_state(src_strat, src_acct, _today_str)
                 acct.update(cash=float(stt["cash"]), capital=float(stt["capital"]), div=int(stt["div"]),
-                            last_pull=_today_str)
+                            n_pos=int(stt.get("n_pos", 0)), last_pull=_today_str)
                 cfg["accounts"][name] = acct; _save_cam_config(cfg)
                 cash, capital, div = stt["cash"], stt["capital"], stt["div"]
                 st.success(f"✅ {stt['detail']}: 예수금 ${cash:,.0f} · 투자금 ${capital:,.0f} · {div}분할 · 보유 {stt['n_pos']}/{div}")
@@ -904,9 +907,12 @@ def _render_cam_account(name, acct, cfg):
         _sig_txt, _calc, _sig_help = "—", "데이터 부족", "변동성 계산용 데이터가 부족합니다."
     st.markdown(f"**오버레이 계산** — `{ov_ticker}` · 계수 {coef:.2f} · {mode_lbl} 타겟 {_tgt_txt} · "
                 f"{last_date} → 적용 {ntd}")
+    _npos2 = int(acct.get("n_pos", 0))
     b = st.columns(4)
-    b[0].metric("1티어", f"${tier:,.0f}")
-    b[1].metric(f"유보 ({res_tiers}티어)", f"${reserve:,.0f}")
+    b[0].metric("1티어", f"${tier:,.0f}", help="원전략 1회 매수분 = 투자금 ÷ 분할수")
+    b[1].metric(f"유보 ({res_tiers}티어)", f"${reserve:,.0f}",
+                help=f"원전략의 '다음 매수' 1회분을 남겨두는 현금(설정값). "
+                     f"현재 보유 {_npos2}티어(이미 매수분)와는 별개 — 보유분은 주식이라 예수금에 없음.")
     b[2].metric("차입가능 유휴", f"${borrowable:,.0f}")
     b[3].metric("변동성 비중", f"{vmult*100:.0f}%",
                 delta=f"{mode_lbl} {_sig_txt}", delta_color="off", help=_sig_help)
