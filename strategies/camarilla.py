@@ -822,10 +822,10 @@ def _render_cam_account(name, acct, cfg):
     else:
         _today_str = datetime.today().strftime("%Y-%m-%d")
         _last_pull = acct.get("last_pull", "")
-        # ── 자동 갱신: stale일 때 1일 1회 (실패해도 기존값 유지) ──
+        # ── 자동 갱신: stale(날짜 지남) 또는 새 필드(투입금) 누락 시 자동 (실패해도 기존값 유지) ──
         _autokey = f"cam_autopulled_{sfx}_{_today_str}"
-        if (cfg.get("auto_pull", True) and (not _last_pull or _last_pull < _today_str)
-                and not st.session_state.get(_autokey)):
+        _need_pull = (not _last_pull) or (_last_pull < _today_str) or ("invested" not in acct)
+        if cfg.get("auto_pull", True) and _need_pull and not st.session_state.get(_autokey):
             st.session_state[_autokey] = True   # 이번 세션·오늘 1회만 시도 (실패 시 재시도 안 함→수동 버튼으로)
             try:
                 with st.spinner(f"{name} 예수금 자동 갱신 중..."):
