@@ -233,6 +233,7 @@ def calc_today_order(ticker: str, os_start: str,
         "sell_qty": sell_qty,
         "cash":     float(res.get("cash", 0)),
         "avg_cost": float(res.get("avg_cost", 0)),
+        "total_asset": float(res.get("current_asset", 0)),  # 총자산 표시용
     }
 
 def build_avg_message(res: dict, ticker: str) -> str:
@@ -241,6 +242,7 @@ def build_avg_message(res: dict, ticker: str) -> str:
         f"📋 *종가평균 주문* ({ticker})",
         f"기준일: {today}",
         f"기준가: p1={res['p1']:.2f} / p2={res['p2']:.2f}",
+        f"총자산: *${res.get('total_asset', 0):,.0f}*  (현금 ${res.get('cash', 0):,.0f})",
         "",
     ]
     has_order = False
@@ -323,6 +325,7 @@ def calc_sd_today_order(ticker: str, os_start: str,
         "est_buy_qty":    int(res.get("est_buy_qty", 0)),
         "est_sell_qty":   int(res.get("est_sell_qty", 0)),
         "total_invest":   float(res.get("total_invest", capital)),
+        "total_asset":    float(res.get("final_asset", 0)),  # 총자산 표시용
     }
 
 
@@ -333,6 +336,7 @@ def build_sd_message(r: dict) -> str:
         f"📐 <b>표준편차매매 주문표</b> ({today})",
         f"종목: {r['ticker']}",
         f"직전 종가: ${r['last_close']:,.2f}  |  σ = {r['sigma_next']*100:.3f}%",
+        f"총자산: <b>${r.get('total_asset', 0):,.0f}</b>  (현금 ${r['cash']:,.0f})",
         "━━━━━━━━━━━━━━━",
         f"🔴 매수 LOC  ${r['next_buy_loc']:,.2f}  (예상 {r['est_buy_qty']:,}주)",
     ]
@@ -341,10 +345,10 @@ def build_sd_message(r: dict) -> str:
         lines += [
             "━━━━━━━━━━━━━━━",
             f"📦 보유: {r['holdings']:,}주  |  평단: ${r['avg_cost']:.2f}",
-            f"   현재가: ${r['last_close']:.2f}  ({pnl:+.2f}%)  |  현금: ${r['cash']:,.2f}",
+            f"   현재가: ${r['last_close']:.2f}  ({pnl:+.2f}%)",
         ]
     else:
-        lines.append(f"📦 보유주식 없음  |  현금: ${r['cash']:,.2f}")
+        lines.append(f"📦 보유주식 없음 (전량 현금)")
     lines.append("※ 종가 LOC 주문 기준입니다.")
     return "\n".join(lines)
 
@@ -1478,9 +1482,11 @@ def calc_ds_order(client, acct_data: dict) -> dict:
 
 def build_ds_message(r: dict, acct_name: str) -> str:
     od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
+    _cash_ds = r.get('cash', 0)
     lines = [f"<b>🎯 Dual Sniper — {acct_name}</b>",
              f"주문일 {od} · 모드 <b>{r['next_mode']}</b> · 보유 {r['n_pos']}/{r['divisions']}슬롯",
-             f"기준종가 ${r['last_close']:.2f} · 총자산 ${r['total_asset']:,.0f}"
+             f"기준종가 ${r['last_close']:.2f}",
+             f"총자산 <b>${r['total_asset']:,.0f}</b> (현금 ${_cash_ds:,.0f})"
              + (f" · 손익률 {r.get('return_pct'):+.2f}%" if r.get('return_pct') is not None else ""), ""]
     if r.get("orders"):
         for o in r["orders"]:

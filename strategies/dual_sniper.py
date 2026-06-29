@@ -2442,9 +2442,11 @@ def _send_telegram(token, chat_id, text):
 def _build_ds_order_text(r, acct_name=""):
     """주문표 result → 텔레그램 메시지 텍스트."""
     od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
+    _cash_ds = r.get('cash', 0)
     lines = [f"<b>🎯 Dual Sniper — {acct_name}</b>",
              f"주문일 {od} · 모드 <b>{r['next_mode']}</b> · 보유 {r['n_pos']}/{r['divisions']}슬롯",
-             f"기준종가 ${r['last_close']:.2f} · 총자산 ${r['total_asset']:,.0f}", ""]
+             f"기준종가 ${r['last_close']:.2f}",
+             f"총자산 <b>${r['total_asset']:,.0f}</b> (현금 ${_cash_ds:,.0f})", ""]
     if r["orders"]:
         for o in r["orders"]:
             price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"

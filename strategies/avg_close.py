@@ -217,6 +217,7 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
             f"전략: 종가평균매매",
             f"종목: {ticker_name}",
             f"직전 종가(p1): ${p1:,.2f}  |  전전 종가(p2): ${p2:,.2f}",
+            f"총자산: <b>${res.get('current_asset', 0):,.0f}</b>  (현금 ${res.get('cash', 0):,.0f})",
         ]
 
         # 매수
