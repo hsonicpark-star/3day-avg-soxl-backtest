@@ -1117,17 +1117,44 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _realized_pct = (_realized_pnl / _os_cap * 100) if _os_cap else 0.0
 
     _sd_adj = float(_sd_res.get("adj_applied", 0.0))
-    _sm1, _sm2, _sm3, _sm4, _sm5 = st.columns(5)
-    _sm1.metric("시작 자본",  f"${_os_cap:,.0f}",
-                delta=(f"+ 조정 ${_sd_adj:+,.0f}" if abs(_sd_adj) > 0.01 else None),
-                delta_color="off")
-    _sm2.metric("최종 자산",  f"${_final_a:,.0f}",
-                delta=f"CAGR {_cagr*100:.2f}%")
-    _sm3.metric("실현손익",   f"${_realized_pnl:+,.2f}",
-                delta=f"시작자본 대비 {_realized_pct:+.2f}%")
-    _sm4.metric("MDD",        f"{abs(_mdd)*100:.2f}%")
-    _sm5.metric("주식 비중",
-                f"{(_holdings*_lc)/(_holdings*_lc+_cash)*100:.1f}%" if (_holdings*_lc+_cash) > 0 else "0%")
+    _eval_pnl_sd = (_lc - _avg_c) * _holdings if _holdings > 0 and _avg_c > 0 else 0.0
+    # 수익률은 자본 조정 제외한 순수 매매 성과 기준
+    _trading_asset_sd = _final_a - _sd_adj
+    _ret_pct_sd = (_trading_asset_sd / _os_cap - 1) * 100 if _os_cap > 0 else 0.0
+    _sell_cnt_sd = int(_sd_res.get("sell_count",
+                                    int((_hdf["매도량"] > 0).sum()) if _hdf is not None and not (hasattr(_hdf, "empty") and _hdf.empty) and "매도량" in _hdf.columns else 0))
+    _ret_color_sd  = "#2E7D32" if _ret_pct_sd  >= 0 else "#C62828"
+    _eval_color_sd = "#2E7D32" if _eval_pnl_sd >= 0 else "#C62828"
+    _real_color_sd = "#2E7D32" if _realized_pnl >= 0 else "#C62828"
+    _adj_caption_sd = (f'<div style="font-size:0.68em;color:#0B7A3E;font-weight:600">'
+                        f'+ 조정 ${_sd_adj:+,.0f}</div>') if abs(_sd_adj) > 0.01 else ''
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:8px">
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${_os_cap:,.0f}</div>
+        {_adj_caption_sd}
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${_final_a:,.0f}</div>
+        <div style="font-size:0.68em;color:{_ret_color_sd};font-weight:600">{_ret_pct_sd:+.1f}%</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">평가손익</div>
+        <div style="font-size:1.1em;font-weight:700;color:{_eval_color_sd}">${_eval_pnl_sd:+,.0f}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">누적실현손익</div>
+        <div style="font-size:1.1em;font-weight:700;color:{_real_color_sd}">${_realized_pnl:+,.0f}</div>
+        <div style="font-size:0.68em;color:#888">매도 {_sell_cnt_sd}회</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">예수금</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${_cash:,.0f}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # -- 내일 LOC 주문 ------
     _buy_loc  = _sd_res["next_buy_loc"]

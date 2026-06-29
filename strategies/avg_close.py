@@ -1153,17 +1153,46 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _realized_ret_pct = (_realized_pnl / res['initial_capital'] * 100) if res['initial_capital'] else 0.0
 
     _res_adj = float(res.get("adj_applied", 0.0))
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("시작 자본",  f"${res['initial_capital']:,.0f}",
-              delta=(f"+ 조정 ${_res_adj:+,.0f}" if abs(_res_adj) > 0.01 else None),
-              delta_color="off")
-    m2.metric("평가 자산",  f"${res['current_asset']:,.0f}",
-              delta=f"CAGR {res['cagr']*100:.2f}%")
-    m3.metric("실현손익",   f"${_realized_pnl:+,.2f}",
-              delta=f"시작자본 대비 {_realized_ret_pct:+.2f}%")
-    m4.metric("현재 DD",    f"{abs(res['current_dd'])*100:.2f}%",
-              delta=f"{res['current_dd']*100:.2f}%", delta_color="inverse")
-    m5.metric("주식 비중",  f"{res['stock_weight']*100:.1f}%")
+    _lp_card = float(res.get("latest_price", 0))
+    _avg_card = float(res.get("avg_cost", 0))
+    _shares_card = int(res.get("shares", 0))
+    _eval_pnl_avg = (_lp_card - _avg_card) * _shares_card if _shares_card > 0 and _avg_card > 0 else 0.0
+    _sell_cnt_avg = sum(1 for r in _dl_all if r.get("매매") == "SELL")
+    # 수익률은 자본 조정 제외한 순수 매매 성과 기준
+    _trading_asset_avg = res['current_asset'] - _res_adj
+    _ret_pct_avg = (_trading_asset_avg / res['initial_capital'] - 1) * 100 if res['initial_capital'] > 0 else 0.0
+    _ret_color_avg  = "#2E7D32" if _ret_pct_avg  >= 0 else "#C62828"
+    _eval_color_avg = "#2E7D32" if _eval_pnl_avg >= 0 else "#C62828"
+    _real_color_avg = "#2E7D32" if _realized_pnl >= 0 else "#C62828"
+    _adj_caption_avg = (f'<div style="font-size:0.68em;color:#0B7A3E;font-weight:600">'
+                        f'+ 조정 ${_res_adj:+,.0f}</div>') if abs(_res_adj) > 0.01 else ''
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:8px">
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${res['initial_capital']:,.0f}</div>
+        {_adj_caption_avg}
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${res['current_asset']:,.0f}</div>
+        <div style="font-size:0.68em;color:{_ret_color_avg};font-weight:600">{_ret_pct_avg:+.1f}%</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">평가손익</div>
+        <div style="font-size:1.1em;font-weight:700;color:{_eval_color_avg}">${_eval_pnl_avg:+,.0f}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">누적실현손익</div>
+        <div style="font-size:1.1em;font-weight:700;color:{_real_color_avg}">${_realized_pnl:+,.0f}</div>
+        <div style="font-size:0.68em;color:#888">매도 {_sell_cnt_avg}회</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">예수금</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${res['cash']:,.0f}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # 오늘의 LOC 주문
     lp, p1, p2 = res["latest_price"], res["p1_now"], res["p2_now"]
