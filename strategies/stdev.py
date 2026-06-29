@@ -1116,6 +1116,30 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _realized_pnl = float(_hdf["실현손익"].sum())
     _realized_pct = (_realized_pnl / _os_cap * 100) if _os_cap else 0.0
 
+    # ── 선택한 파라미터 카드 (4장, DSS 스타일) ──
+    _sig_next_pct = _sd_res.get("sigma_next", 0) * 100
+    _nxt_t_for_card = _sd_res.get("next_tier", 1)
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:8px">
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">σ (오늘 예상)</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_sig_next_pct:.4f}%</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">σ 기간 / 갱신주기</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_sp}일 / {_rn}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">분할수 / 매도비율</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_div} / {_sr:.0f}%</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">k_buy / k_sell</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_kb:.2f} / {_ks:.2f}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     _sd_adj = float(_sd_res.get("adj_applied", 0.0))
     _eval_pnl_sd = (_lc - _avg_c) * _holdings if _holdings > 0 and _avg_c > 0 else 0.0
     # 수익률은 자본 조정 제외한 순수 매매 성과 기준

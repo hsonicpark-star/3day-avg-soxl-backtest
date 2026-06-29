@@ -1152,6 +1152,31 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     )
     _realized_ret_pct = (_realized_pnl / res['initial_capital'] * 100) if res['initial_capital'] else 0.0
 
+    # ── 선택한 파라미터 카드 (4장, DSS 스타일) ──
+    _p1_card = float(res.get("p1_now", 0))
+    _p2_card = float(res.get("p2_now", 0))
+    _n_days_display = _n_days + 1  # n_days=2 → 3일 평균 표시
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:8px">
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">이동평균 기간</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_n_days_display}일</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">p1 / p2 (전일/전전일)</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">${_p1_card:,.2f} / ${_p2_card:,.2f}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">분할수 / 매도비율</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_divisions} / {_sell_ratio:.0f}%</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">a_buy / a_sell</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_a_buy*100:+.2f}% / {_a_sell*100:+.2f}%</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     _res_adj = float(res.get("adj_applied", 0.0))
     _lp_card = float(res.get("latest_price", 0))
     _avg_card = float(res.get("avg_cost", 0))
