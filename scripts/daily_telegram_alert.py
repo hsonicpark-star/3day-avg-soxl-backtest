@@ -1812,6 +1812,29 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 자본 조정 이력 반영 (웹 ordersheet와 동일하게)
+                # 엔진은 os_capital로만 시뮬, 사용자가 추가 입금/출금한 조정은 별도 합산
+                _adj_raw = cfg.get("capital_adj_history", "[]")
+                try:
+                    _adj_list = json.loads(_adj_raw) if isinstance(_adj_raw, str) else _adj_raw
+                    if not isinstance(_adj_list, list):
+                        _adj_list = []
+                except Exception:
+                    _adj_list = []
+                _today_ts = pd.Timestamp(datetime.today().date())
+                _adj_total = 0.0
+                for _it in _adj_list:
+                    try:
+                        _dt = pd.Timestamp(_it.get("날짜"))
+                        if _dt <= _today_ts:
+                            _adj_total += float(_it.get("조정금액", 0))
+                    except Exception:
+                        continue
+                if _adj_total != 0:
+                    r["cash"] = float(r.get("cash", 0)) + _adj_total
+                    if "final_asset" in r:
+                        r["final_asset"] = float(r.get("final_asset", 0)) + _adj_total
+
                 # 이상치 감지
                 _issues = sanity_check_sd(r, tk)
                 user_warnings.extend([f"[표준편차/{tk}] {m}" for m in _issues])
