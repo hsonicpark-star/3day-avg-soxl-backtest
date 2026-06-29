@@ -1497,23 +1497,93 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             ok, msg = _save_shared_mode(_today_str, ai["mode"])
             (st.success if ok else st.error)(f"공유 {'완료' if ok else '실패'}: {msg}")
 
-    # ── 요약 ──
+    # ── 요약 (DSS 스타일 카드 헤더) ──
     od = pd.Timestamp(r["order_date"]).strftime("%Y-%m-%d")
     ld = pd.Timestamp(r["last_date"]).strftime("%Y-%m-%d")
-    _src = _SRC_LBL.get(saved_src, saved_src)
-    st.markdown(f"**주문일** {od} · **기준종가**({ld}) ${r['last_close']:.2f} · "
-                f"**모드** `{r['next_mode']}` ({_src}) · **보유** {r['n_pos']}/{r['divisions']}슬롯")
-    sm1, sm2, sm3, sm4, sm5 = st.columns(5)
-    sm1.metric("총자산", f"${r['total_asset']:,.0f}")
-    sm2.metric("현금", f"${r['cash']:,.0f}")
-    sm3.metric("누적실현", f"${r['cum_realized']:,.0f}")
-    sm4.metric("유효자본", f"${eff_capital:,.0f}", delta=f"{net_adj:+,.0f}" if net_adj else None)
+    _is_ag = (r["next_mode"] == "공격")
+    _mode_icon = "🟥" if _is_ag else "🟦"
+    _mode_label = "공격모드 (AG)" if _is_ag else "방어모드 (SF)"
+    _mode_bg = "#FFEBEE" if _is_ag else "#E3F2FD"
+    _mode_fg = "#C62828" if _is_ag else "#1565C0"
+    _rsi_now = f"{r['wrsi_now']:.2f}" if r.get("wrsi_now") is not None else "-"
+    _rsi_prev = f"{r['wrsi_prev']:.2f}" if r.get("wrsi_prev") is not None else "-"
+    _rsi_col = ("#2E7D32" if r.get("wrsi_now") and r.get("wrsi_prev")
+                and r["wrsi_now"] > r["wrsi_prev"] else "#C62828")
+    _buy_loc = next((o["가격"] for o in r["orders"] if o["구분"] == "매수"), None)
+    _sell_loc = next((o["가격"] for o in r["orders"]
+                      if o["구분"] == "매도" and o["거래방법"] == "LOC"), None)
+    _cond = (f"${_buy_loc:,.2f}" if _buy_loc else "-") + " / " + (f"${_sell_loc:,.2f}" if _sell_loc else "-")
+    st.markdown(f"<div style='font-size:0.82em;color:#888;margin-bottom:4px'>데이터 기준: "
+                f"<b>{ld}</b> (${r['last_close']:.2f}) · 소스 {_SRC_LBL.get(saved_src, saved_src)}</div>",
+                unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:12px">
+      <div style="flex:1.2;background:{_mode_bg};border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">현재 모드</div>
+        <div style="font-size:1.15em;font-weight:700;color:{_mode_fg}">{_mode_icon} {_mode_label}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">SOXL 주간 RSI</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{_rsi_now}</div>
+        <div style="font-size:0.68em;color:{_rsi_col}">전주 {_rsi_prev}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">보유 / 분할수</div>
+        <div style="font-size:1.15em;font-weight:700;color:#333">{r['n_pos']} / {r['divisions']}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:14px 18px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">매수가 / 매도가</div>
+        <div style="font-size:1.0em;font-weight:700;color:#333">{_cond}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _evpnl = sum((r["last_close"] - pv["매수가"]) * pv["수량"] for pv in r["positions"])
     _rp = r.get("return_pct")
-    sm5.metric("손익률(좌당가)", f"{_rp:+.2f}%" if _rp is not None else "—",
-               help="펀드 기준가(좌당가) 방식 — 증액/감액을 제외한 순수 투자 수익률")
+    _ret_col = "#2E7D32" if (_rp or 0) >= 0 else "#C62828"
+    _ev_col = "#2E7D32" if _evpnl >= 0 else "#C62828"
+    _real_col = "#2E7D32" if r["cum_realized"] >= 0 else "#C62828"
+    _adj_cap = (f'<div style="font-size:0.68em;color:#0B7A3E;font-weight:600">+ 조정 ${net_adj:+,.0f}</div>'
+                if abs(net_adj) > 0.01 else "")
+    _nsell = len(r.get("trades", []))
+    st.markdown(f"""
+    <div style="display:flex;gap:10px;margin-bottom:8px">
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">시작 자본</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${os_capital:,.0f}</div>
+        {_adj_cap}
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">총자산</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${r['total_asset']:,.0f}</div>
+        <div style="font-size:0.68em;color:{_ret_col};font-weight:600">{_rp:+.2f}% (좌당가)</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">평가손익</div>
+        <div style="font-size:1.1em;font-weight:700;color:{_ev_col}">${_evpnl:+,.0f}</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">누적실현손익</div>
+        <div style="font-size:1.1em;font-weight:700;color:{_real_col}">${r['cum_realized']:+,.0f}</div>
+        <div style="font-size:0.68em;color:#888">매도 {_nsell}회</div>
+      </div>
+      <div style="flex:1;background:#FAFAFA;border:1px solid #EEE;border-radius:10px;padding:12px 16px;text-align:center">
+        <div style="font-size:0.72em;color:#888;margin-bottom:2px">예수금</div>
+        <div style="font-size:1.1em;font-weight:700;color:#333">${r['cash']:,.0f}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     # ── 내일 주문 ──
-    st.markdown("##### 📌 다음 거래일 주문")
+    st.divider()
+    st.subheader(f"📑 오늘의 주문  ({od})")
+    _buy_s = f"${_buy_loc:,.2f}" if _buy_loc else "-"
+    _sell_s = f"${_sell_loc:,.2f}" if _sell_loc else "-"
+    st.markdown(f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
+                f"기준종가({ld}) = <b>${r['last_close']:,.2f}</b>&ensp;·&ensp;"
+                f"모드 <b>{r['next_mode']}</b>&ensp;·&ensp;"
+                f"매수가 <b>{_buy_s}</b> / 매도가 <b>{_sell_s}</b></div>",
+                unsafe_allow_html=True)
     if r["orders"]:
         rows = []
         for o in r["orders"]:

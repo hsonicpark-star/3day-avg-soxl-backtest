@@ -936,6 +936,18 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
     nd = next_trading_days(last_date, 1)
     order_date = nd[0] if len(nd) else pd.Timestamp(last_date) + pd.Timedelta(days=1)
 
+    # 주간 RSI (헤더 표시용) — 금요일 종가 기준
+    _wrsi_now = _wrsi_prev = None
+    try:
+        _wk = prices['close'].resample('W-FRI').last().dropna()
+        _wr = calc_rsi_wilder(_wk.values, 14)
+        if len(_wr) and not np.isnan(_wr[-1]):
+            _wrsi_now = round(float(_wr[-1]), 2)
+        if len(_wr) > 1 and not np.isnan(_wr[-2]):
+            _wrsi_prev = round(float(_wr[-2]), 2)
+    except Exception:
+        pass
+
     # '미국장 종료 후' 자본 조정 중, 이번 주문일(=다음 거래일)부터 가용해지는 분을 주문 현금에 반영.
     # D일 종료 후 입금 → next_trading_day(D)=주문일. 즉 last_date <= D < order_date.
     units = state.get('units', 0.0)
@@ -1047,4 +1059,5 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
         'daily_log': log,                     # 일별 매매로그 DataFrame
         'unit_price': round(unit_price_now, 6),   # 좌당가
         'return_pct': round(ret_pct_now, 2),      # 좌당가 기준 누적 손익률(%)
+        'wrsi_now': _wrsi_now, 'wrsi_prev': _wrsi_prev,   # 주간 RSI (헤더 표시용)
     }
