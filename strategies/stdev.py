@@ -195,8 +195,13 @@ def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
 # ══════════════════════════════════════════════
 def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                          sigma_period: int, sell_ratio: float, divisions: int,
-                         renewal: int, _os_start=None, _os_capital: float = 20000.0) -> str:
-    """표준편차매매 오늘의 주문표를 텔레그램 텍스트로 변환."""
+                         renewal: int, _os_start=None, _os_capital: float = 20000.0,
+                         capital_adj_history=None) -> str:
+    """표준편차매매 오늘의 주문표를 텔레그램 텍스트로 변환.
+
+    capital_adj_history: JSON 문자열 또는 list [{날짜, 조정금액}, ...]
+      사용자 입금/출금 조정 합산하여 cash 표시 보정 (웹 ordersheet와 일관성).
+    """
     try:
         today    = datetime.today().date()
         buf_s    = (pd.to_datetime(str(_os_start)) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
@@ -211,6 +216,29 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
         )
         if res is None:
             return "시뮬레이션 데이터가 없습니다."
+
+        # 자본 조정 이력 합산 (웹 ordersheet와 일관성)
+        if capital_adj_history:
+            try:
+                _adj_list = (json.loads(capital_adj_history)
+                              if isinstance(capital_adj_history, str)
+                              else capital_adj_history)
+                if isinstance(_adj_list, list):
+                    _today_ts = pd.Timestamp(today)
+                    _adj_total = 0.0
+                    for _it in _adj_list:
+                        try:
+                            _dt = pd.Timestamp(_it.get("날짜"))
+                            if _dt <= _today_ts:
+                                _adj_total += float(_it.get("조정금액", 0))
+                        except Exception:
+                            continue
+                    if _adj_total != 0:
+                        res["cash"] = float(res.get("cash", 0)) + _adj_total
+                        if "final_asset" in res:
+                            res["final_asset"] = float(res.get("final_asset", 0)) + _adj_total
+            except Exception:
+                pass
         lp        = res["last_close"]
         sigma     = res["sigma_next"]
         today_str = today.strftime("%Y-%m-%d")
@@ -2506,6 +2534,7 @@ def render_settings_tab():
                                     renewal      = int  (_sd_cfg.get("renewal",      5)),
                                     _os_start    = _sd_start_d,
                                     _os_capital  = float(_sd_cfg.get("os_capital",  20000.0)),
+                                    capital_adj_history = _sd_cfg.get("capital_adj_history", "[]"),
                                 )
                                 result = _send_telegram(sd_tg_token, sd_tg_chat_id, msg)
                             if result.get("ok"):

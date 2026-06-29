@@ -163,8 +163,13 @@ def compute_monthly_pivot(history_df, initial_capital):
 
 def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                   _sell_ratio: float, _divisions: int, _n_days: int = 2,
-                  _os_start=None, _os_capital: float = 10000.0) -> str:
-    """Tab3와 동일한 시뮬레이션 엔진으로 오늘의 주문표를 텔레그램 텍스트로 변환."""
+                  _os_start=None, _os_capital: float = 10000.0,
+                  capital_adj_history=None) -> str:
+    """Tab3와 동일한 시뮬레이션 엔진으로 오늘의 주문표를 텔레그램 텍스트로 변환.
+
+    capital_adj_history: JSON 문자열 또는 list [{날짜, 조정금액}, ...]
+      사용자 입금/출금 조정 합산하여 cash 표시 보정 (웹 ordersheet와 일관성).
+    """
     try:
         today = datetime.today().date()
         price_df_tg = load_price_data(ticker_name, _os_start, today, "Yahoo Finance", None)
@@ -178,6 +183,29 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         )
         if res is None:
             return "❌ 시뮬레이션 데이터가 없습니다."
+
+        # 자본 조정 이력 합산 (웹 ordersheet와 일관성)
+        if capital_adj_history:
+            try:
+                _adj_list = (json.loads(capital_adj_history)
+                              if isinstance(capital_adj_history, str)
+                              else capital_adj_history)
+                if isinstance(_adj_list, list):
+                    _today_ts = pd.Timestamp(today)
+                    _adj_total = 0.0
+                    for _it in _adj_list:
+                        try:
+                            _dt = pd.Timestamp(_it.get("날짜"))
+                            if _dt <= _today_ts:
+                                _adj_total += float(_it.get("조정금액", 0))
+                        except Exception:
+                            continue
+                    if _adj_total != 0:
+                        res["cash"] = float(res.get("cash", 0)) + _adj_total
+                        if "current_asset" in res:
+                            res["current_asset"] = float(res.get("current_asset", 0)) + _adj_total
+            except Exception:
+                pass
 
         lp   = res["latest_price"]
         p1   = res["p1_now"]
@@ -2777,6 +2805,7 @@ def render_settings_tab():
                                         _n_days=int(_tg_cfg.get("n_days") or 2),
                                         _os_start=_tg_start_d,
                                         _os_capital=float(_tg_cfg.get("os_capital") or 10000.0),
+                                        capital_adj_history=_tg_cfg.get("capital_adj_history", "[]"),
                                     )
                                     result = _send_telegram(tg_token, tg_chat_id, msg)
                                 except Exception as _tg_err:
