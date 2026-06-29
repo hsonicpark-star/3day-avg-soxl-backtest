@@ -162,6 +162,40 @@ from avg_close_engine import (
 )
 
 
+def _apply_capital_adj(r: dict, cfg: dict) -> float:
+    """capital_adj_history를 r["cash"]/r["final_asset"]/r["total_asset"]에 합산.
+
+    웹 ordersheet 화면과 동일하게 자본 조정 이력을 표시값에 반영.
+    엔진은 os_capital만 시뮬하므로 사용자 입금/출금 조정은 별도 합산 필요.
+
+    Returns:
+        적용된 조정 합계 (float). 변경 없으면 0.0.
+    """
+    if not r or not cfg:
+        return 0.0
+    _adj_raw = cfg.get("capital_adj_history", "[]")
+    try:
+        _adj_list = json.loads(_adj_raw) if isinstance(_adj_raw, str) else _adj_raw
+        if not isinstance(_adj_list, list):
+            return 0.0
+    except Exception:
+        return 0.0
+    _today_ts = pd.Timestamp(datetime.today().date())
+    _adj_total = 0.0
+    for _it in _adj_list:
+        try:
+            _dt = pd.Timestamp(_it.get("날짜"))
+            if _dt <= _today_ts:
+                _adj_total += float(_it.get("조정금액", 0))
+        except Exception:
+            continue
+    if _adj_total != 0:
+        for _key in ("cash", "final_asset", "total_asset"):
+            if _key in r:
+                r[_key] = float(r.get(_key, 0)) + _adj_total
+    return _adj_total
+
+
 def calc_today_order(ticker: str, os_start: str,
                      a_buy: float, a_sell: float,
                      sell_ratio: float, divisions: int,
@@ -1742,6 +1776,9 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                _apply_capital_adj(res, cfg)
+
                 # 이상치 감지
                 _issues = sanity_check_avg(res, tk)
                 user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])
@@ -1812,28 +1849,8 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
-                # 자본 조정 이력 반영 (웹 ordersheet와 동일하게)
-                # 엔진은 os_capital로만 시뮬, 사용자가 추가 입금/출금한 조정은 별도 합산
-                _adj_raw = cfg.get("capital_adj_history", "[]")
-                try:
-                    _adj_list = json.loads(_adj_raw) if isinstance(_adj_raw, str) else _adj_raw
-                    if not isinstance(_adj_list, list):
-                        _adj_list = []
-                except Exception:
-                    _adj_list = []
-                _today_ts = pd.Timestamp(datetime.today().date())
-                _adj_total = 0.0
-                for _it in _adj_list:
-                    try:
-                        _dt = pd.Timestamp(_it.get("날짜"))
-                        if _dt <= _today_ts:
-                            _adj_total += float(_it.get("조정금액", 0))
-                    except Exception:
-                        continue
-                if _adj_total != 0:
-                    r["cash"] = float(r.get("cash", 0)) + _adj_total
-                    if "final_asset" in r:
-                        r["final_asset"] = float(r.get("final_asset", 0)) + _adj_total
+                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                _apply_capital_adj(r, cfg)
 
                 # 이상치 감지
                 _issues = sanity_check_sd(r, tk)
@@ -1975,6 +1992,9 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                _apply_capital_adj(od, cfg)
+
                 # 이상치 감지
                 _issues = sanity_check_sigma(od)
                 user_warnings.extend([f"[Sigma/{tk}] {m}" for m in _issues])
@@ -2038,6 +2058,9 @@ def main():
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
 
+                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                _apply_capital_adj(iuo_result, acct_data)
+
                 # 이상치 감지
                 _issues = sanity_check_iuo(iuo_result, acct_name, acct_data)
                 user_warnings.extend([f"[IUO/{acct_name}] {m}" for m in _issues])
@@ -2096,6 +2119,9 @@ def main():
                         write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
                                                   _label, status="ERROR", error_reason="데이터 부족")
                     continue
+
+                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                _apply_capital_adj(r_ds, acct_data)
 
                 msg = build_ds_message(r_ds, acct_name)
                 ok, resp = send_telegram(ds_chat_id, ds_token, msg, parse_mode="HTML")
