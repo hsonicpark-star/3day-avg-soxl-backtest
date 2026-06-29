@@ -246,23 +246,23 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
         _total_asset = float(res.get("final_asset", 0)) or (
             float(res.get("cash", 0)) + int(res.get("holdings", 0)) * lp)
         lines = [
-            f"<b>표준편차매매 주문표</b> ({today_str})",
+            f"📐 <b>표준편차매매 주문표</b> ({today_str})",
             f"종목: {ticker_name}",
-            f"직전 종가: ${lp:,.2f}  |  sigma = {sigma*100:.3f}%",
+            f"직전 종가: ${lp:,.2f}  |  σ = {sigma*100:.3f}%",
             f"총자산: <b>${_total_asset:,.0f}</b>  (현금 ${res['cash']:,.0f})",
-            f"━━━━━━━━━━━━━",
-            f"매수 LOC  ${res['next_buy_loc']:,.2f}  (예상 {res['est_buy_qty']:,}주)",
+            "━━━━━━━━━━━━━━━",
+            f"🔴 매수 LOC  ${res['next_buy_loc']:,.2f}  (예상 {res['est_buy_qty']:,}주)",
         ]
         if res["holdings"] > 0:
-            lines.append(f"매도 LOC  ${res['next_sell_loc']:,.2f}  (예상 {res['est_sell_qty']:,}주)")
+            lines.append(f"🔵 매도 LOC  ${res['next_sell_loc']:,.2f}  (예상 {res['est_sell_qty']:,}주)")
             pnl = (lp / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
             lines += [
-                f"━━━━━━━━━━━━━",
-                f"보유: {res['holdings']:,}주  |  평단: ${res['avg_cost']:.2f}",
+                "━━━━━━━━━━━━━━━",
+                f"📦 보유: {res['holdings']:,}주  |  평단: ${res['avg_cost']:.2f}",
                 f"   현재가: ${lp:.2f}  ({pnl:+.2f}%)",
             ]
         else:
-            lines.append(f"보유주식 없음 (전량 현금)")
+            lines.append(f"📦 보유주식 없음 (전량 현금)")
         lines.append("※ 종가 LOC 주문 기준입니다.")
         return "\n".join(lines)
     except Exception as e:
