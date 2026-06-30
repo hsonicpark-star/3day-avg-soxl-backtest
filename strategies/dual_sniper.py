@@ -1585,15 +1585,38 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                 f"매수가 <b>{_buy_s}</b> / 매도가 <b>{_sell_s}</b></div>",
                 unsafe_allow_html=True)
     if r["orders"]:
+        # 운영자 전용 원본 대조 (ai = 원본시트 주문 → 운영자에게만 존재). 일반 유저는 컬럼 없음.
+        _orig = None
+        if ai:
+            _orig = []
+            for _oo in ai.get("orders", []):
+                try:
+                    _orig.append((str(_oo[0]).strip(), float(str(_oo[2]).replace(",", ""))))
+                except Exception:
+                    pass
+
+        def _orig_match(o):
+            if _orig is None:
+                return None
+            for _og, _op in _orig:
+                if _og == o["구분"]:
+                    if o["가격"] is None or abs(_op - o["가격"]) / max(o["가격"], 1) < 0.01:
+                        return True
+            return False
+
         rows = []
         for o in r["orders"]:
             gubun = ("🔴 MOC매도" if o["거래방법"] == "MOC" else
                      "🔵 LOC매도" if o["구분"] == "매도" else "🟠 LOC매수")
             price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
             amt = (o["수량"] * (o["가격"] or r["last_close"]))
-            rows.append({"구분": gubun, "사유": o["사유"], "주문가": price,
-                         "수량": f"{o['수량']:,}주", "예상금액": f"${amt:,.0f}",
-                         "비고 (계산 근거)": o.get("비고", "")})
+            _row = {"구분": gubun, "사유": o["사유"], "주문가": price,
+                    "수량": f"{o['수량']:,}주", "예상금액": f"${amt:,.0f}",
+                    "비고 (계산 근거)": o.get("비고", "")}
+            _m = _orig_match(o)
+            if _m is not None:
+                _row["원본대조"] = "✅ 일치" if _m else "⚠️ 원본없음"
+            rows.append(_row)
 
         def _style(row):
             s = [""] * len(row)
@@ -1602,11 +1625,19 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             s[ix] = ("color:#C62828;font-weight:bold" if "MOC" in v else
                      "color:#1565C0;font-weight:bold" if "매도" in v else
                      "color:#E65100;font-weight:bold")
+            if "원본대조" in row.index:
+                jx = list(row.index).index("원본대조")
+                s[jx] = ("color:#E65100;font-weight:bold" if "없음" in str(row["원본대조"])
+                         else "color:#2E7D32")
             return s
         st.dataframe(pd.DataFrame(rows).style.apply(_style, axis=1),
                      use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
         st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
                    "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
+        if _orig is not None:
+            st.caption("🔎 **원본대조(운영자 전용)**: 원본 시트에 없는 주문은 `⚠️ 원본없음`. "
+                       "표시만 참고용이며 **텔레그램·시트 전송은 우리 엔진 주문 그대로** 나갑니다. "
+                       "(일반 유저에겐 이 컬럼이 보이지 않습니다)")
     else:
         st.info("다음 거래일 주문 없음 (조건 미충족).")
 
