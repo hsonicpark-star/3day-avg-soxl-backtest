@@ -240,6 +240,13 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                         # total_invest도 반영 (1회매수금 계산 정확화)
                         if "total_invest" in res:
                             res["total_invest"] = float(res.get("total_invest", 0)) + _adj_total
+                        # est_buy_qty 재계산 (엔진 값은 시뮬 기준)
+                        _daily_inv_txt = ((res["total_invest"] / divisions)
+                                            if divisions > 0 else res["total_invest"])
+                        _avail_txt = min(_daily_inv_txt, res["cash"])
+                        _nbl_txt = float(res.get("next_buy_loc", 0))
+                        if _nbl_txt > 0:
+                            res["est_buy_qty"] = int(math.floor(_avail_txt / _nbl_txt))
             except Exception:
                 pass
         lp        = res["last_close"]
@@ -1127,6 +1134,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 # 사용자 입금 시 실제 매수 가능 금액도 증가해야 함
                 _sd_r["total_invest"] = float(_sd_r.get("total_invest", 0)) + _adj_applied_sd
                 _sd_r["adj_applied"] = _adj_applied_sd
+                # est_buy_qty 재계산 (조정 반영된 total_invest/cash 기준)
+                # 엔진의 est_buy_qty는 시뮬 값 → 조정 반영 시 예상수량도 증가
+                _daily_inv_adj_sd = (_sd_r["total_invest"] / _div) if _div > 0 else _sd_r["total_invest"]
+                _avail_adj_sd = min(_daily_inv_adj_sd, _sd_r["cash"])
+                _nbl_sd = float(_sd_r.get("next_buy_loc", 0))
+                if _nbl_sd > 0:
+                    _sd_r["est_buy_qty"] = int(math.floor(_avail_adj_sd / _nbl_sd))
                 st.session_state[_sd_ss] = _sd_r
                 # 새 날짜 히스토리 누적 저장 (B방식)
                 _save_sd_daily_history(tk, _sd_r.get("hist"))

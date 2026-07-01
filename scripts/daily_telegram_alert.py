@@ -1787,6 +1787,18 @@ def main():
                 # 자본 조정 이력 반영 (웹 ordersheet와 동일)
                 _apply_capital_adj(res, cfg)
 
+                # 예상수량(buy_qty) 재계산 — total_asset(=current_asset+adj) 기준
+                # 엔진의 buy_qty는 시뮬 값 → 조정 없으면 낮게 계산됨
+                try:
+                    _div_avg = int(divisions) if divisions > 0 else 1
+                    _tb_avg = float(res.get("tb", 0))  # 다음 매수 LOC
+                    if _tb_avg > 0:
+                        _chunk_avg = float(res.get("total_asset", 0)) / _div_avg
+                        _avail_avg = min(_chunk_avg, float(res.get("cash", 0)))
+                        res["buy_qty"] = int(math.floor(_avail_avg / _tb_avg + 1e-9))
+                except Exception:
+                    pass
+
                 # 이상치 감지
                 _issues = sanity_check_avg(res, tk)
                 user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])
@@ -1859,6 +1871,18 @@ def main():
 
                 # 자본 조정 이력 반영 (웹 ordersheet와 동일)
                 _apply_capital_adj(r, cfg)
+
+                # est_buy_qty 재계산 (조정 반영된 total_invest/cash 기준)
+                # 엔진의 est_buy_qty는 시뮬 값 → 조정 없으면 낮게 계산됨
+                try:
+                    _div_r = int(divisions) if divisions > 0 else 1
+                    _daily_inv_r = float(r.get("total_invest", 0)) / _div_r
+                    _avail_r = min(_daily_inv_r, float(r.get("cash", 0)))
+                    _nbl_r = float(r.get("next_buy_loc", 0))
+                    if _nbl_r > 0:
+                        r["est_buy_qty"] = int(math.floor(_avail_r / _nbl_r))
+                except Exception:
+                    pass
 
                 # 이상치 감지
                 _issues = sanity_check_sd(r, tk)

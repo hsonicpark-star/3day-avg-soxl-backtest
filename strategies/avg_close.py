@@ -204,6 +204,17 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                         res["cash"] = float(res.get("cash", 0)) + _adj_total
                         if "current_asset" in res:
                             res["current_asset"] = float(res.get("current_asset", 0)) + _adj_total
+                        # 예상수량 재계산 (엔진의 pending_buys[0]["수량"]은 조정 미반영)
+                        try:
+                            _buy_p_tx = float(res.get("next_buy_primary", 0))
+                            if _buy_p_tx > 0 and _divisions > 0:
+                                _chunk_tx = res.get("current_asset", 0) / _divisions
+                                _qty_tx = int(math.floor(min(_chunk_tx, res["cash"]) / _buy_p_tx + 1e-9))
+                                if "pending_buys" in res and res["pending_buys"]:
+                                    res["pending_buys"][0]["수량"] = _qty_tx
+                                    res["pending_buys"][0]["금액"] = _qty_tx * _buy_p_tx
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
@@ -1164,6 +1175,19 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         res["cash"] = float(res.get("cash", 0)) + _adj_applied
         res["current_asset"] = float(res.get("current_asset", 0)) + _adj_applied
         res["adj_applied"] = _adj_applied
+        # 예상수량 재계산 (엔진의 pending_buys[0]["수량"]은 조정 미반영 값)
+        # 표시된 1회매수금(current_asset/divisions)과 예상수량이 일치하도록 보정
+        try:
+            _buy_p_re = float(res.get("next_buy_primary", 0))
+            _div_re = int(res.get("divisions", _divisions)) if "divisions" in res else _divisions
+            if _buy_p_re > 0 and _div_re > 0:
+                _chunk_re = res["current_asset"] / _div_re
+                _qty_re = int(math.floor(min(_chunk_re, res["cash"]) / _buy_p_re + 1e-9))
+                if "pending_buys" in res and res["pending_buys"]:
+                    res["pending_buys"][0]["수량"] = _qty_re
+                    res["pending_buys"][0]["금액"] = _qty_re * _buy_p_re
+        except Exception:
+            pass
         st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
         # 새 날짜 데이터만 누적 저장 (파라미터 바꿔도 기존 기록 불변)
         _save_ticker_daily_history(tk, res.get("daily_log", []))
