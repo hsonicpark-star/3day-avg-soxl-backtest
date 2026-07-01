@@ -430,8 +430,8 @@ def _ag_sell_pct(rsi: float, alpha: float) -> float:
 
 
 def _ag_hold_days(rsi: float, alpha: float) -> int:
-    """공격 보유기간(거래일, 반올림)."""
-    x = max(0.0, min(1.0, (rsi - 35) / 30))
+    """공격 보유기간(거래일, 반올림). 2026-06-30 스펙: x=(RSI-35)/35 (매도조건 /30과 분모 다름)."""
+    x = max(0.0, min(1.0, (rsi - 35) / 35))
     return int(round(7 + 23 * (1 - x) ** (1 / alpha)))
 
 
@@ -627,8 +627,12 @@ def run_backtest(prices: pd.DataFrame,
                         reason = f'T{p.tier}'
             else:  # 방어
                 if sf_sell_price is not None and close >= sf_sell_price:
-                    do_sell = True
-                    reason = 'MA'
+                    # 공통사항(2026-06-30 스펙): 전일종가>전일MA5면 슬롯1 매도 보류 (MOC 제외)
+                    if ag_hold_tier1 and p.tier == 1:
+                        do_sell = False
+                    else:
+                        do_sell = True
+                        reason = 'MA'
 
             if do_sell:
                 sell_amount = p.qty * close
@@ -1014,12 +1018,16 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
             orders.append({'구분': '매도', '거래방법': 'LOC', '가격': round(p.sell_target, 2),
                            '수량': p.qty, '사유': f'T{p.tier}', '모드': '공격', '티어': p.tier,
                            '비고': note})
-    # 방어 그룹 MA 전량 매도 (MOC 없을 때)
+    # 방어 그룹 MA 전량 매도 (MOC 없을 때) — 공통사항: 전일종가>전일MA5면 슬롯1 매도 보류
     if not moc_today and sf_sell_price is not None:
-        sf_qty = sum(p.qty for p in positions if p.mode == '방어')
+        sf_pos = [p for p in positions if p.mode == '방어'
+                  and not (ag_hold_tier1 and p.tier == 1)]
+        sf_qty = sum(p.qty for p in sf_pos)
         if sf_qty > 0:
+            _held1 = " (슬롯1 보류 제외)" if (ag_hold_tier1 and any(
+                p.mode == '방어' and p.tier == 1 for p in positions)) else ""
             note = (f"3일MA 기준 (1+{params.sf_sell_pct}%) = ${sf_sell_price:.2f} "
-                    f"이상 종가면 방어분 전량청산")
+                    f"이상 종가면 방어분 청산{_held1}")
             orders.append({'구분': '매도', '거래방법': 'LOC', '가격': round(sf_sell_price, 2),
                            '수량': sf_qty, '사유': 'MA', '모드': '방어', '티어': None, '비고': note})
 
