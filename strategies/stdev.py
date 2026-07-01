@@ -237,6 +237,9 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                         res["cash"] = float(res.get("cash", 0)) + _adj_total
                         if "final_asset" in res:
                             res["final_asset"] = float(res.get("final_asset", 0)) + _adj_total
+                        # total_invest도 반영 (1회매수금 계산 정확화)
+                        if "total_invest" in res:
+                            res["total_invest"] = float(res.get("total_invest", 0)) + _adj_total
             except Exception:
                 pass
         lp        = res["last_close"]
@@ -1120,6 +1123,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         continue
                 _sd_r["cash"] = float(_sd_r.get("cash", 0)) + _adj_applied_sd
                 _sd_r["final_asset"] = float(_sd_r.get("final_asset", 0)) + _adj_applied_sd
+                # total_invest도 조정 합산 → daily_invest (1회매수금) 정확화
+                # 사용자 입금 시 실제 매수 가능 금액도 증가해야 함
+                _sd_r["total_invest"] = float(_sd_r.get("total_invest", 0)) + _adj_applied_sd
                 _sd_r["adj_applied"] = _adj_applied_sd
                 st.session_state[_sd_ss] = _sd_r
                 # 새 날짜 히스토리 누적 저장 (B방식)

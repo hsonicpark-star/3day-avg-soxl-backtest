@@ -190,7 +190,9 @@ def _apply_capital_adj(r: dict, cfg: dict) -> float:
         except Exception:
             continue
     if _adj_total != 0:
-        for _key in ("cash", "final_asset", "total_asset"):
+        # total_invest도 포함 → 표준편차매매의 1회매수금(daily_invest) 정확화
+        # 사용자 입금 시 실제 매수 가능 금액도 증가해야 함
+        for _key in ("cash", "final_asset", "total_asset", "total_invest"):
             if _key in r:
                 r[_key] = float(r.get(_key, 0)) + _adj_total
     return _adj_total
