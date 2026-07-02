@@ -430,8 +430,9 @@ def _ag_sell_pct(rsi: float, alpha: float) -> float:
 
 
 def _ag_hold_days(rsi: float, alpha: float) -> int:
-    """공격 보유기간(거래일, 반올림). 2026-06-30 스펙: x=(RSI-35)/35 (매도조건 /30과 분모 다름)."""
-    x = max(0.0, min(1.0, (rsi - 35) / 35))
+    """공격 보유기간(거래일, 반올림). x=(RSI-35)/30.
+    (2026-06-30 스펙 문서엔 /35로 적혀있으나 실제 시트는 /30 — 953건 대조 오차 0.01일)."""
+    x = max(0.0, min(1.0, (rsi - 35) / 30))
     return int(round(7 + 23 * (1 - x) ** (1 / alpha)))
 
 

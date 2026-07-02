@@ -189,15 +189,15 @@ def _render_norm_tables(hold_alpha, sell_alpha, buy_pct):
     """공격모드 보유기간/매도조건 정규화 표 + FI 매수 분기 규칙."""
     rsis = [70, 65, 60, 55, 50, 45, 40, 35]
     def hold(r):
-        x = max(0.0, min(1.0, (r - 35) / 35))   # 2026-06-30 스펙: 보유일 분모 /35
+        x = max(0.0, min(1.0, (r - 35) / 30))   # 실제 시트 기준 /30 (스펙 문서 /35는 오타)
         return round(7 + 23 * (1 - x) ** (1 / hold_alpha))
     def sellp(r):
-        x = max(0.0, min(1.0, (r - 35) / 30))   # 매도조건 분모는 /30
+        x = max(0.0, min(1.0, (r - 35) / 30))
         return round(0.1 + 2.9 * (1 - x) ** (1 / sell_alpha), 2)
     st.markdown(f"**보유기간 정규화 (α={hold_alpha})**")
     st.dataframe(pd.DataFrame({"매수RSI": rsis, "보유일": [hold(r) for r in rsis]}),
                  hide_index=True, use_container_width=True)
-    st.caption("보유일 = 7 + 23×(1-x)^(1/α), x=(매수RSI-35)/35")
+    st.caption("보유일 = 7 + 23×(1-x)^(1/α), x=(매수RSI-35)/30")
     st.markdown(f"**매도조건 정규화 (α={sell_alpha})**")
     st.dataframe(pd.DataFrame({"매수RSI": rsis, "매도%": [f"{sellp(r):.2f}%" for r in rsis]}),
                  hide_index=True, use_container_width=True)
@@ -1725,12 +1725,12 @@ def _render_norm_viz():
                        help="작을수록 곡선이 가팔라짐 (저RSI에서 익절폭 급증)")
     a_hold = s2.slider("보유기간 α", 0.5, 4.0, 2.0, 0.5, key="ds_viz_ha")
 
-    def _clip(r, d=30):
-        return max(0.0, min(1.0, (r - 35) / d))
+    def _clip(r):
+        return max(0.0, min(1.0, (r - 35) / 30))
     rs_sell = [65, 62, 59, 56, 53, 50, 47, 44, 41, 38, 35]
-    sell = [round(0.1 + 2.9 * (1 - _clip(r, 30)) ** (1 / a_sell), 2) for r in rs_sell]
+    sell = [round(0.1 + 2.9 * (1 - _clip(r)) ** (1 / a_sell), 2) for r in rs_sell]
     rs_hold = [70, 65, 60, 55, 50, 45, 40, 35]
-    hold = [int(round(7 + 23 * (1 - _clip(r, 35)) ** (1 / a_hold))) for r in rs_hold]  # 보유일 /35
+    hold = [int(round(7 + 23 * (1 - _clip(r)) ** (1 / a_hold))) for r in rs_hold]
 
     g1, g2 = st.columns(2)
     with g1:
@@ -1756,7 +1756,7 @@ def _render_norm_viz():
         st.plotly_chart(fig2, use_container_width=True)
         st.dataframe(pd.DataFrame({"매수RSI": rs_hold, "보유일": [f"{v}일" for v in hold]}),
                      hide_index=True, use_container_width=True, height=240)
-        st.caption("보유일 = 7 + 23 × (1−x)^(1/α),  x=(매수RSI−35)/35")
+        st.caption("보유일 = 7 + 23 × (1−x)^(1/α),  x=(매수RSI−35)/30")
 
 
 def _render_mode_now(ma_weeks=36, peak_thr=66.0, dn=42.0):
