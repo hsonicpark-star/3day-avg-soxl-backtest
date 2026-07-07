@@ -1818,6 +1818,83 @@ def main():
                     _rows = build_avg_order_rows(res)
                     write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
                                               _label, status="OK")
+
+                # ── 매매기록 저장 (자동발송 시점, B방식) ──
+                # 원칙: 오늘 발송된 매수/매도 수량이 매매기록에 저장되어 유지됨.
+                # 나중에 웹앱에서 재시뮬해도 오늘 종가 반영값으로 덮어쓰지 않음.
+                # → 다음 매도 계산 시 실제 체결 수량 기준 유지
+                if shared_gs_url and ok and (res.get("buy_qty", 0) > 0 or res.get("sell_qty", 0) > 0):
+                    try:
+                        _hist_sheet = f"{tk}_매매기록"
+                        _today_str_avg = datetime.today().strftime("%Y-%m-%d")
+                        # 매매기록 워크시트 열기 (없으면 생성)
+                        _sh_hist = client.open_by_url(shared_gs_url)
+                        _hist_cols = ["날짜", "종가(x)", "전날(p1)", "전전날(p2)",
+                                       "매수경계가", "매도경계가", "매매", "거래주수",
+                                       "거래금액($)", "실현손익($)", "실현손익률(%)",
+                                       "보유주수", "보유기간", "현금($)", "총자산($)"]
+                        try:
+                            _ws_hist = _sh_hist.worksheet(_hist_sheet)
+                            _existing_vals = _ws_hist.get_all_values()
+                            _existing_dates = ({row[0] for row in _existing_vals[1:]}
+                                                if len(_existing_vals) > 1 else set())
+                        except gspread.exceptions.WorksheetNotFound:
+                            _ws_hist = _sh_hist.add_worksheet(title=_hist_sheet, rows=5000, cols=25)
+                            _ws_hist.append_row(_hist_cols)
+                            _existing_dates = set()
+                        # B방식: 이미 오늘 날짜 있으면 skip (덮어쓰기 방지)
+                        if _today_str_avg not in _existing_dates:
+                            _bq = int(res.get("buy_qty", 0))
+                            _sq = int(res.get("sell_qty", 0))
+                            _shares_before = int(res.get("shares", 0))
+                            if _bq > 0:
+                                # 매수 예정 저장
+                                _tb = float(res.get("tb", 0))
+                                _new_row = [
+                                    _today_str_avg,
+                                    round(res.get("p1", 0), 4),   # 최근 종가 근사 (오늘 종가 미확정)
+                                    round(res.get("p1", 0), 4),
+                                    round(res.get("p2", 0), 4),
+                                    round(_tb, 4),
+                                    round(float(res.get("ts", 0)), 4),
+                                    "BUY (예정)",  # 자동발송 시점 예정 표시
+                                    _bq,
+                                    round(_bq * _tb, 2),
+                                    "-", "-",  # 실현손익 (매수라 없음)
+                                    _shares_before + _bq,   # 매수 후 예상 보유
+                                    "-",
+                                    round(res.get("cash", 0) - _bq * _tb, 2),
+                                    round(res.get("total_asset", 0), 2),
+                                ]
+                                _ws_hist.append_row([str(v) for v in _new_row], value_input_option="RAW")
+                                print(f"      💾 [종가평균/{tk}] 매매기록 저장 (매수 예정 {_bq}주)")
+                            elif _sq > 0 and _shares_before > 0:
+                                # 매도 예정 저장
+                                _ts = float(res.get("ts", 0))
+                                _avg_c = float(res.get("avg_cost", 0))
+                                _pnl_amt = round((_ts - _avg_c) * _sq, 2) if _avg_c > 0 else 0
+                                _pnl_pct = round((_ts / _avg_c - 1) * 100, 2) if _avg_c > 0 else 0
+                                _new_row = [
+                                    _today_str_avg,
+                                    round(res.get("p1", 0), 4),
+                                    round(res.get("p1", 0), 4),
+                                    round(res.get("p2", 0), 4),
+                                    round(float(res.get("tb", 0)), 4),
+                                    round(_ts, 4),
+                                    "SELL (예정)",
+                                    -_sq,  # 매도는 음수 표기
+                                    round(_sq * _ts, 2),
+                                    _pnl_amt,
+                                    _pnl_pct,
+                                    _shares_before - _sq,
+                                    "-",
+                                    round(res.get("cash", 0) + _sq * _ts, 2),
+                                    round(res.get("total_asset", 0), 2),
+                                ]
+                                _ws_hist.append_row([str(v) for v in _new_row], value_input_option="RAW")
+                                print(f"      💾 [종가평균/{tk}] 매매기록 저장 (매도 예정 {_sq}주)")
+                    except Exception as _hist_err:
+                        print(f"      ⚠️ [종가평균/{tk}] 매매기록 저장 실패: {_hist_err}")
         else:
             print(f"  ⏭️  {username} [종가평균]: 미설정 → 건너뜀")
             skip_count += 1

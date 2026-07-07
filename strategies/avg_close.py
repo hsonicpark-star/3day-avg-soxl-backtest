@@ -1190,7 +1190,13 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             pass
         st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
         # 새 날짜 데이터만 누적 저장 (파라미터 바꿔도 기존 기록 불변)
-        _save_ticker_daily_history(tk, res.get("daily_log", []))
+        # 🎯 오늘 날짜 항목은 제외하고 저장 (자동발송 시점 값을 유지하기 위함)
+        # → 오늘 종가 반영된 재계산 값으로 과거 데이터를 덮어쓰지 않음
+        # → 실제 체결 수량(자동발송 알림값) = 매매기록 = 다음 매도 계산 기준 일관성 확보
+        _today_str_hist = datetime.today().strftime("%Y-%m-%d")
+        _dl_filtered = [row for row in res.get("daily_log", [])
+                          if str(row.get("날짜", "")) != _today_str_hist]
+        _save_ticker_daily_history(tk, _dl_filtered)
 
     res = st.session_state.get(_ss_key)
     if res is None:
