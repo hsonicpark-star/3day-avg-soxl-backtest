@@ -1143,7 +1143,17 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     _sd_r["est_buy_qty"] = int(math.floor(_avail_adj_sd / _nbl_sd))
                 st.session_state[_sd_ss] = _sd_r
                 # 새 날짜 히스토리 누적 저장 (B방식)
-                _save_sd_daily_history(tk, _sd_r.get("hist"))
+                # 🎯 오늘 날짜는 제외 (자동발송 시점 값 유지 — look-ahead 방지)
+                # → 오늘 종가 반영된 재계산 값으로 과거 데이터를 덮어쓰지 않음
+                _hist_sd = _sd_r.get("hist")
+                if _hist_sd is not None and not _hist_sd.empty:
+                    _today_sd = datetime.today().strftime("%Y-%m-%d")
+                    _hist_sd_filtered = _hist_sd[
+                        _hist_sd["날짜"].astype(str) != _today_sd
+                    ].copy()
+                    _save_sd_daily_history(tk, _hist_sd_filtered)
+                else:
+                    _save_sd_daily_history(tk, _hist_sd)
 
     _sd_res = st.session_state.get(_sd_ss)
     if _sd_res is None:
