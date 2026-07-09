@@ -1590,18 +1590,25 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         if ai:
             _orig = []
             for _oo in ai.get("orders", []):
+                _og = str(_oo[0]).strip() if len(_oo) > 0 else ""       # 구분(매수/매도)
+                _md = str(_oo[1]).strip() if len(_oo) > 1 else ""       # 거래방법(LOC/MOC)
                 try:
-                    _orig.append((str(_oo[0]).strip(), float(str(_oo[2]).replace(",", ""))))
+                    _op = float(str(_oo[2]).replace(",", ""))           # 가격
                 except Exception:
-                    pass
+                    _op = None                                          # MOC 등 가격 없음
+                _orig.append((_og, _md, _op))
 
         def _orig_match(o):
             if _orig is None:
                 return None
-            for _og, _op in _orig:
-                if _og == o["구분"]:
-                    if o["가격"] is None or abs(_op - o["가격"]) / max(o["가격"], 1) < 0.01:
+            for _og, _md, _op in _orig:
+                if _og != o["구분"]:
+                    continue
+                if o["가격"] is None:                # 우리가 MOC/시장가 → 원본도 가격없음/ MOC 이면 일치
+                    if _op is None or _md == "MOC":
                         return True
+                elif _op is not None and abs(_op - o["가격"]) / max(o["가격"], 1) < 0.01:
+                    return True
             return False
 
         rows = []
