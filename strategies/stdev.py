@@ -1254,7 +1254,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                f"다음 티어: **T{_nxt_t}**")
 
     _orders = []
-    if _holdings > 0:
+    # 매도: 보유량 + 매도수량 둘 다 > 0일 때만 표시 (0주 노이즈 제거)
+    if _holdings > 0 and _sell_qty > 0:
         _orders.append({
             "구분": "매도", "티커": tk,
             "LOC 기준가":    f"${_sell_loc:.2f}",
@@ -1264,15 +1265,17 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             "전일종가 대비": f"{(_sell_loc/_lc-1)*100:+.2f}%" if _lc > 0 else "-",
             "비고": f"보유 {_holdings:,}주 x {_sr:.0f}% | 평단 ${_avg_c:.2f}",
         })
-    _orders.append({
-        "구분": "매수", "티커": tk,
-        "LOC 기준가":    f"${_buy_loc:.2f}",
-        "1회매수금":     f"${_sd_res['total_invest']/_div:,.0f}",
-        "예상수량":      f"{_buy_qty:,}주",
-        "예상금액":      f"${_buy_qty * _buy_loc:,.0f}",
-        "전일종가 대비": f"{(_buy_loc/_lc-1)*100:+.2f}%" if _lc > 0 else "-",
-        "비고": f"T{_nxt_t} / 1회 매수금 ${_sd_res['total_invest']/_div:,.0f}",
-    })
+    # 매수: 수량 > 0일 때만 표시 (현금 부족으로 0주면 실행 불가 → 노이즈 제거)
+    if _buy_qty > 0:
+        _orders.append({
+            "구분": "매수", "티커": tk,
+            "LOC 기준가":    f"${_buy_loc:.2f}",
+            "1회매수금":     f"${_sd_res['total_invest']/_div:,.0f}",
+            "예상수량":      f"{_buy_qty:,}주",
+            "예상금액":      f"${_buy_qty * _buy_loc:,.0f}",
+            "전일종가 대비": f"{(_buy_loc/_lc-1)*100:+.2f}%" if _lc > 0 else "-",
+            "비고": f"T{_nxt_t} / 1회 매수금 ${_sd_res['total_invest']/_div:,.0f}",
+        })
 
     def _sd_style(row):
         s = [""] * len(row)
@@ -1284,9 +1287,12 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
     _ord_tab1_sd, _ord_tab2_sd = st.tabs(["📋 매일 주문", "🔄 퉁치기 주문 (자전거래 회피)"])
     with _ord_tab1_sd:
-        st.dataframe(pd.DataFrame(_orders).style.apply(_sd_style, axis=1),
-                     use_container_width=True, hide_index=True,
-                     height=38 + 35 * len(_orders))
+        if _orders:
+            st.dataframe(pd.DataFrame(_orders).style.apply(_sd_style, axis=1),
+                         use_container_width=True, hide_index=True,
+                         height=38 + 35 * len(_orders))
+        else:
+            st.info("💤 오늘은 매수/매도 주문 없음 (매수 대기 or 현금 부족)")
 
     with _ord_tab2_sd:
         # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)

@@ -1298,22 +1298,24 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
 
     today_orders = []
+    # 매도: 보유량 + 매도수량 둘 다 > 0일 때만 표시 (0주 노이즈 제거)
     if res["shares"] > 0:
         sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
-        sell_tgt = res["next_sell_target"]
-        today_orders.append({
-            "구분": "매도", "티커": tk,
-            "LOC 기준가": f"${sell_tgt:,.2f}", "1회매수금": "-",
-            "예상수량": f"{sell_qty:,}주",
-            "예상금액": f"${sell_qty * sell_tgt:,.2f}",
-            "전일종가 대비": f"{(sell_tgt/lp-1)*100:+.2f}%" if lp > 0 else "-",
-            "비고": (f"평단 ${res['avg_cost']:.2f} 대비 "
-                     f"{(sell_tgt/res['avg_cost']-1)*100:+.2f}%  |  "
-                     f"보유 {res['shares']:,}주 × {_sell_ratio:.0f}%"),
-        })
+        if sell_qty > 0:
+            sell_tgt = res["next_sell_target"]
+            today_orders.append({
+                "구분": "매도", "티커": tk,
+                "LOC 기준가": f"${sell_tgt:,.2f}", "1회매수금": "-",
+                "예상수량": f"{sell_qty:,}주",
+                "예상금액": f"${sell_qty * sell_tgt:,.2f}",
+                "전일종가 대비": f"{(sell_tgt/lp-1)*100:+.2f}%" if lp > 0 else "-",
+                "비고": (f"평단 ${res['avg_cost']:.2f} 대비 "
+                         f"{(sell_tgt/res['avg_cost']-1)*100:+.2f}%  |  "
+                         f"보유 {res['shares']:,}주 × {_sell_ratio:.0f}%"),
+            })
     buy_p = res["next_buy_primary"]
     qty_p = res["pending_buys"][0]["수량"]
-    # 매수 수량 0 이하면 주문 표시 안 함 (현금 부족 → 실행 불가 주문 노이즈 제거)
+    # 매수: 수량 > 0일 때만 표시 (현금 부족으로 0주면 실행 불가 → 노이즈 제거)
     if qty_p > 0:
         today_orders.append({
             "구분": "매수", "티커": tk,
@@ -1325,10 +1327,6 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             "비고": res["pending_buys"][0]["비고"],
         })
 
-    # 주문 0건이면 안내
-    if not today_orders:
-        st.info(f"💤 오늘은 매수/매도 주문 없음 (매수 대기 or 현금 부족)")
-
     def _style_gubun(row):
         s = [""] * len(row)
         if "구분" in row.index:
@@ -1339,9 +1337,12 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
     _ord_tab1_avg, _ord_tab2_avg = st.tabs(["📋 매일 주문", "🔄 퉁치기 주문 (자전거래 회피)"])
     with _ord_tab1_avg:
-        st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
-                     use_container_width=True, hide_index=True,
-                     height=38 + 35 * len(today_orders))
+        if today_orders:
+            st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
+                         use_container_width=True, hide_index=True,
+                         height=38 + 35 * len(today_orders))
+        else:
+            st.info("💤 오늘은 매수/매도 주문 없음 (매수 대기 or 현금 부족)")
 
     with _ord_tab2_avg:
         # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)
