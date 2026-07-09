@@ -2108,7 +2108,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                                  f"목표 ${pos['sell_target']:.2f} "
                                  f"({(pos['sell_target']/pos['buy_price']-1)*100:+.2f}%)"),
                     })
-            if _can_buy:
+            if _can_buy and _os.get('buy_qty_est', 0) > 0:
                 _daily_orders.append({
                     "구분": "LOC매수", "시드": f"티어{_os['n_pos']+1}",
                     "주문가": f"${_os['next_buy_order']:,.2f}",
@@ -2117,8 +2117,11 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                     "비고": (f"종가 ≤ ${_os['next_buy_order']:,.2f} 이면 체결 · "
                              f"슬롯 {_os['n_pos']}/{_os['cur_divisions']}"),
                 })
-            else:
+            elif not _can_buy:
                 st.info(f"⚠️ 모든 슬롯({_os['cur_divisions']}개)이 사용 중 — 매수 없음")
+            else:
+                # _can_buy=True 이지만 buy_qty_est=0 (현금 부족)
+                st.info(f"💤 매수 슬롯 여유 있으나 현금 부족으로 매수 0주 — 매수 없음")
 
             if _daily_orders:
                 def _style_daily(row):

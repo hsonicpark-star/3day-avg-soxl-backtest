@@ -1613,6 +1613,9 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
 
         rows = []
         for o in r["orders"]:
+            # 수량 0 이하 주문 제외 (현금 부족 매수 등 실행 불가 주문 노이즈 제거)
+            if int(o.get("수량", 0)) <= 0:
+                continue
             gubun = ("🔴 MOC매도" if o["거래방법"] == "MOC" else
                      "🔵 LOC매도" if o["구분"] == "매도" else "🟠 LOC매수")
             price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
@@ -1639,10 +1642,13 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             return s
         _ord_tab1_ds, _ord_tab2_ds = st.tabs(["📋 매일 주문", "🔄 퉁치기 주문 (자전거래 회피)"])
         with _ord_tab1_ds:
-            st.dataframe(pd.DataFrame(rows).style.apply(_style, axis=1),
-                         use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
-            st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
-                       "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
+            if rows:
+                st.dataframe(pd.DataFrame(rows).style.apply(_style, axis=1),
+                             use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
+                st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
+                           "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
+            else:
+                st.info("💤 오늘은 매수/매도 주문 없음 (매수 대기 or 현금 부족)")
 
         with _ord_tab2_ds:
             # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)
