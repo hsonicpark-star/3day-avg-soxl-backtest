@@ -227,9 +227,11 @@ def _get_gspread_client():
 
 
 def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
-                               template_sheet: str = "") -> int:
+                               template_sheet: str = "",
+                               use_tungchigi: bool = False) -> int:
     """주문표 결과를 구글시트에 기록 (L:구분, M:거래방법, N:가격, O:수량).
-    시트가 없으면 template을 복제해서 생성."""
+    시트가 없으면 template을 복제해서 생성.
+    use_tungchigi=True 면 퉁치기 상계 주문으로 전송 (자전거래 회피)."""
     gc = _get_gspread_client()
     sh = gc.open_by_url(gs_url)
     try:
@@ -245,9 +247,12 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
         else:
             ws = sh.add_worksheet(title=gs_sheet, rows=100, cols=20)
     ws.batch_clear(["L4:O13"])
-    # 공통 rows 생성 — dss_engine.build_order_rows 재사용 (스크립트와 SSOT)
-    from dss_engine import build_order_rows
-    rows = build_order_rows(os_result)
+    # 공통 rows 생성 — dss_engine 재사용 (스크립트와 SSOT)
+    from dss_engine import build_order_rows, build_order_rows_tungchigi
+    if use_tungchigi:
+        rows = build_order_rows_tungchigi(os_result)
+    else:
+        rows = build_order_rows(os_result)
     if rows:
         ws.update(range_name="L4", values=rows)
     # B11 업데이트 시각 (KST) — 주문표 갱신 시점 확인용
@@ -4254,6 +4259,16 @@ def render_settings_tab():
             help="계좌 시트가 없을 때 이 템플릿을 복제해서 자동 생성합니다. 비워두면 빈 시트 생성.",
         )
 
+        use_tungchigi = st.checkbox(
+            "🔄 퉁치기 주문으로 전송 (자전거래 회피)",
+            value=bool(_cfg_s.get("use_tungchigi_gsheet", False)),
+            key="dss_use_tungchigi",
+            help="체크 시 구글시트(자동매매)에 퉁치기 상계 주문을 전송합니다. "
+                 "LOC매도가 < LOC매수가 교차 주문을 거부하는 증권사용. "
+                 "어떤 종가에서도 순 체결 결과는 원 주문과 동일합니다. "
+                 "미체크 시 기존 방식(원 주문) 전송. (메리츠 등 교차 허용 증권사는 미체크 권장)",
+        )
+
         # ── 계좌별 워크시트 매핑 ──────────────────────────────
         _accounts_s = _cfg_s.get("accounts", {})
         _acct_names_s = list(_accounts_s.keys())
@@ -4317,8 +4332,11 @@ def render_settings_tab():
                                 _skipped += 1
                                 continue
                             try:
-                                n = _write_dss_orders_to_sheet(gs_url, _sheet_s, _gs_os, gs_template)
-                                st.success(f"✅ [{_an_s}] → '{_sheet_s}' 탭 L4에 {n}건 전송 완료")
+                                n = _write_dss_orders_to_sheet(
+                                    gs_url, _sheet_s, _gs_os, gs_template,
+                                    use_tungchigi=use_tungchigi)
+                                _mode_lbl = " (퉁치기)" if use_tungchigi else ""
+                                st.success(f"✅ [{_an_s}] → '{_sheet_s}' 탭 L4에 {n}건 전송 완료{_mode_lbl}")
                                 _sent += 1
                             except FileNotFoundError as e:
                                 st.error(f"❌ [{_an_s}]: {e}")
@@ -4338,13 +4356,16 @@ def render_settings_tab():
                 else:
                     _cfg_s["gs_url"] = gs_url
                     _cfg_s["gs_template"] = gs_template.strip()
+                    _cfg_s["use_tungchigi_gsheet"] = bool(use_tungchigi)
                     _cfg_s["gs_sheets"] = {
                         _an: _sh.strip() for _an, _sh in _gs_sheet_inputs.items() if _sh.strip()
                     }
                     # 레거시 필드 정리
                     _cfg_s.pop("gs_sheet", None)
                     _save_dss_config(_cfg_s)
-                    st.success(f"✅ URL / 템플릿 / 계좌별 시트 매핑 {len(_cfg_s['gs_sheets'])}건 저장 완료!")
+                    _tung_lbl = "퉁치기" if use_tungchigi else "원 주문"
+                    st.success(f"✅ URL / 템플릿 / 시트 매핑 {len(_cfg_s['gs_sheets'])}건 / "
+                               f"전송방식({_tung_lbl}) 저장 완료!")
 
     st.write("")
 

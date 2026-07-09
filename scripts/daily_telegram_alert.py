@@ -630,6 +630,28 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
         lines.append(f"── 오늘 새로 예약 ──")
         lines.extend(_reserve_lines)
 
+    # ── 퉁치기 주문 (가격 교차 = 자전거래 위험이 있는 날에만 표시) ──
+    # 일부 증권사는 LOC매도가 < LOC매수가 교차를 거부 → 상계 주문 안내
+    try:
+        from dss_engine import (build_order_rows, build_tungchigi_orders,
+                                has_price_cross)
+        _raw = build_order_rows(_o)
+        if has_price_cross(_raw):
+            _tung = build_tungchigi_orders(_raw)
+            if _tung:
+                lines.append(f"")
+                lines.append(f"── 🔄 퉁치기 주문 (자전거래 거부 증권사용) ──")
+                for _t in _tung:
+                    if _t["방법"] == "MOC":
+                        lines.append(f" 🔴 MOC매도: 시장가 × {_t['수량']}주")
+                    elif _t["구분"] == "매도":
+                        lines.append(f" 📈 LOC매도: ${_t['가격']:,.2f} × {_t['수량']}주")
+                    else:
+                        lines.append(f" 📉 LOC매수: ${_t['가격']:,.2f} × {_t['수량']}주")
+                lines.append(f" ※ 순 체결 결과는 위 주문과 동일 (교차 제거)")
+    except Exception:
+        pass
+
     if _o.get('latest_rsi'):
         lines.append(f"")
         lines.append(f"QQQ RSI: {_o['latest_rsi']:.1f}")
@@ -2075,6 +2097,8 @@ def main():
         if not isinstance(dss_gs_sheets, dict):
             dss_gs_sheets = {}
         dss_gs_sheet_legacy = str(dss_cfg.get("gs_sheet", "")).strip()
+        # 퉁치기 전송 설정 (개인설정 체크박스 — 자전거래 거부 증권사용)
+        dss_use_tung = bool(dss_cfg.get("use_tungchigi_gsheet", False))
         # 검증용 알고리C 시트 (verify_url + 계좌별 verify_sheets)
         dss_verify = parse_dss_verify_sheets(dss_cfg)
 
@@ -2140,10 +2164,17 @@ def main():
 
                 # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
                 # 주문 0건(전 슬롯 보유 + 매도목표 없음)이면 NO_ORDER sentinel 자동 작성
+                # 개인설정 '퉁치기 전송' 체크 시 상계 주문으로 전송 (자전거래 회피)
                 if dss_gs_url and _gs_sheet_dss:
-                    _rows = build_dss_order_rows(os_result)
+                    if dss_use_tung:
+                        from dss_engine import build_order_rows_tungchigi
+                        _rows = build_order_rows_tungchigi(os_result)
+                        _label_gs = f"{_label}(퉁치기)"
+                    else:
+                        _rows = build_dss_order_rows(os_result)
+                        _label_gs = _label
                     write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, _rows,
-                                              _label, status="OK")
+                                              _label_gs, status="OK")
         else:
             print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
             skip_count += 1

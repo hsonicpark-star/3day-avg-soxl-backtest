@@ -242,6 +242,33 @@ def build_tungchigi_orders(orders: list) -> list:
     return df_res.to_dict('records')
 
 
+def has_price_cross(orders: list) -> bool:
+    """주문 리스트에 LOC매도가 < LOC매수가 교차(자전거래 위험)가 있는지.
+    orders: [[구분, 방법, 가격, 수량], ...] (build_order_rows 출력 형식)"""
+    sell_locs = [float(o[2]) for o in orders
+                 if o[0] == "매도" and str(o[1]).upper() == "LOC" and o[2]]
+    buy_locs = [float(o[2]) for o in orders
+                if o[0] == "매수" and str(o[1]).upper() == "LOC" and o[2]]
+    return bool(sell_locs and buy_locs and min(sell_locs) < max(buy_locs))
+
+
+def build_order_rows_tungchigi(os_result: dict, today=None) -> list:
+    """퉁치기 상계 주문을 GSheet L/M/N/O 포맷 rows로 반환.
+
+    build_order_rows와 동일한 4열 포맷:
+      [구분(매수/매도), 거래방법(LOC/MOC), 가격(숫자, MOC는 공란), 수량(정수)]
+    자전거래 거부 증권사용 — 어떤 종가에도 순 체결은 원 주문과 동일."""
+    raw = build_order_rows(os_result, today=today)
+    tung = build_tungchigi_orders(raw)
+    rows = []
+    for t in tung:
+        is_moc = (t["방법"] == "MOC")
+        rows.append([t["구분"], "MOC" if is_moc else "LOC",
+                     "" if is_moc else round(float(t["가격"]), 2),
+                     int(t["수량"])])
+    return rows
+
+
 # ──────────────────────────────────────────────
 # 1. 주간 RSI 계산 (KB증권 단순평균 방식, 14주)
 # ──────────────────────────────────────────────
