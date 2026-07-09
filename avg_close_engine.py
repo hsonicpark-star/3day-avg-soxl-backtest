@@ -617,3 +617,177 @@ def run_tier_breakdown_analysis(price_df, start_date, end_date, a_buy, a_sell, s
         prev_asset = cash + shares * x
 
     return events
+
+
+# ═══════════════════════════════════════════════════════════════
+# 실전 원장(매매기록) 기반 주문 계산 · 예정 주문 정산
+# ═══════════════════════════════════════════════════════════════
+# 원칙 (매매법 룰 그대로 — 새 룰 아님):
+#   1. 오늘 주문 수량은 "전일까지의 실제 상태(원장)" + 엔진 룰로 계산.
+#      1회매수금 = 전일 총자산 ÷ 분할수 · 매수 = min(1회매수금÷tb, 현금÷tb)
+#      매도 = 보유 × sell_ratio.  (백테스트 엔진 for-loop과 동일 산식)
+#   2. 발송된 주문은 "예정(B{매수}/S{매도})" 행으로 원장에 저장 (체결 전 상태).
+#   3. 다음날 그날의 실제 종가로 체결/미체결만 확정(정산). 수량 재계산 절대 없음.
+#      → 미래 종가가 과거 주문 수량을 바꾸는 일이 구조적으로 불가능.
+import re as _re
+
+AVG_HIST_COLS = ["날짜", "종가(x)", "전날(p1)", "전전날(p2)",
+                 "매수경계가", "매도경계가", "매매", "거래주수",
+                 "거래금액($)", "실현손익($)", "실현손익률(%)",
+                 "보유주수", "보유기간", "현금($)", "총자산($)"]
+
+
+def _rec_num(v, default=0.0):
+    """원장 셀 값 → float. '-', '', None은 default."""
+    try:
+        s = str(v).replace(",", "").strip()
+        if s in ("", "-", "None", "nan"):
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def build_avg_pending_label(buy_qty: int, sell_qty: int) -> str:
+    return f"예정(B{int(buy_qty)}/S{int(sell_qty)})"
+
+
+def parse_avg_pending_label(s):
+    """'예정(B29/S160)' → (29, 160). 예정 행 아니면 None."""
+    m = _re.match(r"예정\(B(\d+)/S(\d+)\)", str(s).strip())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def replay_avg_cost(rows) -> float:
+    """원장 rows(날짜 오름차순)에서 현재 평단가 재구성.
+    BUY 행의 체결가(거래금액/거래주수)로 평단 갱신, 전량 매도 시 리셋."""
+    avg, H = 0.0, 0
+    for r in rows:
+        q = int(_rec_num(r.get("거래주수"), 0))
+        if q > 0:
+            amt = _rec_num(r.get("거래금액($)"), 0)
+            px = (amt / q) if amt > 0 else _rec_num(r.get("종가(x)"), 0)
+            if px > 0:
+                avg = (avg * H + px * q) / (H + q)
+            H += q
+        elif q < 0:
+            H += q
+        H_col = _rec_num(r.get("보유주수"), None)
+        if H_col is not None:
+            H = int(H_col)          # 원장 컬럼이 진실 (사용자 수동 정정 반영)
+        if H <= 0:
+            avg, H = 0.0, max(H, 0)
+    return avg
+
+
+def settle_avg_pending_rows(rows, close_by_date: dict):
+    """예정 행을 그날의 실제 종가로 체결/미체결 정산 (in-place 수정).
+
+    rows: dict 리스트 (원장 전체, 날짜 오름차순). 예정 행 포맷:
+          매매="예정(B../S..)", 보유주수/현금($) = 주문 시점(체결 전) 상태.
+    close_by_date: {"YYYY-MM-DD": 확정종가}. 없는 날짜는 보류(다음 기회에 정산).
+    체결 룰 = 백테스트 엔진과 동일: 매도 우선 (x≥ts → SELL), elif x≤tb → BUY.
+    체결가 = 그날 종가 x. 수량은 예정 그대로 (재계산 없음).
+
+    Returns: 변경된 row 인덱스 리스트
+    """
+    changed = []
+    for idx, row in enumerate(rows):
+        pq = parse_avg_pending_label(row.get("매매", ""))
+        if pq is None:
+            continue
+        d = str(row.get("날짜", "")).strip()
+        x = close_by_date.get(d)
+        if x is None:
+            continue                      # 종가 미확정 → 보류
+        x = float(x)
+        bq, sq = pq
+        H  = int(_rec_num(row.get("보유주수"), 0))
+        C  = _rec_num(row.get("현금($)"), 0)
+        tb = _rec_num(row.get("매수경계가"), 0)
+        ts = _rec_num(row.get("매도경계가"), 0)
+        avg = replay_avg_cost(rows[:idx])
+
+        if H > 0 and sq > 0 and ts > 0 and x >= ts:
+            qty = min(sq, H)
+            amt = qty * x
+            H2, C2 = H - qty, C + amt
+            row["매매"] = "SELL"
+            row["거래주수"] = -qty
+            row["거래금액($)"] = round(amt, 2)
+            if avg > 0:
+                row["실현손익($)"]   = round((x - avg) * qty, 2)
+                row["실현손익률(%)"] = round((x / avg - 1) * 100, 2)
+        elif bq > 0 and tb > 0 and x <= tb:
+            cost = bq * x                 # LOC 체결가 = 종가 (수량은 tb 기준 확정분)
+            H2, C2 = H + bq, C - cost
+            row["매매"] = "BUY"
+            row["거래주수"] = bq
+            row["거래금액($)"] = round(cost, 2)
+        else:
+            H2, C2 = H, C                 # 미체결 — 상태 불변
+            row["매매"] = "미체결"
+            row["거래주수"] = 0
+            row["거래금액($)"] = 0
+
+        row["종가(x)"]  = round(x, 4)
+        row["보유주수"] = H2
+        row["현금($)"]  = round(C2, 2)
+        row["총자산($)"] = round(C2 + H2 * x, 2)
+        changed.append(idx)
+    return changed
+
+
+def calc_avg_record_state(rows):
+    """정산된 원장 rows(날짜 오름차순, 오늘 이전분)에서 현재 상태 추출.
+    Returns: {"shares","cash","avg_cost","last_date"} 또는 None(원장 비었음)"""
+    if not rows:
+        return None
+    last = rows[-1]
+    return {
+        "shares":    int(_rec_num(last.get("보유주수"), 0)),
+        "cash":      _rec_num(last.get("현금($)"), 0),
+        "avg_cost":  replay_avg_cost(rows),
+        "last_date": str(last.get("날짜", "")).strip(),
+    }
+
+
+def calc_avg_order_from_state(shares: int, cash: float, p1: float,
+                              tb: float, ts: float,
+                              divisions: int, sell_ratio: float) -> dict:
+    """원장 상태 + 엔진 룰로 오늘 주문 수량 계산 (백테스트 for-loop과 동일 산식).
+    prev_asset = 현금 + 보유 × 전일종가 → 1회매수금 = prev_asset ÷ 분할수."""
+    prev_asset = cash + shares * p1
+    chunk = prev_asset / divisions if divisions > 0 else prev_asset
+    buy_qty = 0
+    if tb > 0:
+        buy_qty = min(math.floor(chunk / tb + 1e-9),
+                      math.floor(max(cash, 0.0) / tb + 1e-9))
+        buy_qty = max(0, buy_qty)
+    sell_qty = math.floor(shares * (sell_ratio / 100.0)) if shares > 0 else 0
+    return {"prev_asset": prev_asset, "chunk": chunk,
+            "buy_qty": int(buy_qty), "sell_qty": int(sell_qty)}
+
+
+def build_avg_pending_row(date_str: str, p1: float, p2: float,
+                          tb: float, ts: float,
+                          buy_qty: int, sell_qty: int,
+                          shares: int, cash: float) -> dict:
+    """오늘 발송 주문의 '예정' 원장 행 (체결 전 상태 저장)."""
+    return {
+        "날짜": date_str,
+        "종가(x)": "",                       # 오늘 종가 미확정 — 정산 시 기입
+        "전날(p1)": round(p1, 4),
+        "전전날(p2)": round(p2, 4),
+        "매수경계가": round(tb, 4),
+        "매도경계가": round(ts, 4),
+        "매매": build_avg_pending_label(buy_qty, sell_qty),
+        "거래주수": "",
+        "거래금액($)": "",
+        "실현손익($)": "",
+        "실현손익률(%)": "",
+        "보유주수": int(shares),              # 체결 전 보유
+        "보유기간": "-",
+        "현금($)": round(cash, 2),            # 체결 전 현금
+        "총자산($)": round(cash + shares * p1, 2),
+    }

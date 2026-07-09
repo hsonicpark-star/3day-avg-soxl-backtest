@@ -24,6 +24,7 @@ from common.config import (
     _IS_CLOUD, _CONFIG, load_config, save_config, _load_full_config,
     get_ticker_settings, save_ticker_setting, delete_ticker_setting,
     _get_ticker_history_file, _load_ticker_daily_history, _save_ticker_daily_history,
+    _update_ticker_history_rows,
     _get_gspread_client,
 )
 from common.auth import _save_user_settings_to_sheet, _hash_password
@@ -43,6 +44,11 @@ from avg_close_engine import (
     run_portfolio_for_ordersheet,
     run_5tier_analysis,
     run_tier_breakdown_analysis,
+    settle_avg_pending_rows,
+    calc_avg_record_state,
+    calc_avg_order_from_state,
+    build_avg_pending_row,
+    parse_avg_pending_label,
 )
 
 
@@ -1202,15 +1208,105 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     res["pending_buys"][0]["금액"] = _qty_re * _buy_p_re
         except Exception:
             pass
-        st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
-        # 새 날짜 데이터만 누적 저장 (파라미터 바꿔도 기존 기록 불변)
-        # 🎯 오늘 날짜 항목은 제외하고 저장 (자동발송 시점 값을 유지하기 위함)
-        # → 오늘 종가 반영된 재계산 값으로 과거 데이터를 덮어쓰지 않음
-        # → 실제 체결 수량(자동발송 알림값) = 매매기록 = 다음 매도 계산 기준 일관성 확보
+        # ══ 원장(매매기록) 처리 — 기록이 진실, 시뮬은 참고 ══
+        # 1) 원장 비어있으면 과거 시뮬 이력으로 시드 (오늘 제외)
+        # 2) 예정 행을 그날 실제 종가로 체결/미체결 정산 (수량 불변)
+        # 3) 원장 보유/현금 + 전일종가 → 엔진 룰 그대로 오늘 주문 수량
+        # 4) 오늘 '예정' 행 저장 (자동발송이 이미 저장했으면 그 수량 사용)
         _today_str_hist = datetime.today().strftime("%Y-%m-%d")
-        _dl_filtered = [row for row in res.get("daily_log", [])
-                          if str(row.get("날짜", "")) != _today_str_hist]
-        _save_ticker_daily_history(tk, _dl_filtered)
+        _closes_map = {str(row.get("날짜", "")): float(row.get("종가(x)", 0))
+                       for row in res.get("daily_log", [])}
+        _df_hist0 = _load_ticker_daily_history(tk)
+        if _df_hist0.empty:
+            # 원장 신규 시작 — 과거 시뮬 이력을 시드로 (오늘 제외)
+            _dl_filtered = [row for row in res.get("daily_log", [])
+                              if str(row.get("날짜", "")) != _today_str_hist]
+            _save_ticker_daily_history(tk, _dl_filtered)
+            _df_hist0 = _load_ticker_daily_history(tk)
+        _rows_led = _df_hist0.to_dict("records") if not _df_hist0.empty else []
+
+        # 2) 예정 행 정산 (오늘 이전분만 — 오늘 예정은 내일 정산)
+        try:
+            _closes_conf = {d: c for d, c in _closes_map.items()
+                            if d < _today_str_hist}
+            _chg_led = settle_avg_pending_rows(_rows_led, _closes_conf)
+            if _chg_led:
+                _update_ticker_history_rows(tk, _rows_led, _chg_led)
+                for _ci in _chg_led:
+                    st.info(f"🧾 {_rows_led[_ci].get('날짜')} 예정 주문 정산 → "
+                            f"{_rows_led[_ci].get('매매')} "
+                            f"{_rows_led[_ci].get('거래주수')}주")
+        except Exception as _stl_err:
+            st.warning(f"예정 주문 정산 실패 (다음 로드 때 재시도): {_stl_err}")
+
+        # 3) 원장 상태 → 오늘 주문 수량 (엔진 룰: 1회매수금 = 전일총자산/분할)
+        _ledger = None
+        try:
+            _prev_led = sorted([r0 for r0 in _rows_led
+                                if str(r0.get("날짜", "")).strip() < _today_str_hist],
+                               key=lambda r0: str(r0.get("날짜", "")))
+            _state_led = calc_avg_record_state(_prev_led)
+            if _state_led:
+                # 마지막 기록 이후의 입출금(자본 조정)만 현금에 반영
+                _extra_adj_led = 0.0
+                for _it in _adj_list_os:
+                    try:
+                        _d_adj = str(pd.Timestamp(_it.get("날짜")).date())
+                        if _state_led["last_date"] < _d_adj <= _today_str_hist:
+                            _extra_adj_led += float(_it.get("조정금액", 0))
+                    except Exception:
+                        continue
+                _cash_led = _state_led["cash"] + _extra_adj_led
+                _ord_led = calc_avg_order_from_state(
+                    _state_led["shares"], _cash_led,
+                    float(res.get("p1_now", 0)),
+                    float(res.get("next_buy_primary", 0)),
+                    float(res.get("next_sell_target", 0)),
+                    _divisions, _sell_ratio)
+                _ledger = {**_state_led, "cash": _cash_led, **_ord_led}
+        except Exception:
+            _ledger = None
+
+        # 오늘 예정 행이 이미 있으면 (자동발송 저장분) 그 수량이 오늘의 주문
+        _today_row_led = next((r0 for r0 in _rows_led
+                               if str(r0.get("날짜", "")).strip() == _today_str_hist),
+                              None)
+        if _today_row_led is not None and _ledger:
+            _pq_today = parse_avg_pending_label(_today_row_led.get("매매", ""))
+            if _pq_today:
+                _ledger["buy_qty"], _ledger["sell_qty"] = _pq_today
+
+        # res 오버라이드 → 이후 화면(주문표·보유현황)이 원장 값 사용
+        if _ledger:
+            _sim_shares_disp = int(res.get("shares", 0))
+            if _sim_shares_disp != _ledger["shares"]:
+                st.caption(f"📒 원장 기준 적용: 시뮬 보유 {_sim_shares_disp:,}주 → "
+                           f"매매기록 보유 {_ledger['shares']:,}주 "
+                           f"(실제 계좌와 다르면 매매기록 시트를 수정하세요)")
+            res["shares"] = _ledger["shares"]
+            res["cash"] = round(_ledger["cash"], 2)
+            res["current_asset"] = round(_ledger["prev_asset"], 2)
+            if _ledger.get("avg_cost", 0) > 0:
+                res["avg_cost"] = round(_ledger["avg_cost"], 4)
+            if "pending_buys" in res and res["pending_buys"]:
+                res["pending_buys"][0]["수량"] = _ledger["buy_qty"]
+                res["pending_buys"][0]["금액"] = (
+                    _ledger["buy_qty"] * float(res.get("next_buy_primary", 0)))
+            res["ledger_sell_qty"] = _ledger["sell_qty"]
+
+        # 4) 오늘 '예정' 행 저장 (주문 있고 + 오늘 행 없을 때만, B방식)
+        if _ledger and _today_row_led is None \
+                and (_ledger["buy_qty"] > 0 or _ledger["sell_qty"] > 0):
+            _prow_led = build_avg_pending_row(
+                _today_str_hist,
+                float(res.get("p1_now", 0)), float(res.get("p2_now", 0)),
+                float(res.get("next_buy_primary", 0)),
+                float(res.get("next_sell_target", 0)),
+                _ledger["buy_qty"], _ledger["sell_qty"],
+                _ledger["shares"], _ledger["cash"])
+            _save_ticker_daily_history(tk, [_prow_led])
+
+        st.session_state[_ss_key] = res  # 결과 저장 → 탭 이동 후에도 유지
 
     res = st.session_state.get(_ss_key)
     if res is None:
@@ -1298,32 +1394,15 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
 
     today_orders = []
-    # ── 매도 수량 기준 = 매매기록의 최근 보유주수 (기록 = 진실) ──
-    # 시뮬 보유주수는 파라미터 변경·데이터 갱신으로 과거 수량까지 재계산되어
-    # 실제 체결 누적(매매기록)과 어긋날 수 있음 → 매도는 기록 기준으로 계산
-    _rec_shares = None
-    try:
-        _hist_rec = _load_ticker_daily_history(tk)
-        if not _hist_rec.empty and "보유주수" in _hist_rec.columns:
-            _today_rec = datetime.today().strftime("%Y-%m-%d")
-            _prev_rec = _hist_rec[_hist_rec["날짜"].astype(str) < _today_rec]
-            if not _prev_rec.empty:
-                _prev_rec = _prev_rec.sort_values("날짜")
-                _rs = pd.to_numeric(_prev_rec.iloc[-1]["보유주수"], errors="coerce")
-                if pd.notna(_rs):
-                    _rec_shares = int(_rs)
-    except Exception:
-        _rec_shares = None
-
-    _shares_for_sell = _rec_shares if _rec_shares is not None else int(res["shares"])
-    if _rec_shares is not None and _rec_shares != int(res["shares"]):
-        st.warning(f"⚠️ 시뮬 보유({int(res['shares']):,}주) ≠ 매매기록 보유({_rec_shares:,}주) — "
-                   f"매도 주문은 **매매기록 기준 {_rec_shares:,}주**로 계산합니다. "
-                   f"실제 계좌 보유와 다르면 매매기록 시트를 수정하세요.")
+    # 매도/매수 수량: 원장(매매기록) 기준 — 로드 시 res가 원장 값으로 오버라이드됨
+    # (ledger_sell_qty: 원장 상태 + 엔진 룰로 확정된 오늘 매도 수량)
+    _shares_for_sell = int(res.get("shares", 0))
+    _ledger_sq = res.get("ledger_sell_qty")
 
     # 매도: 보유량 + 매도수량 둘 다 > 0일 때만 표시 (0주 노이즈 제거)
     if _shares_for_sell > 0:
-        sell_qty = math.floor(_shares_for_sell * (_sell_ratio / 100.0))
+        sell_qty = (int(_ledger_sq) if _ledger_sq is not None
+                    else math.floor(_shares_for_sell * (_sell_ratio / 100.0)))
         if sell_qty > 0:
             sell_tgt = res["next_sell_target"]
             today_orders.append({

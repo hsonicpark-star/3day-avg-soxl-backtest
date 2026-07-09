@@ -176,6 +176,41 @@ def _save_ticker_daily_history(tk: str, daily_log: list):
         except Exception:
             pass
 
+
+def _update_ticker_history_rows(tk: str, rows: list, changed_indices: list):
+    """원장의 '예정' 행 정산 결과를 반영 (예정 → 체결/미체결 확정).
+
+    B방식(과거 불변)의 유일한 예외: 예정 행은 미확정 주문이므로
+    그날 자신의 종가로 1회 확정만 허용. 수량은 절대 재계산하지 않음.
+    rows: 로드 순서 그대로의 dict 리스트 (cloud=시트 순서, local=CSV 순서)"""
+    if not rows or not changed_indices:
+        return
+    df = pd.DataFrame(rows)
+    # 로컬 CSV 전체 재기록 (행 순서 유지)
+    try:
+        f = _get_ticker_history_file(tk)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(f, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+    # Cloud: GSheets 해당 행만 업데이트
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws = sh.worksheet(f"{tk}_매매기록")
+                cols = list(df.columns)
+                col_end = chr(ord('A') + len(cols) - 1)
+                for ci in changed_indices:
+                    vals = [[str(df.iloc[ci][c]) for c in cols]]
+                    ws.update(values=vals,
+                              range_name=f"A{ci + 2}:{col_end}{ci + 2}",
+                              value_input_option="RAW")
+        except Exception:
+            pass
+
 # 클라우드 서버에 혹시 남은 민감 정보 제거
 if _IS_CLOUD:
     try:

@@ -198,6 +198,27 @@ def _apply_capital_adj(r: dict, cfg: dict) -> float:
     return _adj_total
 
 
+def _sum_adj_between(cfg: dict, after_date: str, upto_date: str) -> float:
+    """capital_adj_history 중 after_date < 날짜 <= upto_date 구간 합산.
+    원장(매매기록) 기반 계산에서 마지막 기록 이후의 입출금만 현금에 반영."""
+    _adj_raw = cfg.get("capital_adj_history", "[]")
+    try:
+        _adj_list = json.loads(_adj_raw) if isinstance(_adj_raw, str) else _adj_raw
+        if not isinstance(_adj_list, list):
+            return 0.0
+    except Exception:
+        return 0.0
+    total = 0.0
+    for _it in _adj_list:
+        try:
+            _d = str(pd.Timestamp(_it.get("날짜")).date())
+            if after_date < _d <= upto_date:
+                total += float(_it.get("조정금액", 0))
+        except Exception:
+            continue
+    return total
+
+
 def calc_today_order(ticker: str, os_start: str,
                      a_buy: float, a_sell: float,
                      sell_ratio: float, divisions: int,
@@ -236,6 +257,9 @@ def calc_today_order(ticker: str, os_start: str,
         "cash":     float(res.get("cash", 0)),
         "avg_cost": float(res.get("avg_cost", 0)),
         "total_asset": float(res.get("current_asset", 0)),  # 총자산 표시용
+        # 확정 종가 맵 (예정 주문 정산용) — intraday 필터 후 데이터라 전부 확정가
+        "closes":   {str(row.get("날짜", "")): float(row.get("종가(x)", 0))
+                     for row in (res.get("daily_log") or [])},
     }
 
 def _flag_on(v) -> bool:
@@ -1836,33 +1860,90 @@ def main():
                 except Exception:
                     pass
 
-                # ── 매도 수량 기준 = 매매기록의 최근 보유주수 (기록 = 진실) ──
-                # 시뮬 보유주수는 파라미터 변경·데이터 갱신으로 과거 수량까지
-                # 재계산되어 실제 체결 누적과 어긋날 수 있음 → 기록 기준으로 매도
+                # ══ 원장(매매기록) 기반 주문 계산 — 기록이 진실 ══
+                # 1) 어제 '예정' 행을 어제 실제 종가로 체결/미체결 정산 (수량 불변)
+                # 2) 정산된 원장의 보유/현금 + 전일종가 → 엔진 룰 그대로 오늘 수량 계산
+                # 시뮬 재계산 값이 주문 수량에 끼어들 틈이 없음 (look-ahead 차단)
+                _ledger_on = False
+                _ws_hist = None
+                _hist_existing_dates = set()
+                _today_str_avg = datetime.today().strftime("%Y-%m-%d")
                 if shared_gs_url:
                     try:
+                        from avg_close_engine import (
+                            AVG_HIST_COLS, settle_avg_pending_rows,
+                            calc_avg_record_state, calc_avg_order_from_state,
+                            build_avg_pending_row)
                         _sh_rec = client.open_by_url(shared_gs_url)
-                        _ws_rec = _sh_rec.worksheet(f"{tk}_매매기록")
-                        _vals_rec = _ws_rec.get_all_values()
+                        try:
+                            _ws_hist = _sh_rec.worksheet(f"{tk}_매매기록")
+                        except gspread.exceptions.WorksheetNotFound:
+                            _ws_hist = _sh_rec.add_worksheet(
+                                title=f"{tk}_매매기록", rows=5000, cols=25)
+                            _ws_hist.append_row(AVG_HIST_COLS)
+                        _vals_rec = _ws_hist.get_all_values()
                         if len(_vals_rec) > 1:
                             _hdr_rec = _vals_rec[0]
-                            _i_date_rec = _hdr_rec.index("날짜")
-                            _i_sh_rec = _hdr_rec.index("보유주수")
-                            _today_rec = datetime.today().strftime("%Y-%m-%d")
-                            _prev_rows_rec = [rw for rw in _vals_rec[1:]
-                                              if rw[_i_date_rec]
-                                              and str(rw[_i_date_rec]) < _today_rec]
-                            if _prev_rows_rec:
-                                _prev_rows_rec.sort(key=lambda rw: str(rw[_i_date_rec]))
-                                _rec_sh = int(float(_prev_rows_rec[-1][_i_sh_rec]))
-                                if _rec_sh != int(res.get("shares", 0)):
-                                    print(f"    📌 [종가평균/{tk}] 매도 기준 보유주수: "
-                                          f"시뮬 {res.get('shares')}주 → 기록 {_rec_sh}주 적용")
-                                res["shares"] = _rec_sh
-                                res["sell_qty"] = int(math.floor(_rec_sh * sell_ratio / 100.0))
-                    except Exception as _rec_err:
-                        print(f"    ⚠️ [종가평균/{tk}] 매매기록 보유주수 조회 실패 "
-                              f"(시뮬 값 사용): {_rec_err}")
+                            _rows_rec = [dict(zip(_hdr_rec, rw)) for rw in _vals_rec[1:]]
+                            _hist_existing_dates = {str(r0.get("날짜", "")).strip()
+                                                     for r0 in _rows_rec}
+                            # ── 1) 예정 행 정산 (오늘 이전분만) ──
+                            _closes_conf = {d: c for d, c in
+                                            (res.get("closes") or {}).items()
+                                            if d < _today_str_avg}
+                            _chg = settle_avg_pending_rows(_rows_rec, _closes_conf)
+                            _n_cols = len(_hdr_rec)
+                            _col_end = chr(ord('A') + _n_cols - 1)
+                            for _ci in _chg:
+                                _rw_out = [str(_rows_rec[_ci].get(c, ""))
+                                           for c in _hdr_rec]
+                                _ws_hist.update(
+                                    values=[_rw_out],
+                                    range_name=f"A{_ci + 2}:{_col_end}{_ci + 2}",
+                                    value_input_option="RAW")
+                                print(f"      🧾 [종가평균/{tk}] "
+                                      f"{_rows_rec[_ci].get('날짜')} 예정 정산 → "
+                                      f"{_rows_rec[_ci].get('매매')} "
+                                      f"{_rows_rec[_ci].get('거래주수')}주")
+                            # ── 2) 원장 상태 → 오늘 주문 수량 (엔진 룰) ──
+                            _prev_rows = sorted(
+                                [r0 for r0 in _rows_rec
+                                 if str(r0.get("날짜", "")).strip() < _today_str_avg],
+                                key=lambda r0: str(r0.get("날짜", "")))
+                            _state = calc_avg_record_state(_prev_rows)
+                            if _state:
+                                # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
+                                _extra_adj = _sum_adj_between(
+                                    cfg, _state["last_date"], _today_str_avg)
+                                _cash_led = _state["cash"] + _extra_adj
+                                _ord_led = calc_avg_order_from_state(
+                                    _state["shares"], _cash_led,
+                                    float(res.get("p1", 0)),
+                                    float(res.get("tb", 0)),
+                                    float(res.get("ts", 0)),
+                                    divisions, sell_ratio)
+                                if (_state["shares"] != int(res.get("shares", 0))
+                                        or _ord_led["buy_qty"] != int(res.get("buy_qty", 0))):
+                                    print(f"      📌 [종가평균/{tk}] 원장 기준 적용: "
+                                          f"보유 {res.get('shares')}→{_state['shares']}주 · "
+                                          f"매수 {res.get('buy_qty')}→{_ord_led['buy_qty']}주 · "
+                                          f"매도 {res.get('sell_qty')}→{_ord_led['sell_qty']}주")
+                                res["shares"]   = _state["shares"]
+                                res["cash"]     = round(_cash_led, 2)
+                                res["buy_qty"]  = _ord_led["buy_qty"]
+                                res["sell_qty"] = _ord_led["sell_qty"]
+                                res["total_asset"] = round(_ord_led["prev_asset"], 2)
+                                if _state["avg_cost"] > 0:
+                                    res["avg_cost"] = round(_state["avg_cost"], 4)
+                                _ledger_on = True
+                        else:
+                            # 원장 비어있음 — 이번 발송분부터 원장 시작 (시뮬 상태 시드)
+                            _ledger_on = True
+                            print(f"      🆕 [종가평균/{tk}] 원장 신규 시작 (시뮬 상태 시드)")
+                    except Exception as _led_err:
+                        print(f"      ⚠️ [종가평균/{tk}] 원장 처리 실패 "
+                              f"(시뮬 값으로 발송): {_led_err}")
+                        _ledger_on = False
 
                 # 이상치 감지
                 _issues = sanity_check_avg(res, tk)
@@ -1888,82 +1969,26 @@ def main():
                     write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
                                               _label, status="OK")
 
-                # ── 매매기록 저장 (자동발송 시점, B방식) ──
-                # 원칙: 오늘 발송된 매수/매도 수량이 매매기록에 저장되어 유지됨.
-                # 나중에 웹앱에서 재시뮬해도 오늘 종가 반영값으로 덮어쓰지 않음.
-                # → 다음 매도 계산 시 실제 체결 수량 기준 유지
-                if shared_gs_url and ok and (res.get("buy_qty", 0) > 0 or res.get("sell_qty", 0) > 0):
+                # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태) ──
+                # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산.
+                # 수량은 오늘 확정된 그대로 불변 (B방식: 오늘 날짜 있으면 skip).
+                if _ws_hist is not None and ok and _ledger_on \
+                        and (res.get("buy_qty", 0) > 0 or res.get("sell_qty", 0) > 0) \
+                        and _today_str_avg not in _hist_existing_dates:
                     try:
-                        _hist_sheet = f"{tk}_매매기록"
-                        _today_str_avg = datetime.today().strftime("%Y-%m-%d")
-                        # 매매기록 워크시트 열기 (없으면 생성)
-                        _sh_hist = client.open_by_url(shared_gs_url)
-                        _hist_cols = ["날짜", "종가(x)", "전날(p1)", "전전날(p2)",
-                                       "매수경계가", "매도경계가", "매매", "거래주수",
-                                       "거래금액($)", "실현손익($)", "실현손익률(%)",
-                                       "보유주수", "보유기간", "현금($)", "총자산($)"]
-                        try:
-                            _ws_hist = _sh_hist.worksheet(_hist_sheet)
-                            _existing_vals = _ws_hist.get_all_values()
-                            _existing_dates = ({row[0] for row in _existing_vals[1:]}
-                                                if len(_existing_vals) > 1 else set())
-                        except gspread.exceptions.WorksheetNotFound:
-                            _ws_hist = _sh_hist.add_worksheet(title=_hist_sheet, rows=5000, cols=25)
-                            _ws_hist.append_row(_hist_cols)
-                            _existing_dates = set()
-                        # B방식: 이미 오늘 날짜 있으면 skip (덮어쓰기 방지)
-                        if _today_str_avg not in _existing_dates:
-                            _bq = int(res.get("buy_qty", 0))
-                            _sq = int(res.get("sell_qty", 0))
-                            _shares_before = int(res.get("shares", 0))
-                            if _bq > 0:
-                                # 매수 예정 저장
-                                _tb = float(res.get("tb", 0))
-                                _new_row = [
-                                    _today_str_avg,
-                                    round(res.get("p1", 0), 4),   # 최근 종가 근사 (오늘 종가 미확정)
-                                    round(res.get("p1", 0), 4),
-                                    round(res.get("p2", 0), 4),
-                                    round(_tb, 4),
-                                    round(float(res.get("ts", 0)), 4),
-                                    "BUY (예정)",  # 자동발송 시점 예정 표시
-                                    _bq,
-                                    round(_bq * _tb, 2),
-                                    "-", "-",  # 실현손익 (매수라 없음)
-                                    _shares_before + _bq,   # 매수 후 예상 보유
-                                    "-",
-                                    round(res.get("cash", 0) - _bq * _tb, 2),
-                                    round(res.get("total_asset", 0), 2),
-                                ]
-                                _ws_hist.append_row([str(v) for v in _new_row], value_input_option="RAW")
-                                print(f"      💾 [종가평균/{tk}] 매매기록 저장 (매수 예정 {_bq}주)")
-                            elif _sq > 0 and _shares_before > 0:
-                                # 매도 예정 저장
-                                _ts = float(res.get("ts", 0))
-                                _avg_c = float(res.get("avg_cost", 0))
-                                _pnl_amt = round((_ts - _avg_c) * _sq, 2) if _avg_c > 0 else 0
-                                _pnl_pct = round((_ts / _avg_c - 1) * 100, 2) if _avg_c > 0 else 0
-                                _new_row = [
-                                    _today_str_avg,
-                                    round(res.get("p1", 0), 4),
-                                    round(res.get("p1", 0), 4),
-                                    round(res.get("p2", 0), 4),
-                                    round(float(res.get("tb", 0)), 4),
-                                    round(_ts, 4),
-                                    "SELL (예정)",
-                                    -_sq,  # 매도는 음수 표기
-                                    round(_sq * _ts, 2),
-                                    _pnl_amt,
-                                    _pnl_pct,
-                                    _shares_before - _sq,
-                                    "-",
-                                    round(res.get("cash", 0) + _sq * _ts, 2),
-                                    round(res.get("total_asset", 0), 2),
-                                ]
-                                _ws_hist.append_row([str(v) for v in _new_row], value_input_option="RAW")
-                                print(f"      💾 [종가평균/{tk}] 매매기록 저장 (매도 예정 {_sq}주)")
+                        _prow = build_avg_pending_row(
+                            _today_str_avg,
+                            float(res.get("p1", 0)), float(res.get("p2", 0)),
+                            float(res.get("tb", 0)), float(res.get("ts", 0)),
+                            int(res.get("buy_qty", 0)), int(res.get("sell_qty", 0)),
+                            int(res.get("shares", 0)), float(res.get("cash", 0)))
+                        _ws_hist.append_row(
+                            [str(_prow.get(c, "")) for c in AVG_HIST_COLS],
+                            value_input_option="RAW")
+                        print(f"      💾 [종가평균/{tk}] 원장 예정 저장 "
+                              f"(매수 {res.get('buy_qty', 0)}주 / 매도 {res.get('sell_qty', 0)}주)")
                     except Exception as _hist_err:
-                        print(f"      ⚠️ [종가평균/{tk}] 매매기록 저장 실패: {_hist_err}")
+                        print(f"      ⚠️ [종가평균/{tk}] 원장 예정 저장 실패: {_hist_err}")
         else:
             print(f"  ⏭️  {username} [종가평균]: 미설정 → 건너뜀")
             skip_count += 1
