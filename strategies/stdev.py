@@ -40,6 +40,12 @@ from stdev_engine import (
     run_backtest_stdev_fast,
     run_stdev_tier_analysis,
     run_stdev_ordersheet,
+    SD_HIST_COLS,
+    settle_sd_pending_rows,
+    calc_sd_record_state,
+    calc_sd_order_from_state,
+    build_sd_pending_row,
+    sd_row_is_pending,
 )
 
 
@@ -190,6 +196,39 @@ def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
             pass
 
 
+def _update_sd_daily_history_rows(tk: str, rows: list, changed_indices: list):
+    """예정 행 정산 결과 반영 (예정 → 체결/미체결 확정).
+    B방식의 유일한 예외: 예정 행은 미확정 주문이므로 그날 종가로 1회 확정만 허용.
+    rows: 로드 순서 그대로의 dict 리스트 (cloud=시트 순서, local=CSV 순서)"""
+    if not rows or not changed_indices:
+        return
+    df = pd.DataFrame(rows)
+    # 로컬 CSV 전체 재기록 (행 순서 유지)
+    try:
+        f = _get_sd_history_file(tk)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(f, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+    # Cloud: GSheets 해당 행만 업데이트
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws = sh.worksheet(f"sd_{tk}_매매기록")
+                cols = list(df.columns)
+                col_end = chr(ord('A') + len(cols) - 1)
+                for ci in changed_indices:
+                    vals = [[str(df.iloc[ci][c]) for c in cols]]
+                    ws.update(values=vals,
+                              range_name=f"A{ci + 2}:{col_end}{ci + 2}",
+                              value_input_option="RAW")
+        except Exception:
+            pass
+
+
 # ══════════════════════════════════════════════
 # Telegram text builder
 # ══════════════════════════════════════════════
@@ -249,6 +288,57 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                             res["est_buy_qty"] = int(math.floor(_avail_txt / _nbl_txt))
             except Exception:
                 pass
+
+        # ── 원장(매매기록) 기준 override — 표시 일관성 (조회만, 쓰기 없음) ──
+        # 웹 주문표·자동발송과 동일하게 실제 보유/체결 기준 수량 표시
+        try:
+            _today_led = today.strftime("%Y-%m-%d")
+            _closes_led = {}
+            _h_led = res.get("hist")
+            if _h_led is not None and not _h_led.empty:
+                for _, _hr in _h_led.iterrows():
+                    _closes_led[str(_hr["날짜"])] = float(_hr["종가"])
+            _df_led = _load_sd_daily_history(ticker_name)
+            if not _df_led.empty:
+                _rows_led = _df_led.to_dict("records")
+                settle_sd_pending_rows(
+                    _rows_led, {d: c for d, c in _closes_led.items() if d < _today_led})
+                _prev_led = sorted(
+                    [r0 for r0 in _rows_led if str(r0.get("날짜", "")).strip() < _today_led],
+                    key=lambda r0: str(r0.get("날짜", "")))
+                _stg_led = calc_sd_record_state(_prev_led)
+                if _stg_led:
+                    # 마지막 기록 이후 입출금만 현금에 가산
+                    _extra_led = 0.0
+                    if capital_adj_history:
+                        try:
+                            _al = (json.loads(capital_adj_history)
+                                   if isinstance(capital_adj_history, str) else capital_adj_history)
+                            for _it in (_al if isinstance(_al, list) else []):
+                                _da = str(pd.Timestamp(_it.get("날짜")).date())
+                                if _stg_led["last_date"] < _da <= _today_led:
+                                    _extra_led += float(_it.get("조정금액", 0))
+                        except Exception:
+                            pass
+                    _stg_led["cash"] += _extra_led
+                    _og_led = calc_sd_order_from_state(
+                        _stg_led, float(res.get("next_buy_loc", 0)),
+                        float(res.get("next_sell_loc", 0)),
+                        divisions, sell_ratio, renewal, 1.0, 1.0)
+                    _tr_led = next((r0 for r0 in _rows_led
+                                    if str(r0.get("날짜", "")).strip() == _today_led), None)
+                    if _tr_led is not None and sd_row_is_pending(_tr_led):
+                        _og_led["buy_qty"] = int(float(_tr_led.get("매수량", 0) or 0))
+                        _og_led["sell_qty"] = int(float(_tr_led.get("매도량", 0) or 0))
+                    res["holdings"]     = _stg_led["holdings"]
+                    res["cash"]         = round(_stg_led["cash"], 2)
+                    res["est_buy_qty"]  = _og_led["buy_qty"]
+                    res["est_sell_qty"] = _og_led["sell_qty"]
+                    if _stg_led["avg_cost"] > 0:
+                        res["avg_cost"] = round(_stg_led["avg_cost"], 4)
+        except Exception:
+            pass
+
         lp        = res["last_close"]
         sigma     = res["sigma_next"]
         today_str = today.strftime("%Y-%m-%d")
@@ -847,6 +937,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _div  = int  (tk_cfg.get("divisions",   5))
     _sp   = int  (tk_cfg.get("sigma_period", 2))
     _rn   = int  (tk_cfg.get("renewal",     5))
+    _pcr  = float(tk_cfg.get("pcr", 1.0))
+    _lcr  = float(tk_cfg.get("lcr", 1.0))
 
     _raw_start   = tk_cfg.get("os_start",   "2020-01-01")
     _raw_capital = tk_cfg.get("os_capital", 20000.0)
@@ -1106,6 +1198,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 price_df=_pdf, start_date=str(_os_start),
                 sigma_period=_sp, k_buy=_kb, k_sell=_ks,
                 sell_ratio=_sr, divisions=_div, renewal=_rn,
+                pcr=_pcr, lcr=_lcr,
                 initial_capital=_os_cap,
             )
             if _sd_r is None:
@@ -1141,19 +1234,107 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 _nbl_sd = float(_sd_r.get("next_buy_loc", 0))
                 if _nbl_sd > 0:
                     _sd_r["est_buy_qty"] = int(math.floor(_avail_adj_sd / _nbl_sd))
-                st.session_state[_sd_ss] = _sd_r
-                # 새 날짜 히스토리 누적 저장 (B방식)
-                # 🎯 오늘 날짜는 제외 (자동발송 시점 값 유지 — look-ahead 방지)
-                # → 오늘 종가 반영된 재계산 값으로 과거 데이터를 덮어쓰지 않음
+                # ══ 원장(매매기록) 처리 — 기록이 진실, 시뮬은 참고 ══
+                # 1) 원장 비면 과거 시뮬 이력으로 시드 (오늘 제외)
+                # 2) 예정 행을 그날 실제 종가로 체결/미체결 정산 (동시체결, 수량 불변)
+                # 3) 원장 상태(티어/총투자금/보유/현금/누적실현) + 엔진 룰 → 오늘 주문
+                # 4) 오늘 '예정' 행 저장 (자동발송이 이미 저장했으면 그 수량 사용)
+                _today_sd = datetime.today().strftime("%Y-%m-%d")
+                _closes_sd_map = {}
                 _hist_sd = _sd_r.get("hist")
                 if _hist_sd is not None and not _hist_sd.empty:
-                    _today_sd = datetime.today().strftime("%Y-%m-%d")
-                    _hist_sd_filtered = _hist_sd[
-                        _hist_sd["날짜"].astype(str) != _today_sd
-                    ].copy()
-                    _save_sd_daily_history(tk, _hist_sd_filtered)
-                else:
-                    _save_sd_daily_history(tk, _hist_sd)
+                    for _, _hr in _hist_sd.iterrows():
+                        _closes_sd_map[str(_hr["날짜"])] = float(_hr["종가"])
+
+                _df_led0 = _load_sd_daily_history(tk)
+                if _df_led0.empty and _hist_sd is not None and not _hist_sd.empty:
+                    # 원장 신규 시작 — 과거 시뮬 이력 시드 (오늘 제외)
+                    _seed = _hist_sd[_hist_sd["날짜"].astype(str) != _today_sd].copy()
+                    _save_sd_daily_history(tk, _seed)
+                    _df_led0 = _load_sd_daily_history(tk)
+                _rows_led = _df_led0.to_dict("records") if not _df_led0.empty else []
+
+                # 2) 예정 정산 (오늘 이전분만)
+                try:
+                    _cc = {d: c for d, c in _closes_sd_map.items() if d < _today_sd}
+                    _chg = settle_sd_pending_rows(_rows_led, _cc)
+                    if _chg:
+                        _update_sd_daily_history_rows(tk, _rows_led, _chg)
+                        for _ci in _chg:
+                            st.info(f"🧾 {_rows_led[_ci].get('날짜')} 예정 정산 → "
+                                    f"매수 {_rows_led[_ci].get('매수량')} / "
+                                    f"매도 {_rows_led[_ci].get('매도량')}주")
+                except Exception as _stl:
+                    st.warning(f"예정 정산 실패 (다음 로드 때 재시도): {_stl}")
+
+                # 3) 원장 상태 → 오늘 주문 수량 (엔진 룰: 티어/renewal 포함)
+                _sd_ledger = None
+                try:
+                    _prev_led = sorted([r0 for r0 in _rows_led
+                                        if str(r0.get("날짜", "")).strip() < _today_sd],
+                                       key=lambda r0: str(r0.get("날짜", "")))
+                    _stg = calc_sd_record_state(_prev_led)
+                    if _stg:
+                        # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
+                        _extra = 0.0
+                        for _it in _adj_list_sd:
+                            try:
+                                _da = str(pd.Timestamp(_it.get("날짜")).date())
+                                if _stg["last_date"] < _da <= _today_sd:
+                                    _extra += float(_it.get("조정금액", 0))
+                            except Exception:
+                                continue
+                        _stg["cash"] += _extra
+                        _og = calc_sd_order_from_state(
+                            _stg, float(_sd_r.get("next_buy_loc", 0)),
+                            float(_sd_r.get("next_sell_loc", 0)),
+                            _div, _sr, _rn, _pcr, _lcr)
+                        _sd_ledger = {**_stg, **_og}
+                except Exception:
+                    _sd_ledger = None
+
+                # 오늘 예정 행이 이미 있으면 (자동발송분) 그 수량이 오늘 주문
+                _today_row_led = next((r0 for r0 in _rows_led
+                                       if str(r0.get("날짜", "")).strip() == _today_sd), None)
+                if _today_row_led is not None and _sd_ledger and sd_row_is_pending(_today_row_led):
+                    try:
+                        _sd_ledger["buy_qty"] = int(float(_today_row_led.get("매수량", 0)))
+                        _sd_ledger["sell_qty"] = int(float(_today_row_led.get("매도량", 0)))
+                    except Exception:
+                        pass
+
+                # res 오버라이드 → 이후 화면(주문표·보유현황)이 원장 값 사용
+                if _sd_ledger:
+                    _sim_h = int(_sd_r.get("holdings", 0))
+                    if _sim_h != _sd_ledger["holdings"]:
+                        st.caption(f"📒 원장 기준 적용: 시뮬 보유 {_sim_h:,}주 → "
+                                   f"매매기록 보유 {_sd_ledger['holdings']:,}주 "
+                                   f"(실제 계좌와 다르면 매매기록 시트를 수정하세요)")
+                    _sd_r["holdings"]     = _sd_ledger["holdings"]
+                    _sd_r["cash"]         = round(_sd_ledger["cash"], 2)
+                    _sd_r["total_invest"] = round(_sd_ledger["total_invest"], 2)
+                    _sd_r["next_tier"]    = _sd_ledger["next_tier"]
+                    _sd_r["est_buy_qty"]  = _sd_ledger["buy_qty"]
+                    _sd_r["est_sell_qty"] = _sd_ledger["sell_qty"]
+                    if _sd_ledger.get("avg_cost", 0) > 0:
+                        _sd_r["avg_cost"] = round(_sd_ledger["avg_cost"], 4)
+
+                # 4) 오늘 '예정' 행 저장 (주문 있고 + 오늘 행 없을 때만, B방식)
+                if _sd_ledger and _today_row_led is None \
+                        and (_sd_ledger["buy_qty"] > 0 or _sd_ledger["sell_qty"] > 0):
+                    _prow = build_sd_pending_row(
+                        _today_sd, int(_sd_r.get("next_tier", 1)),
+                        float(_sd_r.get("sigma_next", 0)),
+                        float(_sd_r.get("next_buy_loc", 0)),
+                        float(_sd_r.get("next_sell_loc", 0)),
+                        _sd_ledger["buy_qty"], _sd_ledger["sell_qty"],
+                        float(_sd_r.get("total_invest", 0)),
+                        _sd_ledger["holdings"], _sd_ledger["cash"],
+                        _sd_ledger.get("avg_cost", 0), _sd_ledger["cum_realized"],
+                        float(_sd_r.get("last_close", 0)))
+                    _save_sd_daily_history(tk, pd.DataFrame([_prow]))
+
+                st.session_state[_sd_ss] = _sd_r
 
     _sd_res = st.session_state.get(_sd_ss)
     if _sd_res is None:

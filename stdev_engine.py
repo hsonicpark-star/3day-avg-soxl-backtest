@@ -569,3 +569,162 @@ def run_stdev_ordersheet(
         "final_asset":   final_asset,
         "hist":          hist,
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# 실전 원장(매매기록) 기반 주문 계산 · 예정 주문 정산 (표준편차)
+# ═══════════════════════════════════════════════════════════════
+# 원칙 (매매법 룰 = 백테스트 엔진 그대로, 새 룰 아님):
+#   · 티어 매일 순환: next_tier = (tier % divisions) + 1
+#   · renewal: next_tier==1 진입 시 누적실현 delta로 총투자금 갱신
+#   · 동시 체결: 매도(x>=매도LOC) AND 매수(x<=매수LOC) 같은 날 둘 다 가능
+#   · 매수 = floor(min(총투자금/분할, 예수금)/매수LOC) · 매도 = round(보유×비율)
+# 원장 = 매 거래일 1행. 최근 행(들)은 '예정'(종가 빈칸) → 다음날 실제 종가로 정산.
+# 원장의 누적실현 컬럼이 엔진 cum_realiz_hist와 정렬 (정상 버퍼 시 nan일 없음).
+
+SD_HIST_COLS = ["날짜", "티어", "종가", "σ(%)", "매수LOC", "매도LOC",
+                "매수량", "매도량", "보유량", "평단가", "매도전평단가",
+                "실현손익", "실현손익률(%)", "누적실현", "총투자금",
+                "예수금", "총자산"]
+
+
+def _sd_num(v, default=0.0):
+    """원장 셀 → float. '', '-', None, nan은 default."""
+    try:
+        s = str(v).replace(",", "").strip()
+        if s in ("", "-", "None", "nan", "NaN"):
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def sd_row_is_pending(row) -> bool:
+    """예정 행 여부 = 종가 미확정(빈칸)."""
+    return str(row.get("종가", "")).strip() in ("", "-", "None", "nan")
+
+
+def calc_sd_record_state(rows):
+    """정산된 원장 rows(날짜 오름차순)에서 현재 상태 추출.
+    Returns dict(tier,total_invest,cash,holdings,avg_cost,cum_realized,cum_hist,last_date)
+    또는 None(원장 비었음)."""
+    if not rows:
+        return None
+    last = rows[-1]
+    cum_hist = [_sd_num(r.get("누적실현"), 0.0) for r in rows]
+    return {
+        "tier":         int(_sd_num(last.get("티어"), 0)),
+        "total_invest": _sd_num(last.get("총투자금"), 0.0),
+        "cash":         _sd_num(last.get("예수금"), 0.0),
+        "holdings":     int(_sd_num(last.get("보유량"), 0)),
+        "avg_cost":     _sd_num(last.get("평단가"), 0.0),
+        "cum_realized": _sd_num(last.get("누적실현"), 0.0),
+        "cum_hist":     cum_hist,
+        "last_date":    str(last.get("날짜", "")).strip(),
+    }
+
+
+def calc_sd_order_from_state(state, buy_loc, sell_loc,
+                             divisions, sell_ratio, renewal,
+                             pcr=1.0, lcr=1.0):
+    """원장 상태 + 엔진 룰로 다음 거래일 티어/renewal/주문 수량 계산.
+    (run_stdev_ordersheet의 내일 계산 로직과 동일 산식)"""
+    tier = (state["tier"] % divisions) + 1
+    total_invest = state["total_invest"]
+    cum_hist = state["cum_hist"]
+    cum_realized = state["cum_realized"]
+    # renewal: 티어 1 진입 시 누적실현 delta 반영 (엔진 line 104-108과 동일)
+    if tier == 1 and len(cum_hist) > 0:
+        lookback = (renewal + 1) if len(cum_hist) > 2 * divisions else renewal
+        prev_cum = cum_hist[-lookback] if len(cum_hist) >= lookback else 0.0
+        delta = cum_realized - prev_cum
+        total_invest += delta * (pcr if delta >= 0 else lcr)
+    daily_invest = total_invest / divisions if divisions > 0 else total_invest
+    available = min(daily_invest, max(state["cash"], 0.0))
+    buy_qty = math.floor(available / buy_loc) if buy_loc > 0 else 0
+    buy_qty = max(0, int(buy_qty))
+    sell_qty = (int(round(state["holdings"] * sell_ratio / 100.0))
+                if state["holdings"] > 0 else 0)
+    return {"next_tier": tier, "total_invest": total_invest,
+            "daily_invest": daily_invest,
+            "buy_qty": buy_qty, "sell_qty": sell_qty}
+
+
+def settle_sd_pending_rows(rows, close_by_date):
+    """예정 행(종가 빈칸)을 그날 실제 종가로 체결/미체결 정산 (in-place).
+    엔진 체결 룰 동일: 매도(보유>0 & x>=매도LOC) AND 매수(x<=매수LOC) 동시 가능.
+    수량은 예정 그대로 (재계산 없음). Returns 변경된 인덱스 리스트."""
+    changed = []
+    for idx, row in enumerate(rows):
+        if not sd_row_is_pending(row):
+            continue
+        d = str(row.get("날짜", "")).strip()
+        x = close_by_date.get(d)
+        if x is None:
+            continue                       # 종가 미확정 → 보류
+        x = float(x)
+        prev_hold = int(_sd_num(row.get("보유량"), 0))     # 체결 전 보유
+        prev_avg  = _sd_num(row.get("평단가"), 0.0)
+        prev_cash = _sd_num(row.get("예수금"), 0.0)
+        prev_cum  = _sd_num(row.get("누적실현"), 0.0)
+        buy_loc   = _sd_num(row.get("매수LOC"), 0.0)
+        sell_loc  = _sd_num(row.get("매도LOC"), 0.0)
+        plan_bq   = int(_sd_num(row.get("매수량"), 0))
+        plan_sq   = int(_sd_num(row.get("매도량"), 0))
+        # 체결 조건 (엔진 룰) — 매도/매수 독립 판정 (동시 가능)
+        sell_exec = prev_hold > 0 and sell_loc > 0 and x >= sell_loc
+        buy_exec  = buy_loc > 0 and x <= buy_loc
+        sq = plan_sq if sell_exec else 0
+        bq = plan_bq if buy_exec else 0
+        # 엔진 체결 산식 (line 126-151)
+        sell_amt = x * sq
+        realized = (sell_amt - prev_avg * sq) if sq > 0 else 0.0
+        cum = prev_cum + realized
+        remaining = prev_hold - sq
+        new_hold = remaining + bq
+        if new_hold > 0:
+            avg = ((remaining * prev_avg + x * bq) / new_hold) if bq > 0 else prev_avg
+        else:
+            avg = 0.0
+        cash = prev_cash - x * bq + sell_amt
+        # 기입
+        row["종가"]     = round(x, 4)
+        row["매수량"]   = bq
+        row["매도량"]   = sq
+        row["보유량"]   = new_hold
+        row["평단가"]   = round(avg, 4)
+        row["매도전평단가"] = round(prev_avg, 4) if (sq > 0 and prev_avg > 0) else ""
+        row["실현손익"] = round(realized, 2) if sq > 0 else 0
+        row["실현손익률(%)"] = round((x / prev_avg - 1) * 100, 4) if (sq > 0 and prev_avg > 0) else ""
+        row["누적실현"] = round(cum, 2)
+        # 총투자금·티어는 계획 시점 값 유지 (정산에서 불변)
+        row["예수금"]   = round(cash, 2)
+        row["총자산"]   = round(cash + new_hold * x, 2)
+        changed.append(idx)
+    return changed
+
+
+def build_sd_pending_row(date_str, tier, sigma_next, buy_loc, sell_loc,
+                         buy_qty, sell_qty, total_invest,
+                         holdings, cash, avg_cost, cum_realized,
+                         last_close):
+    """오늘 발송 주문의 '예정' 원장 행 (체결 전 상태 저장, 종가 빈칸)."""
+    return {
+        "날짜": date_str,
+        "티어": int(tier),
+        "종가": "",                                    # 미확정 → 정산 시 기입
+        "σ(%)": round(sigma_next * 100, 4),
+        "매수LOC": round(buy_loc, 4),
+        "매도LOC": round(sell_loc, 4),
+        "매수량": int(buy_qty),                        # 계획 수량
+        "매도량": int(sell_qty),                       # 계획 수량
+        "보유량": int(holdings),                       # 체결 전 보유
+        "평단가": round(avg_cost, 4),
+        "매도전평단가": "",
+        "실현손익": "",
+        "실현손익률(%)": "",
+        "누적실현": round(cum_realized, 2),            # 체결 전 (= 전일 누적)
+        "총투자금": round(total_invest, 2),            # 오늘 renewal 반영값
+        "예수금": round(cash, 2),                      # 체결 전 예수금
+        "총자산": round(cash + holdings * last_close, 2),
+    }

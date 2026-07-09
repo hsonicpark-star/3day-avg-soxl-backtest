@@ -353,12 +353,23 @@ def calc_sd_today_order(ticker: str, os_start: str,
     if res is None:
         return None
 
+    # 확정 종가 맵 (예정 주문 정산용) — hist의 날짜→종가
+    _closes_sd = {}
+    _hist_sd = res.get("hist")
+    try:
+        if _hist_sd is not None and not _hist_sd.empty:
+            for _, _hr in _hist_sd.iterrows():
+                _closes_sd[str(_hr["날짜"])] = float(_hr["종가"])
+    except Exception:
+        _closes_sd = {}
+
     return {
         "ticker":         ticker,
         "last_close":     float(res.get("last_close", 0)),
         "sigma_next":     float(res.get("sigma_next", 0)),
         "next_buy_loc":   float(res.get("next_buy_loc", 0)),
         "next_sell_loc":  float(res.get("next_sell_loc", 0)),
+        "next_tier":      int(res.get("next_tier", 1)),
         "holdings":       int(res.get("holdings", 0)),
         "avg_cost":       float(res.get("avg_cost", 0)),
         "cash":           float(res.get("cash", 0)),
@@ -366,6 +377,7 @@ def calc_sd_today_order(ticker: str, os_start: str,
         "est_sell_qty":   int(res.get("est_sell_qty", 0)),
         "total_invest":   float(res.get("total_invest", capital)),
         "total_asset":    float(res.get("final_asset", 0)),  # 총자산 표시용
+        "closes":         _closes_sd,
     }
 
 
@@ -2055,6 +2067,80 @@ def main():
                 except Exception:
                     pass
 
+                # ══ 원장(매매기록) 기반 주문 계산 — 기록이 진실 ══
+                # 1) 예정 행(종가 빈칸)을 실제 종가로 체결/미체결 정산 (수량 불변, 동시체결)
+                # 2) 정산된 원장 상태(티어/총투자금/보유/현금/누적실현) + 엔진 룰 →
+                #    오늘 주문 수량 계산 (시뮬 재계산 값이 끼어들 틈 없음)
+                _sd_ledger_on = False
+                _ws_hist_sd = None
+                _sd_hist_dates = set()
+                _today_str_sd = datetime.today().strftime("%Y-%m-%d")
+                if shared_gs_url:
+                    try:
+                        from stdev_engine import (
+                            SD_HIST_COLS, settle_sd_pending_rows,
+                            calc_sd_record_state, calc_sd_order_from_state,
+                            build_sd_pending_row)
+                        _sh_sd = client.open_by_url(shared_gs_url)
+                        try:
+                            _ws_hist_sd = _sh_sd.worksheet(f"sd_{tk}_매매기록")
+                        except gspread.exceptions.WorksheetNotFound:
+                            _ws_hist_sd = _sh_sd.add_worksheet(
+                                title=f"sd_{tk}_매매기록", rows=5000, cols=25)
+                            _ws_hist_sd.append_row(SD_HIST_COLS)
+                        _vals_sd = _ws_hist_sd.get_all_values()
+                        if len(_vals_sd) > 1:
+                            _hdr_sd = _vals_sd[0]
+                            _rows_sd = [dict(zip(_hdr_sd, rw)) for rw in _vals_sd[1:]]
+                            _sd_hist_dates = {str(r0.get("날짜", "")).strip() for r0 in _rows_sd}
+                            # 1) 예정 정산 (오늘 이전분만)
+                            _closes_conf_sd = {d: c for d, c in (r.get("closes") or {}).items()
+                                               if d < _today_str_sd}
+                            _chg_sd = settle_sd_pending_rows(_rows_sd, _closes_conf_sd)
+                            _cend_sd = chr(ord('A') + len(_hdr_sd) - 1)
+                            for _ci in _chg_sd:
+                                _ws_hist_sd.update(
+                                    values=[[str(_rows_sd[_ci].get(c, "")) for c in _hdr_sd]],
+                                    range_name=f"A{_ci + 2}:{_cend_sd}{_ci + 2}",
+                                    value_input_option="RAW")
+                                print(f"      🧾 [표준편차/{tk}] {_rows_sd[_ci].get('날짜')} 정산 → "
+                                      f"매수 {_rows_sd[_ci].get('매수량')} / 매도 {_rows_sd[_ci].get('매도량')}")
+                            # 2) 원장 상태 → 오늘 주문 (엔진 룰)
+                            _prev_sd = sorted([r0 for r0 in _rows_sd
+                                               if str(r0.get("날짜", "")).strip() < _today_str_sd],
+                                              key=lambda r0: str(r0.get("날짜", "")))
+                            _st_sd = calc_sd_record_state(_prev_sd)
+                            if _st_sd:
+                                # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
+                                _extra_sd = _sum_adj_between(cfg, _st_sd["last_date"], _today_str_sd)
+                                _st_sd["cash"] += _extra_sd
+                                _o_sd = calc_sd_order_from_state(
+                                    _st_sd, float(r.get("next_buy_loc", 0)),
+                                    float(r.get("next_sell_loc", 0)),
+                                    divisions, sell_ratio, renewal, pcr, lcr)
+                                if (_st_sd["holdings"] != int(r.get("holdings", 0))
+                                        or _o_sd["buy_qty"] != int(r.get("est_buy_qty", 0))
+                                        or _o_sd["sell_qty"] != int(r.get("est_sell_qty", 0))):
+                                    print(f"      📌 [표준편차/{tk}] 원장 기준: "
+                                          f"보유 {r.get('holdings')}→{_st_sd['holdings']} · "
+                                          f"매수 {r.get('est_buy_qty')}→{_o_sd['buy_qty']} · "
+                                          f"매도 {r.get('est_sell_qty')}→{_o_sd['sell_qty']}")
+                                r["holdings"]     = _st_sd["holdings"]
+                                r["cash"]         = round(_st_sd["cash"], 2)
+                                r["avg_cost"]     = round(_st_sd["avg_cost"], 4) if _st_sd["avg_cost"] > 0 else r.get("avg_cost", 0)
+                                r["total_invest"] = round(_o_sd["total_invest"], 2)
+                                r["next_tier"]    = _o_sd["next_tier"]
+                                r["est_buy_qty"]  = _o_sd["buy_qty"]
+                                r["est_sell_qty"] = _o_sd["sell_qty"]
+                                r["_ledger_cum"]  = _st_sd["cum_realized"]
+                                _sd_ledger_on = True
+                        else:
+                            _sd_ledger_on = True
+                            print(f"      🆕 [표준편차/{tk}] 원장 신규 시작 (시뮬 상태 시드)")
+                    except Exception as _led_sd_err:
+                        print(f"      ⚠️ [표준편차/{tk}] 원장 처리 실패 (시뮬 값 발송): {_led_sd_err}")
+                        _sd_ledger_on = False
+
                 # 이상치 감지
                 _issues = sanity_check_sd(r, tk)
                 user_warnings.extend([f"[표준편차/{tk}] {m}" for m in _issues])
@@ -2079,85 +2165,29 @@ def main():
                     write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
                                               _label, status="OK")
 
-                # ── 매매기록 저장 (자동발송 시점, B방식) ──
-                # 원칙: 오늘 발송된 매수/매도 수량이 매매기록에 저장되어 유지됨.
-                # 나중에 웹앱에서 재시뮬해도 오늘 종가 반영값으로 덮어쓰지 않음.
-                # → 다음 매도 계산 시 실제 체결 수량 기준 유지
-                if shared_gs_url and ok and (r.get("est_buy_qty", 0) > 0 or r.get("est_sell_qty", 0) > 0):
+                # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태, 종가 빈칸) ──
+                # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산. 수량 불변 (B방식).
+                if _ws_hist_sd is not None and ok and _sd_ledger_on \
+                        and (r.get("est_buy_qty", 0) > 0 or r.get("est_sell_qty", 0) > 0) \
+                        and _today_str_sd not in _sd_hist_dates:
                     try:
-                        _hist_sheet_sd = f"sd_{tk}_매매기록"
-                        _today_str_sd = datetime.today().strftime("%Y-%m-%d")
-                        _sh_hist_sd = client.open_by_url(shared_gs_url)
-                        _hist_cols_sd = ["날짜", "티어", "종가", "σ(%)", "매수LOC", "매도LOC",
-                                          "매수량", "매도량", "보유량", "평단가",
-                                          "매도전평단가", "실현손익", "실현손익률(%)",
-                                          "누적실현", "총투자금", "예수금", "총자산"]
-                        try:
-                            _ws_hist_sd = _sh_hist_sd.worksheet(_hist_sheet_sd)
-                            _existing_vals_sd = _ws_hist_sd.get_all_values()
-                            _existing_dates_sd = ({row[0] for row in _existing_vals_sd[1:]}
-                                                    if len(_existing_vals_sd) > 1 else set())
-                        except gspread.exceptions.WorksheetNotFound:
-                            _ws_hist_sd = _sh_hist_sd.add_worksheet(title=_hist_sheet_sd, rows=5000, cols=25)
-                            _ws_hist_sd.append_row(_hist_cols_sd)
-                            _existing_dates_sd = set()
-                        if _today_str_sd not in _existing_dates_sd:
-                            _bq_sd = int(r.get("est_buy_qty", 0))
-                            _sq_sd = int(r.get("est_sell_qty", 0))
-                            _holdings_sd = int(r.get("holdings", 0))
-                            _cash_sd = float(r.get("cash", 0))
-                            _avg_cost_sd = float(r.get("avg_cost", 0))
-                            _total_invest_sd = float(r.get("total_invest", 0))
-                            _tier_sd = int(r.get("next_tier", 1))
-                            _last_close_sd = float(r.get("last_close", 0))
-                            _sigma_pct_sd = round(float(r.get("sigma_next", 0)) * 100, 4)
-                            _nbl_sd = float(r.get("next_buy_loc", 0))
-                            _nsl_sd = float(r.get("next_sell_loc", 0))
-                            if _bq_sd > 0:
-                                # 매수 예정 저장
-                                _new_holdings_sd = _holdings_sd + _bq_sd
-                                _new_cash_sd = _cash_sd - _bq_sd * _nbl_sd
-                                _new_asset_sd = _new_cash_sd + _new_holdings_sd * _nbl_sd
-                                # 매수 후 평단가 = (기존 * 기존수량 + 신규 * 신규수량) / 총수량
-                                if _new_holdings_sd > 0:
-                                    _new_avg_sd = round(
-                                        (_avg_cost_sd * _holdings_sd + _nbl_sd * _bq_sd) / _new_holdings_sd, 4
-                                    )
-                                else:
-                                    _new_avg_sd = 0
-                                _new_row_sd = [
-                                    _today_str_sd, _tier_sd, round(_last_close_sd, 4),
-                                    _sigma_pct_sd, round(_nbl_sd, 4), round(_nsl_sd, 4),
-                                    _bq_sd, 0, _new_holdings_sd, _new_avg_sd,
-                                    "-", 0, "-", "-",
-                                    round(_total_invest_sd, 2),
-                                    round(_new_cash_sd, 2),
-                                    round(_new_asset_sd, 2),
-                                ]
-                                _ws_hist_sd.append_row([str(v) for v in _new_row_sd], value_input_option="RAW")
-                                print(f"      💾 [표준편차/{tk}] 매매기록 저장 (매수 예정 {_bq_sd}주)")
-                            elif _sq_sd > 0 and _holdings_sd > 0:
-                                # 매도 예정 저장
-                                _new_holdings_sd2 = _holdings_sd - _sq_sd
-                                _new_cash_sd2 = _cash_sd + _sq_sd * _nsl_sd
-                                _new_asset_sd2 = _new_cash_sd2 + _new_holdings_sd2 * _nsl_sd
-                                _pnl_amt_sd = round((_nsl_sd - _avg_cost_sd) * _sq_sd, 2) if _avg_cost_sd > 0 else 0
-                                _pnl_pct_sd = round((_nsl_sd / _avg_cost_sd - 1) * 100, 4) if _avg_cost_sd > 0 else 0
-                                _new_row_sd = [
-                                    _today_str_sd, _tier_sd, round(_last_close_sd, 4),
-                                    _sigma_pct_sd, round(_nbl_sd, 4), round(_nsl_sd, 4),
-                                    0, _sq_sd, _new_holdings_sd2,
-                                    round(_avg_cost_sd, 4) if _new_holdings_sd2 > 0 else 0,
-                                    round(_avg_cost_sd, 4),  # 매도전평단가
-                                    _pnl_amt_sd, _pnl_pct_sd, "-",
-                                    round(_total_invest_sd, 2),
-                                    round(_new_cash_sd2, 2),
-                                    round(_new_asset_sd2, 2),
-                                ]
-                                _ws_hist_sd.append_row([str(v) for v in _new_row_sd], value_input_option="RAW")
-                                print(f"      💾 [표준편차/{tk}] 매매기록 저장 (매도 예정 {_sq_sd}주)")
+                        from stdev_engine import SD_HIST_COLS, build_sd_pending_row
+                        _prow_sd = build_sd_pending_row(
+                            _today_str_sd, int(r.get("next_tier", 1)),
+                            float(r.get("sigma_next", 0)),
+                            float(r.get("next_buy_loc", 0)), float(r.get("next_sell_loc", 0)),
+                            int(r.get("est_buy_qty", 0)), int(r.get("est_sell_qty", 0)),
+                            float(r.get("total_invest", 0)),
+                            int(r.get("holdings", 0)), float(r.get("cash", 0)),
+                            float(r.get("avg_cost", 0)), float(r.get("_ledger_cum", 0)),
+                            float(r.get("last_close", 0)))
+                        _ws_hist_sd.append_row(
+                            [str(_prow_sd.get(c, "")) for c in SD_HIST_COLS],
+                            value_input_option="RAW")
+                        print(f"      💾 [표준편차/{tk}] 원장 예정 저장 "
+                              f"(매수 {r.get('est_buy_qty', 0)} / 매도 {r.get('est_sell_qty', 0)})")
                     except Exception as _hist_err_sd:
-                        print(f"      ⚠️ [표준편차/{tk}] 매매기록 저장 실패: {_hist_err_sd}")
+                        print(f"      ⚠️ [표준편차/{tk}] 원장 예정 저장 실패: {_hist_err_sd}")
         else:
             print(f"  ⏭️  {username} [표준편차]: 미설정 → 건너뜀")
             skip_count += 1
