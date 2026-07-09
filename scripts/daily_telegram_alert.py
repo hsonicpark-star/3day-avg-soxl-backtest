@@ -1836,6 +1836,34 @@ def main():
                 except Exception:
                     pass
 
+                # ── 매도 수량 기준 = 매매기록의 최근 보유주수 (기록 = 진실) ──
+                # 시뮬 보유주수는 파라미터 변경·데이터 갱신으로 과거 수량까지
+                # 재계산되어 실제 체결 누적과 어긋날 수 있음 → 기록 기준으로 매도
+                if shared_gs_url:
+                    try:
+                        _sh_rec = client.open_by_url(shared_gs_url)
+                        _ws_rec = _sh_rec.worksheet(f"{tk}_매매기록")
+                        _vals_rec = _ws_rec.get_all_values()
+                        if len(_vals_rec) > 1:
+                            _hdr_rec = _vals_rec[0]
+                            _i_date_rec = _hdr_rec.index("날짜")
+                            _i_sh_rec = _hdr_rec.index("보유주수")
+                            _today_rec = datetime.today().strftime("%Y-%m-%d")
+                            _prev_rows_rec = [rw for rw in _vals_rec[1:]
+                                              if rw[_i_date_rec]
+                                              and str(rw[_i_date_rec]) < _today_rec]
+                            if _prev_rows_rec:
+                                _prev_rows_rec.sort(key=lambda rw: str(rw[_i_date_rec]))
+                                _rec_sh = int(float(_prev_rows_rec[-1][_i_sh_rec]))
+                                if _rec_sh != int(res.get("shares", 0)):
+                                    print(f"    📌 [종가평균/{tk}] 매도 기준 보유주수: "
+                                          f"시뮬 {res.get('shares')}주 → 기록 {_rec_sh}주 적용")
+                                res["shares"] = _rec_sh
+                                res["sell_qty"] = int(math.floor(_rec_sh * sell_ratio / 100.0))
+                    except Exception as _rec_err:
+                        print(f"    ⚠️ [종가평균/{tk}] 매매기록 보유주수 조회 실패 "
+                              f"(시뮬 값 사용): {_rec_err}")
+
                 # 이상치 감지
                 _issues = sanity_check_avg(res, tk)
                 user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])

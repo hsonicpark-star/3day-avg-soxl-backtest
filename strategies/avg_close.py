@@ -1298,9 +1298,32 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
 
     today_orders = []
+    # ── 매도 수량 기준 = 매매기록의 최근 보유주수 (기록 = 진실) ──
+    # 시뮬 보유주수는 파라미터 변경·데이터 갱신으로 과거 수량까지 재계산되어
+    # 실제 체결 누적(매매기록)과 어긋날 수 있음 → 매도는 기록 기준으로 계산
+    _rec_shares = None
+    try:
+        _hist_rec = _load_ticker_daily_history(tk)
+        if not _hist_rec.empty and "보유주수" in _hist_rec.columns:
+            _today_rec = datetime.today().strftime("%Y-%m-%d")
+            _prev_rec = _hist_rec[_hist_rec["날짜"].astype(str) < _today_rec]
+            if not _prev_rec.empty:
+                _prev_rec = _prev_rec.sort_values("날짜")
+                _rs = pd.to_numeric(_prev_rec.iloc[-1]["보유주수"], errors="coerce")
+                if pd.notna(_rs):
+                    _rec_shares = int(_rs)
+    except Exception:
+        _rec_shares = None
+
+    _shares_for_sell = _rec_shares if _rec_shares is not None else int(res["shares"])
+    if _rec_shares is not None and _rec_shares != int(res["shares"]):
+        st.warning(f"⚠️ 시뮬 보유({int(res['shares']):,}주) ≠ 매매기록 보유({_rec_shares:,}주) — "
+                   f"매도 주문은 **매매기록 기준 {_rec_shares:,}주**로 계산합니다. "
+                   f"실제 계좌 보유와 다르면 매매기록 시트를 수정하세요.")
+
     # 매도: 보유량 + 매도수량 둘 다 > 0일 때만 표시 (0주 노이즈 제거)
-    if res["shares"] > 0:
-        sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+    if _shares_for_sell > 0:
+        sell_qty = math.floor(_shares_for_sell * (_sell_ratio / 100.0))
         if sell_qty > 0:
             sell_tgt = res["next_sell_target"]
             today_orders.append({
@@ -1311,7 +1334,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 "전일종가 대비": f"{(sell_tgt/lp-1)*100:+.2f}%" if lp > 0 else "-",
                 "비고": (f"평단 ${res['avg_cost']:.2f} 대비 "
                          f"{(sell_tgt/res['avg_cost']-1)*100:+.2f}%  |  "
-                         f"보유 {res['shares']:,}주 × {_sell_ratio:.0f}%"),
+                         f"보유 {_shares_for_sell:,}주 × {_sell_ratio:.0f}%"),
             })
     buy_p = res["next_buy_primary"]
     qty_p = res["pending_buys"][0]["수량"]
