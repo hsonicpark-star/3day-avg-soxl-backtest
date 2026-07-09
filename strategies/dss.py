@@ -2070,10 +2070,11 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
         _can_buy = _os['n_pos'] < _os['cur_divisions']
 
-        # ── 두 가지 주문 방식 탭 ──
-        _order_tab1, _order_tab2 = st.tabs([
+        # ── 세 가지 주문 방식 탭 ──
+        _order_tab1, _order_tab2, _order_tab3 = st.tabs([
             "📋 매일 주문 (직접 LOC)",
             "📅 예약 주문 (세팅 후 대기)",
+            "🔄 퉁치기 주문 (자전거래 회피)",
         ])
 
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2207,6 +2208,78 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 st.info("💡 **예약 주문 방식**: 매도 LOC를 예약 세팅해두면 기한 내 목표가 도달 시 자동 체결됩니다.\n\n"
                         "⚠️ **예약기한 만료 시** 미체결된 예약은 취소하고, 해당 시드를 **MOC(시장가 종가) 매도**로 전환하세요.\n\n"
                         "📌 **매수는 매일 갱신** — 전일종가 기준이므로 매일 새로 주문을 넣어야 합니다.")
+
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        # 탭 3: 퉁치기 주문 — 자전거래 거부 증권사용 상계 주문
+        # (질풍님 퉁치기 시트 로직 — dss_engine.build_tungchigi_orders)
+        # ━━━━━━━━━━━━━━━━━━━━━━━━━━
+        with _order_tab3:
+            st.caption("일부 증권사는 **LOC매도 가격 < LOC매수 가격** 이면 자전거래로 주문을 거부합니다. "
+                       "퉁치기는 매수/매도를 가격 구간별로 상계하여 **어떤 종가에서도 순 체결 결과가 "
+                       "매일 주문과 완전히 동일**하면서 가격 교차가 없는 주문으로 변환합니다.")
+
+            from dss_engine import build_order_rows as _bor, build_tungchigi_orders as _bto
+            _raw_orders = _bor(_os)
+
+            if not _raw_orders:
+                st.info("오늘 주문이 없습니다.")
+            else:
+                # 교차 여부 진단 (LOC매도 최저가 < LOC매수 최고가 → 거부 위험)
+                _sell_locs = [o[2] for o in _raw_orders
+                              if o[0] == "매도" and o[1] == "LOC" and o[2]]
+                _buy_locs = [o[2] for o in _raw_orders
+                             if o[0] == "매수" and o[1] == "LOC" and o[2]]
+                _has_cross = bool(_sell_locs and _buy_locs
+                                  and min(_sell_locs) < max(_buy_locs))
+
+                _tung = _bto(_raw_orders)
+
+                if _has_cross:
+                    st.warning(f"⚠️ 매일 주문에 가격 교차 있음 "
+                               f"(매도 최저 ${min(_sell_locs):,.2f} < 매수 ${max(_buy_locs):,.2f}) "
+                               f"— 자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
+                else:
+                    st.success("✅ 매일 주문에 가격 교차 없음 — 어느 증권사든 매일 주문 그대로 사용 가능합니다. "
+                               "(아래 퉁치기 결과도 동일한 효과)")
+
+                if _tung:
+                    _tung_rows = []
+                    for _t in _tung:
+                        _is_moc = (_t["방법"] == "MOC")
+                        _tung_rows.append({
+                            "구분": ("🔴 MOC매도" if _is_moc else
+                                     ("LOC매도" if _t["구분"] == "매도" else "LOC매수")),
+                            "주문가": "시장가(종가)" if _is_moc else f"${_t['가격']:,.2f}",
+                            "수량": f"{_t['수량']:,}주",
+                            "예상금액": ("-" if _is_moc else
+                                        f"${_t['가격'] * _t['수량']:,.2f}"),
+                        })
+
+                    def _style_tung(row):
+                        s = [""] * len(row)
+                        if "구분" in row.index:
+                            ix = list(row.index).index("구분")
+                            val = row["구분"]
+                            if "MOC" in val:
+                                s[ix] = "color: #C62828; font-weight: bold"
+                            elif "매도" in val:
+                                s[ix] = "color: #1565C0; font-weight: bold"
+                            elif "매수" in val:
+                                s[ix] = "color: #E65100; font-weight: bold"
+                        return s
+
+                    st.dataframe(
+                        pd.DataFrame(_tung_rows).style.apply(_style_tung, axis=1),
+                        use_container_width=True, hide_index=True,
+                        height=38 + 35 * len(_tung_rows),
+                    )
+                    st.info("💡 **퉁치기 주문 방식**: 위 주문을 그대로 넣으면 매일 주문과 "
+                            "**정확히 같은 순 체결 결과**를 얻습니다 (상계된 만큼 수수료도 절약). "
+                            "매수/매도 가격이 교차하지 않아 자전거래로 거부되지 않습니다.\n\n"
+                            "📌 가격 구간별 상계 방식이므로, 표시된 수량·가격이 매일 주문과 "
+                            "달라 보여도 정상입니다.")
+                else:
+                    st.info("퉁치기 결과 주문이 없습니다 (완전 상계).")
 
         # ── 현재 보유 현황 ──
         st.divider()

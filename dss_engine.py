@@ -113,6 +113,136 @@ def build_order_rows(os_result: dict, today=None) -> list:
 
 
 # ──────────────────────────────────────────────
+# 퉁치기 주문 변환 (자전거래 회피 — 질풍님 시트 로직 이식)
+# ──────────────────────────────────────────────
+
+def build_tungchigi_orders(orders: list) -> list:
+    """LOC 매수/매도 주문을 가격 레벨별로 상계(netting)한 주문으로 변환.
+
+    배경: 일부 증권사는 LOC매도가 < LOC매수가(교차) 주문을 자전거래로
+    거부한다. 퉁치기는 어떤 종가에서도 원래 주문 조합과 '순 체결량'이
+    완전히 동일하면서 매수/매도 가격이 교차하지 않는 주문 세트로 변환.
+
+    Args:
+        orders: [[구분, 방법, 가격, 수량], ...]
+            구분: '매수' | '매도',  방법: 'LOC' | 'MOC'
+            MOC 매도는 가격 무관 (내부적으로 0.01로 치환해 최우선 상계)
+
+    Returns:
+        [{'구분','방법','가격','수량'}, ...] — 가격 내림차순.
+        MOC 매도는 {'방법':'MOC','가격':0.01}로 표시됨 (시장가 종가 매도).
+        주문 없으면 빈 리스트.
+    """
+    valid = [o for o in orders
+             if o and len(o) >= 4 and float(o[3] or 0) > 0
+             and (str(o[1]).upper() == 'MOC' or float(o[2] or 0) > 0)]
+    if not valid:
+        return []
+
+    n_rows = max(100, len(valid) * 4)
+    g = np.zeros(n_rows)          # 매수 가격
+    h = np.zeros(n_rows)          # 매수 수량
+    i_p = np.zeros(n_rows)        # 매도 가격
+    j = np.zeros(n_rows)          # 매도 수량
+    k = np.array([False] * n_rows)  # MOC 플래그
+
+    for idx, o in enumerate(valid):
+        side, method, price, qty = str(o[0]), str(o[1]).upper(), float(o[2] or 0), float(o[3])
+        if side == '매수':
+            g[idx], h[idx] = round(price, 2), qty
+        else:
+            i_p[idx], j[idx] = round(price, 2), qty
+            if method == 'MOC':
+                k[idx] = True
+
+    # 유니크 가격 병합 (MOC 매도는 0.01로 치환 — 어떤 가격보다 우선 상계)
+    u_g = np.unique(g[g > 0])
+    adj_sell = np.where(k, 0.01, i_p)
+    u_i = np.unique(adj_sell[adj_sell > 0])
+    m_prices = sorted(np.concatenate([u_g, u_i]), reverse=True)
+
+    m_col = np.full(n_rows, np.nan)
+    for idx, val in enumerate(m_prices):
+        m_col[idx] = val
+
+    # N(매수합) / O(매도합, 음수)
+    n_col, o_col = np.zeros(n_rows), np.zeros(n_rows)
+    for idx in range(n_rows):
+        if pd.isna(m_col[idx]):
+            continue
+        count_m = list(m_col[:idx + 1]).count(m_col[idx])
+        if count_m > 1:
+            n_col[idx] = 0
+        else:
+            n_col[idx] = h[g == m_col[idx]].sum()
+        if n_col[idx] > 0:
+            o_col[idx] = 0
+        elif m_col[idx] == 0.01:
+            o_col[idx] = -j[k].sum()
+        else:
+            o_col[idx] = -j[(~k) & (i_p == m_col[idx])].sum()
+
+    # P(매수 누적-지연) / Q(매도 역누적) / R(상계 합산)
+    p_col = np.zeros(n_rows)
+    p_col[1:] = np.cumsum(n_col)[:-1]
+    q_col = np.zeros(n_rows)
+    q_col[:n_rows - 1] = np.cumsum(o_col[:n_rows - 1][::-1])[::-1]
+    r_col = p_col + q_col
+
+    # S: 폭포수 상계 → 구간별 순수량
+    s_col = np.zeros(n_rows)
+    for idx in range(n_rows):
+        curr = r_col[idx]
+        prev = r_col[idx - 1] if idx > 0 else 0
+        nxt = r_col[idx + 1] if idx < n_rows - 1 else 0
+        if curr == 0:
+            s_col[idx] = 0
+        elif curr < 0:
+            s_col[idx] = (curr - nxt) if nxt < 0 else curr
+        else:
+            s_col[idx] = curr if prev < 0 else (curr - prev)
+
+    # Y/Z: 가격 조정 (교차 방지용 ±0.01)
+    y_raw, z_raw = [], []
+    for idx in range(n_rows - 1):
+        mv = m_col[idx]
+        if pd.isna(mv):
+            continue
+        y_raw.append(mv - 0.01 if o_col[idx] < 0 else mv)
+        z_raw.append(mv + 0.01 if n_col[idx] > 0 else mv)
+    y_sorted = sorted(y_raw, reverse=True)
+    z_sorted = sorted(z_raw, reverse=True)
+    y_final = np.full(n_rows, np.nan)
+    z_final = np.full(n_rows, np.nan)
+    for idx, val in enumerate(z_sorted):
+        z_final[idx] = val
+    for idx, val in enumerate(y_sorted):
+        if idx + 1 < n_rows:
+            y_final[idx + 1] = val
+
+    # 최종 집계
+    results = []
+    for idx in range(n_rows):
+        s = s_col[idx]
+        if s == 0:
+            continue
+        side = "매수" if s > 0 else "매도"
+        price = y_final[idx] if s > 0 else z_final[idx]
+        if pd.isna(price) or price <= 0:
+            continue
+        method = "MOC" if (price == 0.01 and side == "매도") else "LOC"
+        results.append({'구분': side, '방법': method,
+                        '가격': round(float(price), 2), '수량': int(round(abs(s)))})
+
+    if not results:
+        return []
+    df_res = pd.DataFrame(results)
+    df_res = (df_res.groupby(['구분', '방법', '가격'])['수량'].sum()
+              .reset_index().sort_values('가격', ascending=False))
+    return df_res.to_dict('records')
+
+
+# ──────────────────────────────────────────────
 # 1. 주간 RSI 계산 (KB증권 단순평균 방식, 14주)
 # ──────────────────────────────────────────────
 
