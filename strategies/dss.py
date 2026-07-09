@@ -2218,7 +2218,17 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                        "퉁치기는 매수/매도를 가격 구간별로 상계하여 **어떤 종가에서도 순 체결 결과가 "
                        "매일 주문과 완전히 동일**하면서 가격 교차가 없는 주문으로 변환합니다.")
 
-            from dss_engine import build_order_rows as _bor, build_tungchigi_orders as _bto
+            # Streamlit 소프트 리로드 시 sys.modules의 구버전 dss_engine이
+            # 남아 ImportError 나는 경우 → reload 후 재시도
+            try:
+                from dss_engine import build_order_rows as _bor, \
+                    build_tungchigi_orders as _bto
+            except ImportError:
+                import importlib
+                import dss_engine as _de
+                importlib.reload(_de)
+                _bor = _de.build_order_rows
+                _bto = _de.build_tungchigi_orders
             _raw_orders = _bor(_os)
 
             if not _raw_orders:
