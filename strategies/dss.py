@@ -2239,23 +2239,18 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             if not _raw_orders:
                 st.info("오늘 주문이 없습니다.")
             else:
-                # 교차 여부 진단 (LOC매도 최저가 < LOC매수 최고가 → 거부 위험)
-                _sell_locs = [o[2] for o in _raw_orders
-                              if o[0] == "매도" and o[1] == "LOC" and o[2]]
-                _buy_locs = [o[2] for o in _raw_orders
-                             if o[0] == "매수" and o[1] == "LOC" and o[2]]
-                _has_cross = bool(_sell_locs and _buy_locs
-                                  and min(_sell_locs) < max(_buy_locs))
-
+                # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가'
+                # (LOC 교차만 보면 MOC매도+LOC매수 같은 예외 조합을 놓침)
+                from dss_engine import orders_differ as _od
                 _tung = _bto(_raw_orders)
+                _differs = bool(_tung) and _od(_raw_orders, _tung)
 
-                if _has_cross:
-                    st.warning(f"⚠️ 매일 주문에 가격 교차 있음 "
-                               f"(매도 최저 ${min(_sell_locs):,.2f} < 매수 ${max(_buy_locs):,.2f}) "
-                               f"— 자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
+                if _differs:
+                    st.warning("⚠️ 매일 주문에 매수/매도 상계 구간 있음 (자전거래 위험) "
+                               "— 자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
                 else:
-                    st.success("✅ 매일 주문에 가격 교차 없음 — 어느 증권사든 매일 주문 그대로 사용 가능합니다. "
-                               "(아래 퉁치기 결과도 동일한 효과)")
+                    st.success("✅ 매일 주문과 퉁치기 결과가 동일 — 어느 증권사든 "
+                               "매일 주문 그대로 사용 가능합니다.")
 
                 if _tung:
                     _tung_rows = []

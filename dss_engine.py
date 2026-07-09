@@ -244,12 +244,43 @@ def build_tungchigi_orders(orders: list) -> list:
 
 def has_price_cross(orders: list) -> bool:
     """주문 리스트에 LOC매도가 < LOC매수가 교차(자전거래 위험)가 있는지.
-    orders: [[구분, 방법, 가격, 수량], ...] (build_order_rows 출력 형식)"""
+    orders: [[구분, 방법, 가격, 수량], ...] (build_order_rows 출력 형식)
+    NOTE: LOC끼리만 비교 — MOC 포함 케이스는 orders_differ()로 판단할 것."""
     sell_locs = [float(o[2]) for o in orders
                  if o[0] == "매도" and str(o[1]).upper() == "LOC" and o[2]]
     buy_locs = [float(o[2]) for o in orders
                 if o[0] == "매수" and str(o[1]).upper() == "LOC" and o[2]]
     return bool(sell_locs and buy_locs and min(sell_locs) < max(buy_locs))
+
+
+def orders_differ(raw_orders: list, tung_orders: list) -> bool:
+    """원 주문과 퉁치기 결과가 실질적으로 다른지 비교.
+
+    '퉁치기 안내가 필요한가'의 판단 기준. LOC 교차 여부만으로 판단하면
+    MOC매도+LOC매수 같은 예외 조합을 놓치므로, 정규화한 주문 집합을
+    직접 비교한다 (같으면 상계 발생 없음 → 안내 불필요).
+
+    Args:
+        raw_orders: [[구분, 방법, 가격, 수량], ...] (build_order_rows 형식)
+        tung_orders: [{'구분','방법','가격','수량'}, ...] (build_tungchigi_orders 형식)
+    """
+    def _normalize(items):
+        agg = {}
+        for o in items:
+            if isinstance(o, dict):
+                side, method, price, qty = o["구분"], o["방법"], o["가격"], o["수량"]
+            else:
+                side, method, price, qty = o[0], o[1], o[2], o[3]
+            method = str(method).upper()
+            # MOC는 가격 무관(빈 문자열/0.01 혼재) → 0.01로 통일
+            price = 0.01 if method == "MOC" else round(float(price or 0), 2)
+            qty = int(round(float(qty or 0)))
+            if qty <= 0:
+                continue
+            key = (str(side), method, price)
+            agg[key] = agg.get(key, 0) + qty
+        return sorted(agg.items())
+    return _normalize(raw_orders) != _normalize(tung_orders)
 
 
 def build_order_rows_tungchigi(os_result: dict, today=None) -> list:

@@ -630,25 +630,25 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
         lines.append(f"── 오늘 새로 예약 ──")
         lines.extend(_reserve_lines)
 
-    # ── 퉁치기 주문 (가격 교차 = 자전거래 위험이 있는 날에만 표시) ──
-    # 일부 증권사는 LOC매도가 < LOC매수가 교차를 거부 → 상계 주문 안내
+    # ── 퉁치기 주문 (원 주문과 퉁치기 결과가 다른 날에만 표시) ──
+    # 판단 기준: LOC 교차 여부가 아니라 '결과가 실제로 달라지는가'.
+    # MOC매도+LOC매수 등 예외 조합도 빠짐없이 커버 (상계 발생 = 안내 필요)
     try:
         from dss_engine import (build_order_rows, build_tungchigi_orders,
-                                has_price_cross)
+                                orders_differ)
         _raw = build_order_rows(_o)
-        if has_price_cross(_raw):
-            _tung = build_tungchigi_orders(_raw)
-            if _tung:
-                lines.append(f"")
-                lines.append(f"── 🔄 퉁치기 주문 (자전거래 거부 증권사용) ──")
-                for _t in _tung:
-                    if _t["방법"] == "MOC":
-                        lines.append(f" 🔴 MOC매도: 시장가 × {_t['수량']}주")
-                    elif _t["구분"] == "매도":
-                        lines.append(f" 📈 LOC매도: ${_t['가격']:,.2f} × {_t['수량']}주")
-                    else:
-                        lines.append(f" 📉 LOC매수: ${_t['가격']:,.2f} × {_t['수량']}주")
-                lines.append(f" ※ 순 체결 결과는 위 주문과 동일 (교차 제거)")
+        _tung = build_tungchigi_orders(_raw)
+        if _tung and orders_differ(_raw, _tung):
+            lines.append(f"")
+            lines.append(f"── 🔄 퉁치기 주문 (자전거래 거부 증권사용) ──")
+            for _t in _tung:
+                if _t["방법"] == "MOC":
+                    lines.append(f" 🔴 MOC매도: 시장가 × {_t['수량']}주")
+                elif _t["구분"] == "매도":
+                    lines.append(f" 📈 LOC매도: ${_t['가격']:,.2f} × {_t['수량']}주")
+                else:
+                    lines.append(f" 📉 LOC매수: ${_t['가격']:,.2f} × {_t['수량']}주")
+            lines.append(f" ※ 순 체결 결과는 위 주문과 동일 (자전거래 회피)")
     except Exception:
         pass
 
