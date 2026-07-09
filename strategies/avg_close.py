@@ -1313,15 +1313,21 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         })
     buy_p = res["next_buy_primary"]
     qty_p = res["pending_buys"][0]["수량"]
-    today_orders.append({
-        "구분": "매수", "티커": tk,
-        "LOC 기준가": f"${buy_p:,.2f}",
-        "1회매수금": f"${res['current_asset'] / _divisions:,.2f}",
-        "예상수량": f"{qty_p:,}주",
-        "예상금액": f"${qty_p * buy_p:,.2f}",
-        "전일종가 대비": f"{(buy_p/lp-1)*100:+.2f}%" if lp > 0 else "-",
-        "비고": res["pending_buys"][0]["비고"],
-    })
+    # 매수 수량 0 이하면 주문 표시 안 함 (현금 부족 → 실행 불가 주문 노이즈 제거)
+    if qty_p > 0:
+        today_orders.append({
+            "구분": "매수", "티커": tk,
+            "LOC 기준가": f"${buy_p:,.2f}",
+            "1회매수금": f"${res['current_asset'] / _divisions:,.2f}",
+            "예상수량": f"{qty_p:,}주",
+            "예상금액": f"${qty_p * buy_p:,.2f}",
+            "전일종가 대비": f"{(buy_p/lp-1)*100:+.2f}%" if lp > 0 else "-",
+            "비고": res["pending_buys"][0]["비고"],
+        })
+
+    # 주문 0건이면 안내
+    if not today_orders:
+        st.info(f"💤 오늘은 매수/매도 주문 없음 (매수 대기 or 현금 부족)")
 
     def _style_gubun(row):
         s = [""] * len(row)
