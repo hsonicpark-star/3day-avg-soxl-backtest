@@ -209,7 +209,8 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                             _buy_p_tx = float(res.get("next_buy_primary", 0))
                             if _buy_p_tx > 0 and _divisions > 0:
                                 _chunk_tx = res.get("current_asset", 0) / _divisions
-                                _qty_tx = int(math.floor(min(_chunk_tx, res["cash"]) / _buy_p_tx + 1e-9))
+                                # 조정으로 현금이 음수면 매수 불가 → 0으로 클램프 (음수 수량 방지)
+                                _qty_tx = int(math.floor(max(0.0, min(_chunk_tx, res["cash"])) / _buy_p_tx + 1e-9))
                                 if "pending_buys" in res and res["pending_buys"]:
                                     res["pending_buys"][0]["수량"] = _qty_tx
                                     res["pending_buys"][0]["금액"] = _qty_tx * _buy_p_tx
@@ -275,16 +276,18 @@ def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
     ws.batch_clear(["L4:O13"])
 
     rows = []
-    # 매수 LOC
+    # 매수 LOC (수량 0 이하 = 현금 부족 → 주문 제외)
     buy_tgt = res["next_buy_primary"]
     buy_qty = res["pending_buys"][0]["수량"]
-    rows.append(["매수", "LOC", round(buy_tgt, 2), buy_qty])
+    if int(buy_qty) > 0:
+        rows.append(["매수", "LOC", round(buy_tgt, 2), int(buy_qty)])
 
     # 매도 LOC (보유 시에만)
     if res["shares"] > 0:
         sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
         sell_tgt = res["next_sell_target"]
-        rows.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
+        if sell_qty > 0:
+            rows.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
 
     # 퉁치기 전송 (자전거래 거부 증권사용 — 순 체결 결과는 원 주문과 동일)
     if use_tungchigi and rows:
@@ -1192,7 +1195,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _div_re = int(res.get("divisions", _divisions)) if "divisions" in res else _divisions
             if _buy_p_re > 0 and _div_re > 0:
                 _chunk_re = res["current_asset"] / _div_re
-                _qty_re = int(math.floor(min(_chunk_re, res["cash"]) / _buy_p_re + 1e-9))
+                # 조정으로 현금이 음수면 매수 불가 → 0으로 클램프 (음수 수량 방지)
+                _qty_re = int(math.floor(max(0.0, min(_chunk_re, res["cash"])) / _buy_p_re + 1e-9))
                 if "pending_buys" in res and res["pending_buys"]:
                     res["pending_buys"][0]["수량"] = _qty_re
                     res["pending_buys"][0]["금액"] = _qty_re * _buy_p_re
@@ -1327,37 +1331,49 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "color: #C62828; font-weight: bold" if row["구분"] == "매수" else ""
         return s
 
-    st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
-                 use_container_width=True, hide_index=True,
-                 height=38 + 35 * len(today_orders))
+    _ord_tab1_avg, _ord_tab2_avg = st.tabs(["📋 매일 주문", "🔄 퉁치기 주문 (자전거래 회피)"])
+    with _ord_tab1_avg:
+        st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
+                     use_container_width=True, hide_index=True,
+                     height=38 + 35 * len(today_orders))
 
-    # ── 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용) ──
-    try:
+    with _ord_tab2_avg:
+        # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)
         try:
-            from dss_engine import build_tungchigi_orders as _bto_avg, \
-                orders_differ as _od_avg
-        except ImportError:
-            import importlib, dss_engine as _de
-            _de = importlib.reload(_de)
-            _bto_avg, _od_avg = _de.build_tungchigi_orders, _de.orders_differ
-        _raw_avg = [["매수", "LOC", round(buy_p, 2), qty_p]]
-        if res["shares"] > 0:
-            _raw_avg.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
-        _tng_avg = _bto_avg(_raw_avg)
-        if _tng_avg and _od_avg(_raw_avg, _tng_avg):
-            st.warning("⚠️ 위 주문에 매수/매도 상계 구간이 있습니다 (자전거래 위험) — "
-                       "자전거래를 거부하는 증권사는 아래 퉁치기 주문을 사용하세요. "
-                       "(순 체결 결과는 원 주문과 동일)")
-            _tng_rows_avg = [{
-                "구분": ("🔴 MOC매도" if t["방법"] == "MOC" else
-                         ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
-                "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
-                "수량": f"{t['수량']:,}주",
-            } for t in _tng_avg]
-            st.dataframe(pd.DataFrame(_tng_rows_avg), use_container_width=True,
-                         hide_index=True, height=38 + 35 * len(_tng_rows_avg))
-    except Exception:
-        pass
+            try:
+                from dss_engine import build_tungchigi_orders as _bto_avg, \
+                    orders_differ as _od_avg
+            except ImportError:
+                import importlib, dss_engine as _de
+                _de = importlib.reload(_de)
+                _bto_avg, _od_avg = _de.build_tungchigi_orders, _de.orders_differ
+            _raw_avg = []
+            if qty_p > 0:
+                _raw_avg.append(["매수", "LOC", round(buy_p, 2), int(qty_p)])
+            if res["shares"] > 0 and sell_qty > 0:
+                _raw_avg.append(["매도", "LOC", round(sell_tgt, 2), int(sell_qty)])
+            if not _raw_avg:
+                st.info("오늘 주문이 없습니다.")
+            else:
+                _tng_avg = _bto_avg(_raw_avg)
+                if _tng_avg and _od_avg(_raw_avg, _tng_avg):
+                    st.warning("⚠️ 매일 주문에 매수/매도 상계 구간 있음 (자전거래 위험) — "
+                               "자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
+                else:
+                    st.success("✅ 매일 주문과 퉁치기 결과가 동일 — 어느 증권사든 "
+                               "매일 주문 그대로 사용 가능합니다.")
+                if _tng_avg:
+                    _tng_rows_avg = [{
+                        "구분": ("🔴 MOC매도" if t["방법"] == "MOC" else
+                                 ("🔵 LOC매도" if t["구분"] == "매도" else "🟠 LOC매수")),
+                        "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
+                        "수량": f"{t['수량']:,}주",
+                    } for t in _tng_avg]
+                    st.dataframe(pd.DataFrame(_tng_rows_avg), use_container_width=True,
+                                 hide_index=True, height=38 + 35 * len(_tng_rows_avg))
+                    st.caption("※ 어떤 종가에도 순 체결 결과는 매일 주문과 동일합니다 (상계 제거).")
+        except Exception as _e_tng_avg:
+            st.error(f"퉁치기 계산 실패: {_e_tng_avg}")
 
     # 현재 보유 현황
     st.subheader("📦 현재 보유 현황")

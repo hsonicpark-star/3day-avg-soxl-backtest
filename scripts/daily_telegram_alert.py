@@ -1308,8 +1308,10 @@ def build_avg_order_rows(res: dict) -> list:
 
 def build_sd_order_rows(r: dict) -> list:
     """표준편차매매 주문 rows 생성 (웹앱 stdev.py line 2862-2866과 동일 포맷)."""
-    rows = [["매수", "LOC", round(r["next_buy_loc"], 2), int(r["est_buy_qty"])]]
-    if r["holdings"] > 0:
+    rows = []
+    if int(r.get("est_buy_qty", 0)) > 0:
+        rows.append(["매수", "LOC", round(r["next_buy_loc"], 2), int(r["est_buy_qty"])])
+    if r["holdings"] > 0 and int(r.get("est_sell_qty", 0)) > 0:
         rows.append(["매도", "LOC", round(r["next_sell_loc"], 2), int(r["est_sell_qty"])])
     return rows
 
@@ -1829,7 +1831,7 @@ def main():
                     _tb_avg = float(res.get("tb", 0))  # 다음 매수 LOC
                     if _tb_avg > 0:
                         _chunk_avg = float(res.get("total_asset", 0)) / _div_avg
-                        _avail_avg = min(_chunk_avg, float(res.get("cash", 0)))
+                        _avail_avg = max(0.0, min(_chunk_avg, float(res.get("cash", 0))))
                         res["buy_qty"] = int(math.floor(_avail_avg / _tb_avg + 1e-9))
                 except Exception:
                     pass
@@ -1993,7 +1995,7 @@ def main():
                 try:
                     _div_r = int(divisions) if divisions > 0 else 1
                     _daily_inv_r = float(r.get("total_invest", 0)) / _div_r
-                    _avail_r = min(_daily_inv_r, float(r.get("cash", 0)))
+                    _avail_r = max(0.0, min(_daily_inv_r, float(r.get("cash", 0))))
                     _nbl_r = float(r.get("next_buy_loc", 0))
                     if _nbl_r > 0:
                         r["est_buy_qty"] = int(math.floor(_avail_r / _nbl_r))

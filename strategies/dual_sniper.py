@@ -1637,36 +1637,43 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                 s[jx] = ("color:#E65100;font-weight:bold" if "없음" in str(row["원본대조"])
                          else "color:#2E7D32")
             return s
-        st.dataframe(pd.DataFrame(rows).style.apply(_style, axis=1),
-                     use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
-        st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
-                   "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
+        _ord_tab1_ds, _ord_tab2_ds = st.tabs(["📋 매일 주문", "🔄 퉁치기 주문 (자전거래 회피)"])
+        with _ord_tab1_ds:
+            st.dataframe(pd.DataFrame(rows).style.apply(_style, axis=1),
+                         use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
+            st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
+                       "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
 
-        # ── 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용) ──
-        try:
+        with _ord_tab2_ds:
+            # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)
             try:
-                from dss_engine import build_tungchigi_orders as _bto_ds, \
-                    orders_differ as _od_ds
-            except ImportError:
-                import importlib, dss_engine as _de
-                _de = importlib.reload(_de)
-                _bto_ds, _od_ds = _de.build_tungchigi_orders, _de.orders_differ
-            _raw_ds = _ds_order_rows(r)
-            _tng_ds = _bto_ds(_raw_ds)
-            if _tng_ds and _od_ds(_raw_ds, _tng_ds):
-                st.warning("⚠️ 위 주문에 매수/매도 상계 구간이 있습니다 (자전거래 위험) — "
-                           "자전거래를 거부하는 증권사는 아래 퉁치기 주문을 사용하세요. "
-                           "(순 체결 결과는 원 주문과 동일)")
-                _tng_rows_ds = [{
-                    "구분": ("🔴 MOC매도" if t["방법"] == "MOC" else
-                             ("🔵 LOC매도" if t["구분"] == "매도" else "🟠 LOC매수")),
-                    "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
-                    "수량": f"{t['수량']:,}주",
-                } for t in _tng_ds]
-                st.dataframe(pd.DataFrame(_tng_rows_ds), use_container_width=True,
-                             hide_index=True, height=38 + 35 * len(_tng_rows_ds))
-        except Exception:
-            pass
+                try:
+                    from dss_engine import build_tungchigi_orders as _bto_ds, \
+                        orders_differ as _od_ds
+                except ImportError:
+                    import importlib, dss_engine as _de
+                    _de = importlib.reload(_de)
+                    _bto_ds, _od_ds = _de.build_tungchigi_orders, _de.orders_differ
+                _raw_ds = _ds_order_rows(r)
+                _tng_ds = _bto_ds(_raw_ds)
+                if _tng_ds and _od_ds(_raw_ds, _tng_ds):
+                    st.warning("⚠️ 매일 주문에 매수/매도 상계 구간 있음 (자전거래 위험) — "
+                               "자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
+                else:
+                    st.success("✅ 매일 주문과 퉁치기 결과가 동일 — 어느 증권사든 "
+                               "매일 주문 그대로 사용 가능합니다.")
+                if _tng_ds:
+                    _tng_rows_ds = [{
+                        "구분": ("🔴 MOC매도" if t["방법"] == "MOC" else
+                                 ("🔵 LOC매도" if t["구분"] == "매도" else "🟠 LOC매수")),
+                        "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
+                        "수량": f"{t['수량']:,}주",
+                    } for t in _tng_ds]
+                    st.dataframe(pd.DataFrame(_tng_rows_ds), use_container_width=True,
+                                 hide_index=True, height=38 + 35 * len(_tng_rows_ds))
+                    st.caption("※ 어떤 종가에도 순 체결 결과는 매일 주문과 동일합니다 (상계 제거).")
+            except Exception as _e_tng_ds:
+                st.error(f"퉁치기 계산 실패: {_e_tng_ds}")
         if _orig is not None:
             st.caption("🔎 **원본대조(운영자 전용)**: 원본 시트에 없는 주문은 `⚠️ 원본없음`. "
                        "표시만 참고용이며 **텔레그램·시트 전송은 우리 엔진 주문 그대로** 나갑니다. "

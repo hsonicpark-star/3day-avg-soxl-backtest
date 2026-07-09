@@ -243,7 +243,7 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                         # est_buy_qty 재계산 (엔진 값은 시뮬 기준)
                         _daily_inv_txt = ((res["total_invest"] / divisions)
                                             if divisions > 0 else res["total_invest"])
-                        _avail_txt = min(_daily_inv_txt, res["cash"])
+                        _avail_txt = max(0.0, min(_daily_inv_txt, res["cash"]))
                         _nbl_txt = float(res.get("next_buy_loc", 0))
                         if _nbl_txt > 0:
                             res["est_buy_qty"] = int(math.floor(_avail_txt / _nbl_txt))
@@ -1137,7 +1137,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 # est_buy_qty 재계산 (조정 반영된 total_invest/cash 기준)
                 # 엔진의 est_buy_qty는 시뮬 값 → 조정 반영 시 예상수량도 증가
                 _daily_inv_adj_sd = (_sd_r["total_invest"] / _div) if _div > 0 else _sd_r["total_invest"]
-                _avail_adj_sd = min(_daily_inv_adj_sd, _sd_r["cash"])
+                _avail_adj_sd = max(0.0, min(_daily_inv_adj_sd, _sd_r["cash"]))
                 _nbl_sd = float(_sd_r.get("next_buy_loc", 0))
                 if _nbl_sd > 0:
                     _sd_r["est_buy_qty"] = int(math.floor(_avail_adj_sd / _nbl_sd))
@@ -1282,37 +1282,49 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     else "color:#C62828;font-weight:bold")
         return s
 
-    st.dataframe(pd.DataFrame(_orders).style.apply(_sd_style, axis=1),
-                 use_container_width=True, hide_index=True,
-                 height=38 + 35 * len(_orders))
+    _ord_tab1_sd, _ord_tab2_sd = st.tabs(["📋 매일 주문", "🔄 퉁치기 주문 (자전거래 회피)"])
+    with _ord_tab1_sd:
+        st.dataframe(pd.DataFrame(_orders).style.apply(_sd_style, axis=1),
+                     use_container_width=True, hide_index=True,
+                     height=38 + 35 * len(_orders))
 
-    # ── 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용) ──
-    try:
+    with _ord_tab2_sd:
+        # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)
         try:
-            from dss_engine import build_tungchigi_orders as _bto_sd, \
-                orders_differ as _od_sd
-        except ImportError:
-            import importlib, dss_engine as _de
-            _de = importlib.reload(_de)
-            _bto_sd, _od_sd = _de.build_tungchigi_orders, _de.orders_differ
-        _raw_sd = [["매수", "LOC", round(_buy_loc, 2), _buy_qty]]
-        if _holdings > 0:
-            _raw_sd.append(["매도", "LOC", round(_sell_loc, 2), _sell_qty])
-        _tng_sd = _bto_sd(_raw_sd)
-        if _tng_sd and _od_sd(_raw_sd, _tng_sd):
-            st.warning("위 주문에 매수/매도 상계 구간이 있습니다 (자전거래 위험) -- "
-                       "자전거래를 거부하는 증권사는 아래 퉁치기 주문을 사용하세요. "
-                       "(순 체결 결과는 원 주문과 동일)")
-            _tng_rows_sd = [{
-                "구분": ("MOC매도" if t["방법"] == "MOC" else
-                         ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
-                "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
-                "수량": f"{t['수량']:,}주",
-            } for t in _tng_sd]
-            st.dataframe(pd.DataFrame(_tng_rows_sd), use_container_width=True,
-                         hide_index=True, height=38 + 35 * len(_tng_rows_sd))
-    except Exception:
-        pass
+            try:
+                from dss_engine import build_tungchigi_orders as _bto_sd, \
+                    orders_differ as _od_sd
+            except ImportError:
+                import importlib, dss_engine as _de
+                _de = importlib.reload(_de)
+                _bto_sd, _od_sd = _de.build_tungchigi_orders, _de.orders_differ
+            _raw_sd = []
+            if _buy_qty > 0:
+                _raw_sd.append(["매수", "LOC", round(_buy_loc, 2), int(_buy_qty)])
+            if _holdings > 0 and _sell_qty > 0:
+                _raw_sd.append(["매도", "LOC", round(_sell_loc, 2), int(_sell_qty)])
+            if not _raw_sd:
+                st.info("오늘 주문이 없습니다.")
+            else:
+                _tng_sd = _bto_sd(_raw_sd)
+                if _tng_sd and _od_sd(_raw_sd, _tng_sd):
+                    st.warning("매일 주문에 매수/매도 상계 구간 있음 (자전거래 위험) -- "
+                               "자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
+                else:
+                    st.success("매일 주문과 퉁치기 결과가 동일 -- 어느 증권사든 "
+                               "매일 주문 그대로 사용 가능합니다.")
+                if _tng_sd:
+                    _tng_rows_sd = [{
+                        "구분": ("MOC매도" if t["방법"] == "MOC" else
+                                 ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
+                        "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
+                        "수량": f"{t['수량']:,}주",
+                    } for t in _tng_sd]
+                    st.dataframe(pd.DataFrame(_tng_rows_sd), use_container_width=True,
+                                 hide_index=True, height=38 + 35 * len(_tng_rows_sd))
+                    st.caption("※ 어떤 종가에도 순 체결 결과는 매일 주문과 동일합니다 (상계 제거).")
+        except Exception as _e_tng_sd:
+            st.error(f"퉁치기 계산 실패: {_e_tng_sd}")
 
     # -- 현재 보유 현황 ---
     st.subheader("현재 보유 현황")
