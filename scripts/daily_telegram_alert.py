@@ -238,6 +238,13 @@ def calc_today_order(ticker: str, os_start: str,
         "total_asset": float(res.get("current_asset", 0)),  # 총자산 표시용
     }
 
+def _flag_on(v) -> bool:
+    """users 시트 컬럼(문자열) / config JSON(bool) 겸용 불리언 파서."""
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("true", "1", "y", "yes", "on")
+
+
 def build_avg_message(res: dict, ticker: str) -> str:
     today = datetime.today().strftime("%Y-%m-%d")
     lines = [
@@ -256,6 +263,13 @@ def build_avg_message(res: dict, ticker: str) -> str:
         has_order = True
     if not has_order:
         lines.append("⬜ 오늘은 주문 없음")
+    # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+    if has_order:
+        try:
+            from dss_engine import tungchigi_message_lines
+            lines.extend(tungchigi_message_lines(build_avg_order_rows(res)))
+        except Exception:
+            pass
     if res["shares"] > 0:
         lines.append(f"\n📦 보유: {res['shares']}주  |  평단 ${res['avg_cost']:.2f}")
     else:
@@ -351,6 +365,12 @@ def build_sd_message(r: dict) -> str:
         ]
     else:
         lines.append(f"📦 보유주식 없음 (전량 현금)")
+    # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+    try:
+        from dss_engine import tungchigi_message_lines
+        lines.extend(tungchigi_message_lines(build_sd_order_rows(r)))
+    except Exception:
+        pass
     lines.append("※ 종가 LOC 주문 기준입니다.")
     return "\n".join(lines)
 
@@ -634,21 +654,8 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
     # 판단 기준: LOC 교차 여부가 아니라 '결과가 실제로 달라지는가'.
     # MOC매도+LOC매수 등 예외 조합도 빠짐없이 커버 (상계 발생 = 안내 필요)
     try:
-        from dss_engine import (build_order_rows, build_tungchigi_orders,
-                                orders_differ)
-        _raw = build_order_rows(_o)
-        _tung = build_tungchigi_orders(_raw)
-        if _tung and orders_differ(_raw, _tung):
-            lines.append(f"")
-            lines.append(f"── 🔄 퉁치기 주문 (자전거래 거부 증권사용) ──")
-            for _t in _tung:
-                if _t["방법"] == "MOC":
-                    lines.append(f" 🔴 MOC매도: 시장가 × {_t['수량']}주")
-                elif _t["구분"] == "매도":
-                    lines.append(f" 📈 LOC매도: ${_t['가격']:,.2f} × {_t['수량']}주")
-                else:
-                    lines.append(f" 📉 LOC매수: ${_t['가격']:,.2f} × {_t['수량']}주")
-            lines.append(f" ※ 순 체결 결과는 위 주문과 동일 (자전거래 회피)")
+        from dss_engine import build_order_rows, tungchigi_message_lines
+        lines.extend(tungchigi_message_lines(build_order_rows(_o)))
     except Exception:
         pass
 
@@ -1517,6 +1524,12 @@ def build_ds_message(r: dict, acct_name: str) -> str:
             price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
             tag = "🔴매도" if o["거래방법"] == "MOC" else ("🔵매도" if o["구분"] == "매도" else "🟠매수")
             lines.append(f"{tag} {o['거래방법']} {price} × {o['수량']:,}주 ({o['사유']})")
+        # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+        try:
+            from dss_engine import tungchigi_message_lines
+            lines.extend(tungchigi_message_lines(build_ds_order_rows(r)))
+        except Exception:
+            pass
     else:
         lines.append("⬜ 오늘 주문 없음")
     return "\n".join(lines)
@@ -1838,6 +1851,10 @@ def main():
                 # 주문 0건이면 NO_ORDER sentinel 자동 작성
                 if shared_gs_url:
                     _rows = build_avg_order_rows(res)
+                    if _flag_on(user.get("avg_use_tungchigi")) and _rows:
+                        from dss_engine import rows_to_tungchigi_rows
+                        _rows = rows_to_tungchigi_rows(_rows)
+                        _label = f"{_label}(퉁치기)"
                     write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
                                               _label, status="OK")
 
@@ -2000,6 +2017,10 @@ def main():
                 # 주문 0건이면 NO_ORDER sentinel 자동 작성
                 if shared_gs_url:
                     _rows = build_sd_order_rows(r)
+                    if _flag_on(user.get("sd_use_tungchigi")) and _rows:
+                        from dss_engine import rows_to_tungchigi_rows
+                        _rows = rows_to_tungchigi_rows(_rows)
+                        _label = f"{_label}(퉁치기)"
                     write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
                                               _label, status="OK")
 
@@ -2354,6 +2375,10 @@ def main():
 
                 if ds_gs_url and _gs_sheet_ds:
                     _rows = build_ds_order_rows(r_ds)
+                    if _flag_on(ds_cfg.get("use_tungchigi_gsheet")) and _rows:
+                        from dss_engine import rows_to_tungchigi_rows
+                        _rows = rows_to_tungchigi_rows(_rows)
+                        _label = f"{_label}(퉁치기)"
                     write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, _rows,
                                               _label, status="OK")
         else:

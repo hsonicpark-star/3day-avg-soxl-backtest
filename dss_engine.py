@@ -290,14 +290,45 @@ def build_order_rows_tungchigi(os_result: dict, today=None) -> list:
       [구분(매수/매도), 거래방법(LOC/MOC), 가격(숫자, MOC는 공란), 수량(정수)]
     자전거래 거부 증권사용 — 어떤 종가에도 순 체결은 원 주문과 동일."""
     raw = build_order_rows(os_result, today=today)
-    tung = build_tungchigi_orders(raw)
-    rows = []
+    return rows_to_tungchigi_rows(raw)
+
+
+def rows_to_tungchigi_rows(rows: list) -> list:
+    """4열 주문 rows → 퉁치기 적용 4열 rows. 전 전략(종가평균/표준편차/DS 등) 공용.
+
+    입력/출력 포맷 동일: [[구분, 거래방법, 가격(MOC는 공란), 수량], ...]
+    상계가 발생하지 않는 조합이면 결과가 원 주문과 사실상 동일하다."""
+    tung = build_tungchigi_orders(rows)
+    out = []
     for t in tung:
         is_moc = (t["방법"] == "MOC")
-        rows.append([t["구분"], "MOC" if is_moc else "LOC",
-                     "" if is_moc else round(float(t["가격"]), 2),
-                     int(t["수량"])])
-    return rows
+        out.append([t["구분"], "MOC" if is_moc else "LOC",
+                    "" if is_moc else round(float(t["가격"]), 2),
+                    int(t["수량"])])
+    return out
+
+
+def tungchigi_message_lines(rows: list) -> list:
+    """주문 rows에 대한 텔레그램용 퉁치기 안내 문구 리스트. 전 전략 공용.
+
+    원 주문과 퉁치기 결과가 실질적으로 다를 때만 문구를 반환하고,
+    같으면(상계 없음) 빈 리스트를 반환한다 → 그대로 lines.extend() 가능."""
+    try:
+        tung = build_tungchigi_orders(rows)
+    except Exception:
+        return []
+    if not tung or not orders_differ(rows, tung):
+        return []
+    lines = ["", "── 🔄 퉁치기 주문 (자전거래 거부 증권사용) ──"]
+    for t in tung:
+        if t["방법"] == "MOC":
+            lines.append(f" 🔴 MOC매도: 시장가 × {t['수량']}주")
+        elif t["구분"] == "매도":
+            lines.append(f" 📈 LOC매도: ${t['가격']:,.2f} × {t['수량']}주")
+        else:
+            lines.append(f" 📉 LOC매수: ${t['가격']:,.2f} × {t['수량']}주")
+    lines.append(" ※ 순 체결 결과는 위 주문과 동일 (자전거래 회피)")
+    return lines
 
 
 # ──────────────────────────────────────────────

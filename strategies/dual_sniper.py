@@ -1641,6 +1641,32 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                      use_container_width=True, hide_index=True, height=38 + 35 * len(rows))
         st.caption("💡 매도 LOC는 목표가 이상 종가 시 체결 · 매수 LOC는 주문가 이하 종가 시 체결 · "
                    "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
+
+        # ── 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용) ──
+        try:
+            try:
+                from dss_engine import build_tungchigi_orders as _bto_ds, \
+                    orders_differ as _od_ds
+            except ImportError:
+                import importlib, dss_engine as _de
+                _de = importlib.reload(_de)
+                _bto_ds, _od_ds = _de.build_tungchigi_orders, _de.orders_differ
+            _raw_ds = _ds_order_rows(r)
+            _tng_ds = _bto_ds(_raw_ds)
+            if _tng_ds and _od_ds(_raw_ds, _tng_ds):
+                st.warning("⚠️ 위 주문에 매수/매도 상계 구간이 있습니다 (자전거래 위험) — "
+                           "자전거래를 거부하는 증권사는 아래 퉁치기 주문을 사용하세요. "
+                           "(순 체결 결과는 원 주문과 동일)")
+                _tng_rows_ds = [{
+                    "구분": ("🔴 MOC매도" if t["방법"] == "MOC" else
+                             ("🔵 LOC매도" if t["구분"] == "매도" else "🟠 LOC매수")),
+                    "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
+                    "수량": f"{t['수량']:,}주",
+                } for t in _tng_ds]
+                st.dataframe(pd.DataFrame(_tng_rows_ds), use_container_width=True,
+                             hide_index=True, height=38 + 35 * len(_tng_rows_ds))
+        except Exception:
+            pass
         if _orig is not None:
             st.caption("🔎 **원본대조(운영자 전용)**: 원본 시트에 없는 주문은 `⚠️ 원본없음`. "
                        "표시만 참고용이며 **텔레그램·시트 전송은 우리 엔진 주문 그대로** 나갑니다. "
@@ -2491,6 +2517,16 @@ def _build_ds_order_text(r, acct_name=""):
             price = "시장가(종가)" if o["가격"] is None else f"${o['가격']:,.2f}"
             tag = "🔴매도" if o["거래방법"] == "MOC" else ("🔵매도" if o["구분"] == "매도" else "🟠매수")
             lines.append(f"{tag} {o['거래방법']} {price} × {o['수량']:,}주 ({o['사유']})")
+        # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+        try:
+            try:
+                from dss_engine import tungchigi_message_lines as _tml_ds
+            except ImportError:
+                import importlib, dss_engine as _de
+                _tml_ds = importlib.reload(_de).tungchigi_message_lines
+            lines.extend(_tml_ds(_ds_order_rows(r)))
+        except Exception:
+            pass
     else:
         lines.append("주문 없음")
     return "\n".join(lines)
@@ -2787,6 +2823,13 @@ def render_settings_tab():
                                placeholder="https://docs.google.com/spreadsheets/d/...", key="ds_gs_url")
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
+        use_tungchigi_ds = st.checkbox(
+            "🔄 시트 전송 시 퉁치기 주문으로 전송 (자전거래 거부 증권사용)",
+            value=bool(cfg.get("use_tungchigi_gsheet", False)), key="ds_use_tungchigi_ck",
+            help="체크하면 매수/매도 상계(퉁치기) 적용 주문을 시트에 기록합니다. "
+                 "순 체결 결과는 원 주문과 동일하며, LOC매도가 < LOC매수가 교차를 "
+                 "거부하는 증권사에서 사용하세요. 텔레그램/자동발송에도 적용됩니다.")
+
         # ── 계좌별 시트 탭 이름 매핑 ──
         _accts = cfg.get("accounts", {})
         _sheet_map = {}
@@ -2831,6 +2874,13 @@ def render_settings_tab():
                                 _ws = _sh.worksheet(_snm)
                                 _ws.batch_clear(["L4:O13"])
                                 _rows = _ds_order_rows(_r)
+                                if use_tungchigi_ds and _rows:
+                                    try:
+                                        from dss_engine import rows_to_tungchigi_rows as _rttr_ds
+                                    except ImportError:
+                                        import importlib, dss_engine as _de_gs
+                                        _rttr_ds = importlib.reload(_de_gs).rows_to_tungchigi_rows
+                                    _rows = _rttr_ds(_rows)
                                 if _rows:
                                     _ws.update(range_name="L4", values=_rows)
                                 # B11 업데이트 시각 (KST) — 주문표가 언제 갱신됐는지 확인용
@@ -2848,11 +2898,12 @@ def render_settings_tab():
                 st.warning("URL을 입력하세요.")
             else:
                 cfg["gs_url"] = gs_url
+                cfg["use_tungchigi_gsheet"] = bool(use_tungchigi_ds)
                 for _ak, _snm in _sheet_map.items():
                     if _ak in cfg.get("accounts", {}):
                         cfg["accounts"][_ak]["gs_sheet"] = _snm
                 _save_ds_config(cfg)
-                st.success("✅ URL + 계좌별 시트 이름 저장 완료")
+                st.success("✅ URL + 계좌별 시트 이름 + 퉁치기 설정 저장 완료")
 
     st.write("")
 

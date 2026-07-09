@@ -264,7 +264,8 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
 # ══════════════════════════════════════════════
 
 def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
-                       _sell_ratio: float, _divisions: int, ticker_name: str):
+                       _sell_ratio: float, _divisions: int, ticker_name: str,
+                       use_tungchigi: bool = False):
     """시뮬레이션 결과를 구글시트 지정 탭 L4부터 기록."""
     gc = _get_gspread_client()
     sh = gc.open_by_url(gs_url)
@@ -284,6 +285,15 @@ def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
         sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
         sell_tgt = res["next_sell_target"]
         rows.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
+
+    # 퉁치기 전송 (자전거래 거부 증권사용 — 순 체결 결과는 원 주문과 동일)
+    if use_tungchigi and rows:
+        try:
+            from dss_engine import rows_to_tungchigi_rows
+        except ImportError:
+            import importlib, dss_engine as _de
+            rows_to_tungchigi_rows = importlib.reload(_de).rows_to_tungchigi_rows
+        rows = rows_to_tungchigi_rows(rows)
 
     # L4 = row 4, col 12 (L) → gspread update
     ws.update(range_name="L4", values=rows)
@@ -1320,6 +1330,34 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     st.dataframe(pd.DataFrame(today_orders).style.apply(_style_gubun, axis=1),
                  use_container_width=True, hide_index=True,
                  height=38 + 35 * len(today_orders))
+
+    # ── 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용) ──
+    try:
+        try:
+            from dss_engine import build_tungchigi_orders as _bto_avg, \
+                orders_differ as _od_avg
+        except ImportError:
+            import importlib, dss_engine as _de
+            _de = importlib.reload(_de)
+            _bto_avg, _od_avg = _de.build_tungchigi_orders, _de.orders_differ
+        _raw_avg = [["매수", "LOC", round(buy_p, 2), qty_p]]
+        if res["shares"] > 0:
+            _raw_avg.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
+        _tng_avg = _bto_avg(_raw_avg)
+        if _tng_avg and _od_avg(_raw_avg, _tng_avg):
+            st.warning("⚠️ 위 주문에 매수/매도 상계 구간이 있습니다 (자전거래 위험) — "
+                       "자전거래를 거부하는 증권사는 아래 퉁치기 주문을 사용하세요. "
+                       "(순 체결 결과는 원 주문과 동일)")
+            _tng_rows_avg = [{
+                "구분": ("🔴 MOC매도" if t["방법"] == "MOC" else
+                         ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
+                "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
+                "수량": f"{t['수량']:,}주",
+            } for t in _tng_avg]
+            st.dataframe(pd.DataFrame(_tng_rows_avg), use_container_width=True,
+                         hide_index=True, height=38 + 35 * len(_tng_rows_avg))
+    except Exception:
+        pass
 
     # 현재 보유 현황
     st.subheader("📦 현재 보유 현황")
@@ -2979,6 +3017,17 @@ def render_settings_tab():
         )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
+        _tung_default_avg = str(
+            _usercfg.get("avg_use_tungchigi", "") if _IS_CLOUD
+            else _cfg5.get("avg_use_tungchigi", "")
+        ).strip().lower() in ("true", "1", "y", "yes", "on")
+        use_tungchigi_avg = st.checkbox(
+            "🔄 시트 전송 시 퉁치기 주문으로 전송 (자전거래 거부 증권사용)",
+            value=_tung_default_avg, key="avg_use_tungchigi_ck",
+            help="체크하면 매수/매도 상계(퉁치기) 적용 주문을 시트에 기록합니다. "
+                 "순 체결 결과는 원 주문과 동일하며, LOC매도가 < LOC매수가 교차를 "
+                 "거부하는 증권사에서 사용하세요. 텔레그램/자동발송에도 적용됩니다.")
+
         # ── 종목별 시트 이름 매핑 ──────────────────────────────
         _gs_tk_settings = get_ticker_settings(prefix="", settings_key="ticker_settings", exclude_prefix="sd_")
         _gs_sheet_map   = {}   # {ticker: 입력된 시트 이름}
@@ -3040,7 +3089,8 @@ def render_settings_tab():
                                 if _res is None:
                                     st.error(f"❌ {_gs_tk}: 시뮬레이션 데이터가 없습니다.")
                                 else:
-                                    n = _write_orders_to_sheet(gs_url, _sheet_name, _res, _gs_sr, _gs_div, _gs_tk)
+                                    n = _write_orders_to_sheet(gs_url, _sheet_name, _res, _gs_sr, _gs_div, _gs_tk,
+                                                               use_tungchigi=use_tungchigi_avg)
                                     st.success(f"✅ {_gs_tk} → '{_sheet_name}' 탭 L4에 {n}건 전송 완료!")
                             except Exception as e:
                                 st.error(f"❌ {_gs_tk} 전송 실패: {e}")
@@ -3050,15 +3100,20 @@ def render_settings_tab():
                 if not gs_url:
                     st.warning("스프레드시트 URL을 입력해주세요.")
                 else:
-                    # gs_url 글로벌 저장
+                    # gs_url + 퉁치기 플래그 글로벌 저장
                     if _IS_CLOUD:
                         try:
-                            _save_user_settings_to_sheet(st.session_state.username, {"gs_url": gs_url})
-                            st.session_state.user_settings.update({"gs_url": gs_url})
+                            _save_user_settings_to_sheet(st.session_state.username,
+                                                         {"gs_url": gs_url,
+                                                          "avg_use_tungchigi": use_tungchigi_avg})
+                            st.session_state.user_settings.update(
+                                {"gs_url": gs_url,
+                                 "avg_use_tungchigi": str(use_tungchigi_avg)})
                         except Exception as e:
                             st.error(f"❌ 저장 실패: {e}")
                     else:
                         save_config({"gs_url": gs_url}, sensitive=True)
+                        save_config({"avg_use_tungchigi": str(use_tungchigi_avg)})
                     # 종목별 시트 이름 저장 (ticker_settings에)
                     for _gs_tk, _sheet_name in _gs_sheet_map.items():
                         save_ticker_setting(_gs_tk, {"gs_sheet": _sheet_name},

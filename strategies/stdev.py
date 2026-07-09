@@ -1286,6 +1286,34 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                  use_container_width=True, hide_index=True,
                  height=38 + 35 * len(_orders))
 
+    # ── 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용) ──
+    try:
+        try:
+            from dss_engine import build_tungchigi_orders as _bto_sd, \
+                orders_differ as _od_sd
+        except ImportError:
+            import importlib, dss_engine as _de
+            _de = importlib.reload(_de)
+            _bto_sd, _od_sd = _de.build_tungchigi_orders, _de.orders_differ
+        _raw_sd = [["매수", "LOC", round(_buy_loc, 2), _buy_qty]]
+        if _holdings > 0:
+            _raw_sd.append(["매도", "LOC", round(_sell_loc, 2), _sell_qty])
+        _tng_sd = _bto_sd(_raw_sd)
+        if _tng_sd and _od_sd(_raw_sd, _tng_sd):
+            st.warning("위 주문에 매수/매도 상계 구간이 있습니다 (자전거래 위험) -- "
+                       "자전거래를 거부하는 증권사는 아래 퉁치기 주문을 사용하세요. "
+                       "(순 체결 결과는 원 주문과 동일)")
+            _tng_rows_sd = [{
+                "구분": ("MOC매도" if t["방법"] == "MOC" else
+                         ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
+                "주문가": "시장가(종가)" if t["방법"] == "MOC" else f"${t['가격']:,.2f}",
+                "수량": f"{t['수량']:,}주",
+            } for t in _tng_sd]
+            st.dataframe(pd.DataFrame(_tng_rows_sd), use_container_width=True,
+                         hide_index=True, height=38 + 35 * len(_tng_rows_sd))
+    except Exception:
+        pass
+
     # -- 현재 보유 현황 ---
     st.subheader("현재 보유 현황")
     if _holdings > 0:
@@ -2626,6 +2654,17 @@ def render_settings_tab():
         )
         st.caption("* 스프레드시트에 서비스 계정 이메일을 편집자로 공유해주세요. (우측 상단 도움말 참고)")
 
+        _tung_default_sd = str(
+            _usercfg.get("sd_use_tungchigi", "") if _IS_CLOUD_val
+            else _cfg5_gs.get("sd_use_tungchigi", "")
+        ).strip().lower() in ("true", "1", "y", "yes", "on")
+        use_tungchigi_sd = st.checkbox(
+            "시트 전송 시 퉁치기 주문으로 전송 (자전거래 거부 증권사용)",
+            value=_tung_default_sd, key="sd_use_tungchigi_ck",
+            help="체크하면 매수/매도 상계(퉁치기) 적용 주문을 시트에 기록합니다. "
+                 "순 체결 결과는 원 주문과 동일하며, LOC매도가 < LOC매수가 교차를 "
+                 "거부하는 증권사에서 사용하세요. 텔레그램/자동발송에도 적용됩니다.")
+
         # 표준편차 계좌별 시트 이름 매핑
         _gs_sd_settings = _get_sd_ticker_settings()
         _gs_sd_sheet_map = {}
@@ -2689,9 +2728,16 @@ def render_settings_tab():
                                     sh = gc.open_by_url(gs_url_sd)
                                     ws = sh.worksheet(_sheet_nm)
                                     ws.batch_clear(["L4:O13"])
-                                    rows_gs = [["매수", "LOC", _res_gs["next_buy_loc"], _res_gs["est_buy_qty"]]]
+                                    rows_gs = [["매수", "LOC", round(_res_gs["next_buy_loc"], 2), _res_gs["est_buy_qty"]]]
                                     if _res_gs["holdings"] > 0:
-                                        rows_gs.append(["매도", "LOC", _res_gs["next_sell_loc"], _res_gs["est_sell_qty"]])
+                                        rows_gs.append(["매도", "LOC", round(_res_gs["next_sell_loc"], 2), _res_gs["est_sell_qty"]])
+                                    if use_tungchigi_sd and rows_gs:
+                                        try:
+                                            from dss_engine import rows_to_tungchigi_rows as _rttr_sd
+                                        except ImportError:
+                                            import importlib, dss_engine as _de_gs
+                                            _rttr_sd = importlib.reload(_de_gs).rows_to_tungchigi_rows
+                                        rows_gs = _rttr_sd(rows_gs)
                                     ws.update(range_name="L4", values=rows_gs)
                                     # B11 업데이트 시각 (KST)
                                     ws.update(range_name="B11", values=[[
@@ -2707,12 +2753,17 @@ def render_settings_tab():
                 else:
                     if _IS_CLOUD_val:
                         try:
-                            _save_user_settings_to_sheet(st.session_state.username, {"gs_url": gs_url_sd})
-                            st.session_state.user_settings.update({"gs_url": gs_url_sd})
+                            _save_user_settings_to_sheet(st.session_state.username,
+                                                         {"gs_url": gs_url_sd,
+                                                          "sd_use_tungchigi": use_tungchigi_sd})
+                            st.session_state.user_settings.update(
+                                {"gs_url": gs_url_sd,
+                                 "sd_use_tungchigi": str(use_tungchigi_sd)})
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
                     else:
                         save_config({"gs_url": gs_url_sd}, sensitive=True)
+                        save_config({"sd_use_tungchigi": str(use_tungchigi_sd)})
                     for _gs_sd_tk, _sheet_nm in _gs_sd_sheet_map.items():
                         _save_sd_ticker_setting(_gs_sd_tk, {"gs_sheet": _sheet_nm})
                     st.success("URL 및 종목별 시트 이름 저장 완료!")
