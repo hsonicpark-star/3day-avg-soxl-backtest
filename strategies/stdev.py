@@ -196,6 +196,34 @@ def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
             pass
 
 
+def _rewrite_sd_daily_history(tk: str, rows: list):
+    """원장 전체를 rows로 교체 (행 삭제/보정 포함). rows: dict 리스트 (날짜 오름차순).
+    현재 상태 보정 전용 — 잘못된 예정 행 제거 + 앵커 행 수정에 사용."""
+    df = (pd.DataFrame(rows, columns=SD_HIST_COLS) if rows
+          else pd.DataFrame(columns=SD_HIST_COLS))
+    # 로컬 CSV 전체 재기록
+    try:
+        f = _get_sd_history_file(tk)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(f, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+    # Cloud: GSheets clear 후 전체 재기록
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws = sh.worksheet(f"sd_{tk}_매매기록")
+                ws.clear()
+                _data = [list(SD_HIST_COLS)] + [
+                    [str(r.get(c, "")) for c in SD_HIST_COLS] for r in rows]
+                ws.update(values=_data, range_name="A1", value_input_option="RAW")
+        except Exception:
+            pass
+
+
 def _update_sd_daily_history_rows(tk: str, rows: list, changed_indices: list):
     """예정 행 정산 결과 반영 (예정 → 체결/미체결 확정).
     B방식의 유일한 예외: 예정 행은 미확정 주문이므로 그날 종가로 1회 확정만 허용.
@@ -1178,8 +1206,62 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.session_state[f"sd_reset_confirm_{key_sfx}"] = False
                 st.rerun()
 
-    # -- 주문표 로드 ------
     _sd_ss  = f"sd_os_res_{key_sfx}"
+    # -- 현재 보유 상태 보정 (실제 계좌와 원장 맞추기) ------
+    with st.expander("🔧 현재 보유 상태 보정 (실제 계좌와 맞추기)"):
+        st.caption("실제 증권사 계좌의 **현재 보유주수 · 예수금 · 평단가**를 입력하면 매매기록 앵커를 "
+                   "그 값으로 바로잡습니다. 잘못된 '예정' 행은 제거되고, 다음 주문부터 실제 보유 기준으로 "
+                   "매수·매도 수량이 계산됩니다. (총투자금/티어 등 전략 상태는 그대로 이어집니다.)")
+        _fix_led = _load_sd_daily_history(tk)
+        _pf_h, _pf_c, _pf_a = 0, 0.0, 0.0
+        if not _fix_led.empty and "종가" in _fix_led.columns:
+            _conf = _fix_led[_fix_led["종가"].apply(
+                lambda v: str(v).strip() not in ("", "-", "None", "nan"))]
+            if not _conf.empty:
+                _lastc = _conf.iloc[-1]
+                _pf_h = int(pd.to_numeric(_lastc.get("보유량"), errors="coerce") or 0)
+                _pf_c = float(pd.to_numeric(_lastc.get("예수금"), errors="coerce") or 0)
+                _pf_a = float(pd.to_numeric(_lastc.get("평단가"), errors="coerce") or 0)
+        _fx1, _fx2, _fx3 = st.columns(3)
+        _in_h = _fx1.number_input("실제 보유주수", value=_pf_h, min_value=0, step=1,
+                                   key=f"sd_fix_h_{key_sfx}")
+        _in_c = _fx2.number_input("실제 예수금 ($)", value=_pf_c, step=100.0,
+                                   key=f"sd_fix_c_{key_sfx}")
+        _in_a = _fx3.number_input("실제 평단가 ($)", value=_pf_a, step=0.01,
+                                   format="%.4f", key=f"sd_fix_a_{key_sfx}")
+        if st.button("✅ 현재 상태로 보정", type="secondary", key=f"sd_do_fix_{key_sfx}"):
+            _rows_fix = _fix_led.to_dict("records") if not _fix_led.empty else []
+            # 1) 예정(미확정) 행 제거
+            _rows_fix = [r for r in _rows_fix
+                         if str(r.get("종가", "")).strip() not in ("", "-", "None", "nan")]
+            if _rows_fix:
+                # 2) 마지막 확정 행 보정 (총투자금/티어/누적실현 유지)
+                _rows_fix.sort(key=lambda r: str(r.get("날짜", "")))
+                _lf = _rows_fix[-1]
+                _cx = pd.to_numeric(_lf.get("종가"), errors="coerce")
+                _cx = float(_cx) if pd.notna(_cx) else float(_in_a)
+                _lf["보유량"] = int(_in_h)
+                _lf["예수금"] = round(float(_in_c), 2)
+                _lf["평단가"] = round(float(_in_a), 4)
+                _lf["총자산"] = round(float(_in_c) + int(_in_h) * _cx, 2)
+            else:
+                # 확정 행 없음 — 어제 날짜로 앵커 신규 생성
+                _anchor_d = (datetime.today().date() - timedelta(days=1)).strftime("%Y-%m-%d")
+                _row0 = {c: "" for c in SD_HIST_COLS}
+                _row0.update({"날짜": _anchor_d, "티어": 1, "종가": round(float(_in_a), 4),
+                              "매수량": 0, "매도량": 0, "보유량": int(_in_h),
+                              "평단가": round(float(_in_a), 4), "누적실현": 0,
+                              "총투자금": round(float(_os_cap), 2),
+                              "예수금": round(float(_in_c), 2),
+                              "총자산": round(float(_in_c) + int(_in_h) * float(_in_a), 2)})
+                _rows_fix = [_row0]
+            _rewrite_sd_daily_history(tk, _rows_fix)
+            st.session_state.pop(_sd_ss, None)   # 세션 캐시 제거 → 재계산
+            st.success(f"✅ 보정 완료: 보유 {int(_in_h):,}주 / 예수금 ${_in_c:,.0f} / "
+                       f"평단 ${_in_a:.2f}  ·  '주문표 로드'를 다시 눌러주세요.")
+            st.rerun()
+
+    # -- 주문표 로드 ------
     _sd_lbl = "새로고침" if st.session_state.get(_sd_ss) else "주문표 로드"
     if st.button(_sd_lbl, type="primary", key=f"sd_run_os_{key_sfx}"):
         _save_sd_ticker_setting(tk, {"os_start": str(_os_start), "os_capital": _os_cap})
