@@ -1229,36 +1229,62 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                                    key=f"sd_fix_c_{key_sfx}")
         _in_a = _fx3.number_input("실제 평단가 ($)", value=_pf_a, step=0.01,
                                    format="%.4f", key=f"sd_fix_a_{key_sfx}")
+        _reset_ti = st.checkbox(
+            "복리 기준금액(총투자금)도 현재 총자산으로 재설정",
+            value=True, key=f"sd_fix_ti_{key_sfx}",
+            help="표준편차는 1회매수금 = 총투자금 ÷ 분할수 입니다. 총투자금은 복리로 커지는 "
+                 "기준값이라, 계좌가 크게 바뀐 경우(입출금·큰 손익) 예전 값이 남으면 1회매수금이 "
+                 "총자산과 안 맞습니다. 체크하면 총투자금 = 현재 총자산(현금+보유평가액)으로 "
+                 "재설정합니다. (소폭 드리프트만 보정할 땐 체크 해제)")
         if st.button("✅ 현재 상태로 보정", type="secondary", key=f"sd_do_fix_{key_sfx}"):
             _rows_fix = _fix_led.to_dict("records") if not _fix_led.empty else []
             # 1) 예정(미확정) 행 제거
             _rows_fix = [r for r in _rows_fix
                          if str(r.get("종가", "")).strip() not in ("", "-", "None", "nan")]
+            _new_ti = None
             if _rows_fix:
-                # 2) 마지막 확정 행 보정 (총투자금/티어/누적실현 유지)
+                # 2) 마지막 확정 행 보정 (티어/누적실현 유지)
                 _rows_fix.sort(key=lambda r: str(r.get("날짜", "")))
                 _lf = _rows_fix[-1]
                 _cx = pd.to_numeric(_lf.get("종가"), errors="coerce")
                 _cx = float(_cx) if pd.notna(_cx) else float(_in_a)
+                _tot_asset = round(float(_in_c) + int(_in_h) * _cx, 2)
                 _lf["보유량"] = int(_in_h)
                 _lf["예수금"] = round(float(_in_c), 2)
                 _lf["평단가"] = round(float(_in_a), 4)
-                _lf["총자산"] = round(float(_in_c) + int(_in_h) * _cx, 2)
+                _lf["총자산"] = _tot_asset
+                # 총투자금(복리 기준) 재설정 — 현재 총자산으로 (선택)
+                if _reset_ti:
+                    _lf["총투자금"] = _tot_asset
+                    # 누적실현 클럭도 리셋 → 다음 renewal이 옛 실현손익을 재차 더하지 않음
+                    # (누적실현 컬럼은 비표시 · 누적실현손익 카드는 실현손익 합계라 영향 없음)
+                    for _r in _rows_fix:
+                        _r["누적실현"] = 0
+                    _new_ti = _tot_asset
+                else:
+                    _new_ti = pd.to_numeric(_lf.get("총투자금"), errors="coerce")
+                    _new_ti = float(_new_ti) if pd.notna(_new_ti) else _tot_asset
             else:
                 # 확정 행 없음 — 어제 날짜로 앵커 신규 생성
                 _anchor_d = (datetime.today().date() - timedelta(days=1)).strftime("%Y-%m-%d")
+                _tot_asset = round(float(_in_c) + int(_in_h) * float(_in_a), 2)
+                _new_ti = _tot_asset if _reset_ti else round(float(_os_cap), 2)
                 _row0 = {c: "" for c in SD_HIST_COLS}
                 _row0.update({"날짜": _anchor_d, "티어": 1, "종가": round(float(_in_a), 4),
                               "매수량": 0, "매도량": 0, "보유량": int(_in_h),
                               "평단가": round(float(_in_a), 4), "누적실현": 0,
-                              "총투자금": round(float(_os_cap), 2),
+                              "총투자금": round(float(_new_ti), 2),
                               "예수금": round(float(_in_c), 2),
-                              "총자산": round(float(_in_c) + int(_in_h) * float(_in_a), 2)})
+                              "총자산": _tot_asset})
                 _rows_fix = [_row0]
             _rewrite_sd_daily_history(tk, _rows_fix)
             st.session_state.pop(_sd_ss, None)   # 세션 캐시 제거 → 재계산
+            _div_msg = int(_div) if _div > 0 else 1
             st.success(f"✅ 보정 완료: 보유 {int(_in_h):,}주 / 예수금 ${_in_c:,.0f} / "
-                       f"평단 ${_in_a:.2f}  ·  '주문표 로드'를 다시 눌러주세요.")
+                       f"평단 ${_in_a:.2f}"
+                       + (f" · 총투자금 ${_new_ti:,.0f} → 1회매수금 ${_new_ti/_div_msg:,.0f}"
+                          if _new_ti else "")
+                       + "  ·  '주문표 로드'를 다시 눌러주세요.")
             st.rerun()
 
     # -- 주문표 로드 ------
