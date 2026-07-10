@@ -24,7 +24,7 @@ from common.config import (
     _IS_CLOUD, _CONFIG, load_config, save_config, _load_full_config,
     get_ticker_settings, save_ticker_setting, delete_ticker_setting,
     _get_ticker_history_file, _load_ticker_daily_history, _save_ticker_daily_history,
-    _update_ticker_history_rows,
+    _update_ticker_history_rows, _rewrite_ticker_daily_history,
     _get_gspread_client,
 )
 from common.auth import _save_user_settings_to_sheet, _hash_password
@@ -49,6 +49,7 @@ from avg_close_engine import (
     calc_avg_order_from_state,
     build_avg_pending_row,
     parse_avg_pending_label,
+    AVG_HIST_COLS,
 )
 
 
@@ -1149,8 +1150,58 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.session_state[f"reset_confirmed_{key_sfx}"] = False
                 st.rerun()
 
-    # ── 주문표 로드 ──
     _ss_key = f"os_res_{key_sfx}"   # session_state에 결과 저장할 키
+
+    # ── 현재 보유 상태 보정 (실제 계좌와 원장 맞추기) ──
+    with st.expander("🔧 현재 보유 상태 보정 (실제 계좌와 맞추기)"):
+        st.caption("실제 증권사 계좌의 **현재 보유주수 · 현금**을 입력하면 매매기록 앵커를 그 값으로 "
+                   "바로잡습니다. 잘못된 '예정' 행은 제거되고, 다음 주문부터 실제 보유·현금 기준으로 "
+                   "매수·매도 수량이 계산됩니다. (종가평균은 평단가가 매수 수량에 영향을 주지 않아 "
+                   "보유주수·현금만 맞추면 됩니다.)")
+        _fix_led = _load_ticker_daily_history(tk)
+        _pf_h, _pf_c = 0, 0.0
+        if not _fix_led.empty and "보유주수" in _fix_led.columns:
+            _conf = _fix_led[
+                _fix_led["매매"].astype(str).apply(lambda m: not str(m).startswith("예정"))
+                & _fix_led["종가(x)"].apply(lambda v: str(v).strip() not in ("", "-", "None", "nan"))]
+            if not _conf.empty:
+                _lastc = _conf.iloc[-1]
+                _pf_h = int(pd.to_numeric(_lastc.get("보유주수"), errors="coerce") or 0)
+                _pf_c = float(pd.to_numeric(_lastc.get("현금($)"), errors="coerce") or 0)
+        _fxa, _fxb = st.columns(2)
+        _in_h = _fxa.number_input("실제 보유주수", value=_pf_h, min_value=0, step=1,
+                                   key=f"avg_fix_h_{key_sfx}")
+        _in_c = _fxb.number_input("실제 현금 ($)", value=_pf_c, step=100.0,
+                                   key=f"avg_fix_c_{key_sfx}")
+        if st.button("✅ 현재 상태로 보정", type="secondary", key=f"avg_do_fix_{key_sfx}"):
+            _rows_fix = _fix_led.to_dict("records") if not _fix_led.empty else []
+            # 예정 행 제거 (매매가 '예정' 시작 또는 종가 빈칸)
+            _rows_fix = [r for r in _rows_fix
+                         if not str(r.get("매매", "")).startswith("예정")
+                         and str(r.get("종가(x)", "")).strip() not in ("", "-", "None", "nan")]
+            if _rows_fix:
+                _rows_fix.sort(key=lambda r: str(r.get("날짜", "")))
+                _lf = _rows_fix[-1]
+                _cx = pd.to_numeric(_lf.get("종가(x)"), errors="coerce")
+                _cx = float(_cx) if pd.notna(_cx) else 0.0
+                _lf["보유주수"] = int(_in_h)
+                _lf["현금($)"] = round(float(_in_c), 2)
+                _lf["총자산($)"] = round(float(_in_c) + int(_in_h) * _cx, 2)
+            else:
+                _anchor_d = (datetime.today().date() - timedelta(days=1)).strftime("%Y-%m-%d")
+                _row0 = {c: "" for c in AVG_HIST_COLS}
+                _row0.update({"날짜": _anchor_d, "매매": "-", "거래주수": 0, "거래금액($)": 0,
+                              "보유주수": int(_in_h), "보유기간": "-",
+                              "현금($)": round(float(_in_c), 2),
+                              "총자산($)": round(float(_in_c), 2), "종가(x)": "-"})
+                _rows_fix = [_row0]
+            _rewrite_ticker_daily_history(tk, _rows_fix, cols=AVG_HIST_COLS)
+            st.session_state.pop(_ss_key, None)   # 세션 캐시 제거 → 재계산
+            st.success(f"✅ 보정 완료: 보유 {int(_in_h):,}주 / 현금 ${_in_c:,.0f}  ·  "
+                       f"'주문표 로드'를 다시 눌러주세요.")
+            st.rerun()
+
+    # ── 주문표 로드 ──
     _btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
     if st.button(_btn_label, type="primary", key=f"run_os_{key_sfx}"):
         save_ticker_setting(tk, {"os_start": str(os_start), "os_capital": os_capital},

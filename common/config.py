@@ -211,6 +211,34 @@ def _update_ticker_history_rows(tk: str, rows: list, changed_indices: list):
         except Exception:
             pass
 
+
+def _rewrite_ticker_daily_history(tk: str, rows: list, cols: list = None):
+    """원장 전체를 rows로 교체 (행 삭제/보정 포함). rows: dict 리스트 (날짜 오름차순).
+    현재 상태 보정 전용 — 잘못된 예정 행 제거 + 앵커 행 수정에 사용."""
+    if cols is None:
+        cols = list(rows[0].keys()) if rows else []
+    df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+    # 로컬 CSV 전체 재기록
+    try:
+        f = _get_ticker_history_file(tk)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(f, index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+    # Cloud: GSheets clear 후 전체 재기록
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if gs_url:
+                client = _get_gspread_client()
+                sh = client.open_by_url(gs_url)
+                ws = sh.worksheet(f"{tk}_매매기록")
+                ws.clear()
+                _data = [list(cols)] + [[str(r.get(c, "")) for c in cols] for r in rows]
+                ws.update(values=_data, range_name="A1", value_input_option="RAW")
+        except Exception:
+            pass
+
 # 클라우드 서버에 혹시 남은 민감 정보 제거
 if _IS_CLOUD:
     try:
