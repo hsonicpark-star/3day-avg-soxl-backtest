@@ -1524,20 +1524,32 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _df_hist = pd.DataFrame(_dl) if _dl else pd.DataFrame()
     if not _df_hist.empty:
         _df_daily = _df_hist.sort_values("날짜", ascending=False).reset_index(drop=True)
-        _bc = (_df_daily["매매"] == "BUY").sum()
-        _sc = (_df_daily["매매"] == "SELL").sum()
+        # 예정 행(매매="예정(B../S..)") — 아직 체결 확정 전
+        _is_pend_avg = _df_daily["매매"].astype(str).str.startswith("예정")
+        _bc = int(((_df_daily["매매"] == "BUY") & (~_is_pend_avg)).sum())
+        _sc = int(((_df_daily["매매"] == "SELL") & (~_is_pend_avg)).sum())
+        _pend_avg_cnt = int(_is_pend_avg.sum())
         _hist_start = _df_daily["날짜"].iloc[-1]
         _hist_end   = _df_daily["날짜"].iloc[0]
+        _pend_avg_txt = f" · 예정 {_pend_avg_cnt}건" if _pend_avg_cnt else ""
         st.caption(f"기록 {_hist_start} ~ {_hist_end} | "
-                   f"총 {_bc+_sc}건 (매수 {_bc}회 · 매도 {_sc}회)")
-        st.info("📌 이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다. 파라미터를 변경해도 과거 기록은 변경되지 않습니다.", icon="ℹ️")
+                   f"총 {_bc+_sc}건 (매수 {_bc}회 · 매도 {_sc}회){_pend_avg_txt}")
+        st.info("📌 이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다. 파라미터를 변경해도 과거 기록은 변경되지 않습니다. "
+                "'예정' 행은 발송된 주문이 아직 체결 확정 전인 상태로, 다음 거래일에 실제 종가로 정산됩니다.", icon="ℹ️")
         _df_show = _df_daily.copy()
+        # 숫자 컬럼 포맷 (예정 행의 빈칸/문자열 → NaN → '-')
         for _col in ["종가(x)", "전날(p1)", "전전날(p2)", "매수경계가", "매도경계가"]:
-            _df_show[_col] = _df_show[_col].apply(lambda v: f"${v:,.4f}")
-        _df_show["거래금액($)"] = _df_show["거래금액($)"].apply(lambda v: f"${v:,.2f}" if v != 0 else "-")
-        _df_show["현금($)"]    = _df_show["현금($)"].apply(lambda v: f"${v:,.2f}")
-        _df_show["총자산($)"]  = _df_show["총자산($)"].apply(lambda v: f"${v:,.2f}")
-        _df_show["거래주수"]   = _df_show["거래주수"].apply(lambda v: f"{v:,}" if v != 0 else "-")
+            if _col in _df_show.columns:
+                _num = pd.to_numeric(_df_show[_col], errors="coerce")
+                _df_show[_col] = _num.apply(lambda v: f"${v:,.4f}" if pd.notna(v) else "-")
+        _num = pd.to_numeric(_df_show["거래금액($)"], errors="coerce")
+        _df_show["거래금액($)"] = _num.apply(lambda v: f"${v:,.2f}" if (pd.notna(v) and v != 0) else "-")
+        _num = pd.to_numeric(_df_show["현금($)"], errors="coerce")
+        _df_show["현금($)"]    = _num.apply(lambda v: f"${v:,.2f}" if pd.notna(v) else "-")
+        _num = pd.to_numeric(_df_show["총자산($)"], errors="coerce")
+        _df_show["총자산($)"]  = _num.apply(lambda v: f"${v:,.2f}" if pd.notna(v) else "-")
+        _num = pd.to_numeric(_df_show["거래주수"], errors="coerce")
+        _df_show["거래주수"]   = _num.apply(lambda v: f"{int(v):,}" if (pd.notna(v) and v != 0) else "-")
         # 구버전 캐시 호환: 컬럼 없으면 None으로 채움
         # CSV 로드 시 문자열로 읽힐 수 있으므로 pd.to_numeric으로 강제 변환
         _pnl_amt_raw = _df_daily["실현손익($)"]   if "실현손익($)"   in _df_daily.columns else [None] * len(_df_daily)
@@ -1553,17 +1565,34 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             lambda v: f"{v:+.2f}%" if not pd.isna(v) else "-"
         )
         # 매매 컬럼에 체결가 포함 (원본 _df_daily의 float 종가 사용)
-        _df_show["매매"] = _df_daily.apply(
-            lambda r: f"BUY (${r['종가(x)']:.2f})"  if r["매매"] == "BUY"
-                 else (f"SELL (${r['종가(x)']:.2f})" if r["매매"] == "SELL" else "-"),
-            axis=1,
-        )
+        def _fmt_avg_trade(r):
+            m = str(r.get("매매", ""))
+            if m.startswith("예정"):
+                _pq = parse_avg_pending_label(m)
+                if _pq:
+                    _b, _s = _pq
+                    _p = []
+                    if _b > 0: _p.append(f"매수 {_b}")
+                    if _s > 0: _p.append(f"매도 {_s}")
+                    return "🕓 예정 (" + " / ".join(_p) + ")" if _p else "🕓 예정"
+                return "🕓 예정"
+            if m == "미체결":
+                return "미체결"
+            _cx = pd.to_numeric(r.get("종가(x)", 0), errors="coerce")
+            _cx = float(_cx) if pd.notna(_cx) else 0.0
+            if m == "BUY":  return f"BUY (${_cx:.2f})"
+            if m == "SELL": return f"SELL (${_cx:.2f})"
+            return "-"
+        _df_show["매매"] = _df_daily.apply(_fmt_avg_trade, axis=1)
 
         def _style_daily(row):
-            if str(row["매매"]).startswith("BUY"):  return ["background-color: #FFF0F0"] * len(row)
-            if str(row["매매"]).startswith("SELL"): return ["background-color: #F0FFF4"] * len(row)
+            _m = str(row["매매"])
+            if _m.startswith("🕓"): return ["background-color: #F5F5F5"] * len(row)  # 예정: 회색
+            if _m.startswith("BUY"):  return ["background-color: #FFF0F0"] * len(row)
+            if _m.startswith("SELL"): return ["background-color: #F0FFF4"] * len(row)
             return [""] * len(row)
         def _style_action(val):
+            if str(val).startswith("🕓"): return "color: #F57C00; font-weight: bold"  # 예정: 주황
             if str(val).startswith("BUY"):  return "color: #C62828; font-weight: bold"
             if str(val).startswith("SELL"): return "color: #1565C0; font-weight: bold"
             return "color: #999"

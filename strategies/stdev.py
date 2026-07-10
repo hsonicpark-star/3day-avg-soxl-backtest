@@ -1539,25 +1539,40 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
     if not _sd_hist_df.empty:
         _sd_daily = _sd_hist_df.sort_values("날짜", ascending=False).reset_index(drop=True)
-        # 매매 유형 파악 (매수량/매도량 컬럼 기준)
-        _bc = (_sd_daily["매수량"] > 0).sum() if "매수량" in _sd_daily.columns else 0
-        _sc2 = (_sd_daily["매도량"] > 0).sum() if "매도량" in _sd_daily.columns else 0
+        # 예정 행(종가 빈칸) 여부 — 미체결/미확정 주문
+        _is_pending_col = (_sd_daily["종가"].apply(
+            lambda v: str(v).strip() in ("", "-", "None", "nan"))
+            if "종가" in _sd_daily.columns else pd.Series([False]*len(_sd_daily)))
+        # 매매 유형 파악 (매수량/매도량 컬럼 기준) — 문자열/빈칸 안전 변환
+        _bq_num = (pd.to_numeric(_sd_daily["매수량"], errors="coerce").fillna(0)
+                   if "매수량" in _sd_daily.columns else pd.Series([0]*len(_sd_daily)))
+        _sq_num = (pd.to_numeric(_sd_daily["매도량"], errors="coerce").fillna(0)
+                   if "매도량" in _sd_daily.columns else pd.Series([0]*len(_sd_daily)))
+        # 체결 완료(예정 아님)만 카운트
+        _bc = int(((_bq_num > 0) & (~_is_pending_col)).sum())
+        _sc2 = int(((_sq_num > 0) & (~_is_pending_col)).sum())
+        _pend_cnt = int(_is_pending_col.sum())
         _hist_s = _sd_daily["날짜"].iloc[-1]
         _hist_e = _sd_daily["날짜"].iloc[0]
-        st.caption(f"기록 {_hist_s} ~ {_hist_e} | 총 {_bc+_sc2}건 (매수 {_bc}회 / 매도 {_sc2}회)")
-        st.info("이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다. 파라미터를 변경해도 과거 기록은 변경되지 않습니다.", icon="ℹ️")
+        _pend_txt = f" · 예정 {_pend_cnt}건" if _pend_cnt else ""
+        st.caption(f"기록 {_hist_s} ~ {_hist_e} | 총 {_bc+_sc2}건 (매수 {_bc}회 / 매도 {_sc2}회){_pend_txt}")
+        st.info("이 기록은 실제 주문표 로드 시점에 누적 저장된 데이터입니다. 파라미터를 변경해도 과거 기록은 변경되지 않습니다. "
+                "'예정' 행은 발송된 주문이 아직 체결 확정 전인 상태로, 다음 거래일에 실제 종가로 정산됩니다.", icon="ℹ️")
 
         _sd_show = _sd_daily.copy()
-        # 숫자 컬럼 포맷
+        # 숫자 컬럼 포맷 (빈칸/문자열 → NaN → '-')
         for _col in ["종가", "매수LOC", "매도LOC"]:
             if _col in _sd_show.columns:
-                _sd_show[_col] = _sd_show[_col].apply(lambda v: f"${float(v):,.4f}" if v == v else "-")
+                _num = pd.to_numeric(_sd_show[_col], errors="coerce")
+                _sd_show[_col] = _num.apply(lambda v: f"${v:,.4f}" if pd.notna(v) else "-")
         for _col in ["예수금", "총자산"]:
             if _col in _sd_show.columns:
-                _sd_show[_col] = _sd_show[_col].apply(lambda v: f"${float(v):,.2f}" if v == v else "-")
+                _num = pd.to_numeric(_sd_show[_col], errors="coerce")
+                _sd_show[_col] = _num.apply(lambda v: f"${v:,.2f}" if pd.notna(v) else "-")
         for _col in ["매수량", "매도량", "보유량"]:
             if _col in _sd_show.columns:
-                _sd_show[_col] = _sd_show[_col].apply(lambda v: f"{int(v):,}" if v == v else "-")
+                _num = pd.to_numeric(_sd_show[_col], errors="coerce")
+                _sd_show[_col] = _num.apply(lambda v: f"{int(v):,}" if pd.notna(v) else "-")
 
         # 실현손익 포맷 + 색상용 원본 보존
         _pnl_raw = pd.to_numeric(_sd_daily["실현손익"], errors="coerce") if "실현손익" in _sd_daily.columns else pd.Series([None]*len(_sd_daily))
@@ -1570,9 +1585,15 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         # 표준편차매매는 buy_loc/sell_loc 둘 다 트리거 가능 (k_sell < k_buy 인 경우)
         # → 같은 날 매수+매도 동시 발생 가능 → BUY+SELL 라벨로 명시
         def _fmt_trade(row):
-            b = int(row.get("매수량", 0) or 0)
-            s = int(row.get("매도량", 0) or 0)
-            c = float(row.get("종가", 0) or 0)
+            b = int(pd.to_numeric(row.get("매수량", 0), errors="coerce") or 0)
+            s = int(pd.to_numeric(row.get("매도량", 0), errors="coerce") or 0)
+            # 예정 행(종가 빈칸) — 아직 체결 확정 전
+            if str(row.get("종가", "")).strip() in ("", "-", "None", "nan"):
+                _p = []
+                if b > 0: _p.append(f"매수 {b}")
+                if s > 0: _p.append(f"매도 {s}")
+                return "🕓 예정 (" + " / ".join(_p) + ")" if _p else "🕓 예정"
+            c = float(pd.to_numeric(row.get("종가", 0), errors="coerce") or 0)
             if b > 0 and s > 0: return f"BUY+SELL (${c:.2f})"
             if b > 0: return f"BUY (${c:.2f})"
             if s > 0: return f"SELL (${c:.2f})"
@@ -1581,6 +1602,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
         def _style_sd_daily(row):
             v = str(row.get("매매",""))
+            if v.startswith("🕓"): return ["background-color:#F5F5F5"]*len(row)  # 예정: 회색
             # BUY+SELL 동시 발생: 노란색 (혼합 표시)
             if v.startswith("BUY+SELL"): return ["background-color:#FFF8E1"]*len(row)
             if v.startswith("BUY"):  return ["background-color:#FFF0F0"]*len(row)
@@ -1588,6 +1610,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             return [""]*len(row)
         def _style_sd_action(val):
             v = str(val)
+            if v.startswith("🕓"): return "color:#F57C00;font-weight:bold"  # 예정: 주황
             if v.startswith("BUY+SELL"): return "color:#9A6700;font-weight:bold"  # 갈색/주황
             if v.startswith("BUY"):  return "color:#C62828;font-weight:bold"
             if v.startswith("SELL"): return "color:#1565C0;font-weight:bold"
