@@ -260,6 +260,21 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         else:
             lines.append(f"📦 보유주식 없음  |  현금: ${res['cash']:,.2f}")
 
+        # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+        # 자동발송(build_avg_message)과 동일 로직
+        try:
+            from dss_engine import tungchigi_message_lines
+            _tng_rows = []
+            if int(buy_qty) > 0:
+                _tng_rows.append(["매수", "LOC", round(float(buy_tgt), 2), int(buy_qty)])
+            if res["shares"] > 0:
+                _sq_tng = math.floor(res["shares"] * (_sell_ratio / 100.0))
+                if _sq_tng > 0:
+                    _tng_rows.append(["매도", "LOC",
+                                       round(float(res["next_sell_target"]), 2), _sq_tng])
+            lines.extend(tungchigi_message_lines(_tng_rows))
+        except Exception:
+            pass
         lines.append("※ 종가 LOC 주문 기준입니다.")
         return "\n".join(lines)
 

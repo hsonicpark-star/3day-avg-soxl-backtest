@@ -395,6 +395,22 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
             ]
         else:
             lines.append(f"📦 보유주식 없음 (전량 현금)")
+        # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+        # 자동발송(build_sd_message)과 동일 로직
+        try:
+            from dss_engine import tungchigi_message_lines
+            _tng_rows = []
+            if int(res.get("est_buy_qty", 0)) > 0:
+                _tng_rows.append(["매수", "LOC",
+                                   round(float(res["next_buy_loc"]), 2),
+                                   int(res["est_buy_qty"])])
+            if int(res.get("holdings", 0)) > 0 and int(res.get("est_sell_qty", 0)) > 0:
+                _tng_rows.append(["매도", "LOC",
+                                   round(float(res["next_sell_loc"]), 2),
+                                   int(res["est_sell_qty"])])
+            lines.extend(tungchigi_message_lines(_tng_rows))
+        except Exception:
+            pass
         lines.append("※ 종가 LOC 주문 기준입니다.")
         return "\n".join(lines)
     except Exception as e:
