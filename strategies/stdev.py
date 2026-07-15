@@ -364,6 +364,10 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                     res["est_sell_qty"] = _og_led["sell_qty"]
                     if _stg_led["avg_cost"] > 0:
                         res["avg_cost"] = round(_stg_led["avg_cost"], 4)
+                    # 총자산도 원장 기준 (시뮬 final_asset이 표시되지 않도록)
+                    res["final_asset"] = round(
+                        _stg_led["cash"] + _stg_led["holdings"]
+                        * float(res.get("last_close", 0)), 2)
         except Exception:
             pass
 
@@ -1213,7 +1217,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                    "그 값으로 바로잡습니다. 잘못된 '예정' 행은 제거되고, 다음 주문부터 실제 보유 기준으로 "
                    "매수·매도 수량이 계산됩니다. (총투자금/티어 등 전략 상태는 그대로 이어집니다.)")
         _fix_led = _load_sd_daily_history(tk)
-        _pf_h, _pf_c, _pf_a = 0, 0.0, 0.0
+        _pf_h, _pf_c, _pf_a, _pf_cx, _pf_ti = 0, 0.0, 0.0, 0.0, 0.0
         if not _fix_led.empty and "종가" in _fix_led.columns:
             _conf = _fix_led[_fix_led["종가"].apply(
                 lambda v: str(v).strip() not in ("", "-", "None", "nan"))]
@@ -1222,6 +1226,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 _pf_h = int(pd.to_numeric(_lastc.get("보유량"), errors="coerce") or 0)
                 _pf_c = float(pd.to_numeric(_lastc.get("예수금"), errors="coerce") or 0)
                 _pf_a = float(pd.to_numeric(_lastc.get("평단가"), errors="coerce") or 0)
+                _pf_cx = float(pd.to_numeric(_lastc.get("종가"), errors="coerce") or 0)
+                _pf_ti = float(pd.to_numeric(_lastc.get("총투자금"), errors="coerce") or 0)
         _fx1, _fx2, _fx3 = st.columns(3)
         _in_h = _fx1.number_input("실제 보유주수", value=_pf_h, min_value=0, step=1,
                                    key=f"sd_fix_h_{key_sfx}")
@@ -1230,6 +1236,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _in_a = _fx3.number_input("실제 평단가 ($)", value=_pf_a, step=0.01,
                                    format="%.4f", key=f"sd_fix_a_{key_sfx}")
         st.markdown("**복리 기준금액(총투자금) 설정** — 표준편차는 `1회매수금 = 총투자금 ÷ 분할수`")
+        _divN = int(_div) if _div > 0 else 1
         _ti_mode = st.radio(
             "총투자금 처리 방식", label_visibility="collapsed",
             options=["1회매수금 직접 입력", "현재 총자산으로 재설정", "기존 값 유지"],
@@ -1240,9 +1247,32 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _in_chunk = 0.0
         if _ti_mode == "1회매수금 직접 입력":
             _in_chunk = st.number_input(
-                f"1회매수금 ($) — 텔레그램 주문표의 '1회매수금'과 동일하게 (분할수 {int(_div)}회)",
-                value=0.0, min_value=0.0, step=100.0, key=f"sd_fix_chunk_{key_sfx}")
-        if st.button("✅ 현재 상태로 보정", type="secondary", key=f"sd_do_fix_{key_sfx}"):
+                f"1회매수금 ($) — 텔레그램 주문표의 '1회매수금'과 동일하게 (분할수 {_divN}회)",
+                value=round(_pf_ti / _divN, 2) if _pf_ti > 0 else 0.0,
+                min_value=0.0, step=100.0, key=f"sd_fix_chunk_{key_sfx}")
+
+        # ── 보정 결과 실시간 미리보기 (자릿수 오입력 방지) ──
+        _pv_close = _pf_cx if _pf_cx > 0 else float(_in_a or 0)
+        _pv_tot = float(_in_c) + int(_in_h) * _pv_close
+        if _ti_mode == "1회매수금 직접 입력":
+            _pv_ti = float(_in_chunk) * _divN
+        elif _ti_mode == "현재 총자산으로 재설정":
+            _pv_ti = _pv_tot
+        else:
+            _pv_ti = _pf_ti if _pf_ti > 0 else _pv_tot
+        _pv_sell = int(round(int(_in_h) * _sr / 100.0)) if int(_in_h) > 0 else 0
+        st.info(f"**보정 후 예상** → 총자산 **${_pv_tot:,.0f}** · 총투자금 **${_pv_ti:,.0f}** · "
+                f"1회매수금 **${_pv_ti/_divN:,.0f}** · 오늘 매도 예상 **{_pv_sell}주** ({_sr:.0f}%)")
+        if _pf_c > 0 and (float(_in_c) > _pf_c * 5 or (float(_in_c) > 0 and float(_in_c) < _pf_c / 5)):
+            st.warning(f"⚠️ 입력한 예수금(${_in_c:,.0f})이 기존 기록(${_pf_c:,.0f})과 크게 다릅니다. "
+                       f"**자릿수(0 개수)를 확인하세요!**")
+
+        _fix_clicked = st.button("✅ 현재 상태로 보정", type="secondary",
+                                  key=f"sd_do_fix_{key_sfx}")
+        if _fix_clicked and _ti_mode == "1회매수금 직접 입력" and float(_in_chunk) <= 0:
+            st.error("⛔ 1회매수금을 입력하세요 (0보다 커야 합니다).")
+            _fix_clicked = False
+        if _fix_clicked:
             _rows_fix = _fix_led.to_dict("records") if not _fix_led.empty else []
             # 1) 예정(미확정) 행 제거
             _rows_fix = [r for r in _rows_fix

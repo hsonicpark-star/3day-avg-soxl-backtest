@@ -2133,6 +2133,10 @@ def main():
                                 r["est_buy_qty"]  = _o_sd["buy_qty"]
                                 r["est_sell_qty"] = _o_sd["sell_qty"]
                                 r["_ledger_cum"]  = _st_sd["cum_realized"]
+                                # 총자산도 원장 기준 (시뮬 final_asset 아님) — 메시지 표시용
+                                r["total_asset"]  = round(
+                                    _st_sd["cash"] + _st_sd["holdings"]
+                                    * float(r.get("last_close", 0)), 2)
                                 _sd_ledger_on = True
                         else:
                             _sd_ledger_on = True
