@@ -369,8 +369,8 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
             if _h_led is not None and not _h_led.empty:
                 for _, _hr in _h_led.iterrows():
                     _closes_led[str(_hr["날짜"])] = float(_hr["종가"])
-            _df_led = _load_sd_daily_history(ticker_name)
-            if not _df_led.empty:
+            _df_led, _led_st_txt = _load_sd_ledger(ticker_name)
+            if _led_st_txt == "ok" and not _df_led.empty:
                 _rows_led = _df_led.to_dict("records")
                 settle_sd_pending_rows(
                     _rows_led, {d: c for d, c in _closes_led.items() if d < _today_led})

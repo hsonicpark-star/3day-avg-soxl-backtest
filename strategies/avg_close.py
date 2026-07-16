@@ -226,6 +226,66 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
             except Exception:
                 pass
 
+        # ── 원장(매매기록) 기준 override — 표시 일관성 (조회만, 쓰기 없음) ──
+        # 웹 주문표·자동발송과 동일하게 실제 체결 기준 수량 표시
+        # (표준편차 _build_sd_order_text와 동일 패턴)
+        try:
+            _today_led = today.strftime("%Y-%m-%d")
+            _df_led, _led_st = _load_ticker_ledger(ticker_name)
+            if _led_st == "ok" and not _df_led.empty:
+                _rows_led = _df_led.to_dict("records")
+                _closes_led = {str(r0.get("날짜", "")): float(r0.get("종가(x)", 0))
+                               for r0 in res.get("daily_log", [])}
+                settle_avg_pending_rows(
+                    _rows_led,
+                    {d: c for d, c in _closes_led.items() if d < _today_led})
+                _prev_led = sorted(
+                    [r0 for r0 in _rows_led
+                     if str(r0.get("날짜", "")).strip() < _today_led],
+                    key=lambda r0: str(r0.get("날짜", "")))
+                _stg_led = calc_avg_record_state(_prev_led)
+                if _stg_led:
+                    # 마지막 기록 이후 입출금만 현금에 가산
+                    _extra_led = 0.0
+                    if capital_adj_history:
+                        try:
+                            _al = (json.loads(capital_adj_history)
+                                   if isinstance(capital_adj_history, str)
+                                   else capital_adj_history)
+                            for _it in (_al if isinstance(_al, list) else []):
+                                _da = str(pd.Timestamp(_it.get("날짜")).date())
+                                if _stg_led["last_date"] < _da <= _today_led:
+                                    _extra_led += float(_it.get("조정금액", 0))
+                        except Exception:
+                            pass
+                    _cash_led = _stg_led["cash"] + _extra_led
+                    _og_led = calc_avg_order_from_state(
+                        _stg_led["shares"], _cash_led,
+                        float(res.get("p1_now", 0)),
+                        float(res.get("next_buy_primary", 0)),
+                        float(res.get("next_sell_target", 0)),
+                        _divisions, _sell_ratio)
+                    # 오늘 예정 행이 이미 있으면 그 수량 사용 (자동발송분과 일치)
+                    _tr_led = next((r0 for r0 in _rows_led
+                                    if str(r0.get("날짜", "")).strip() == _today_led),
+                                   None)
+                    if _tr_led is not None:
+                        _pq_led = parse_avg_pending_label(_tr_led.get("매매", ""))
+                        if _pq_led:
+                            _og_led["buy_qty"], _og_led["sell_qty"] = _pq_led
+                    res["shares"] = _stg_led["shares"]
+                    res["cash"] = round(_cash_led, 2)
+                    res["current_asset"] = round(_og_led["prev_asset"], 2)
+                    if _stg_led.get("avg_cost", 0) > 0:
+                        res["avg_cost"] = round(_stg_led["avg_cost"], 4)
+                    if "pending_buys" in res and res["pending_buys"]:
+                        res["pending_buys"][0]["수량"] = _og_led["buy_qty"]
+                        res["pending_buys"][0]["금액"] = (
+                            _og_led["buy_qty"] * float(res.get("next_buy_primary", 0)))
+                    res["ledger_sell_qty"] = _og_led["sell_qty"]
+        except Exception:
+            pass
+
         lp   = res["latest_price"]
         p1   = res["p1_now"]
         p2   = res["p2_now"]
@@ -244,9 +304,11 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         buy_qty = res["pending_buys"][0]["수량"]
         lines.append(f"🔴 매수 LOC {buy_qty:,}주  ${buy_tgt:,.2f}")
 
-        # 매도 (보유 시에만)
+        # 매도 (보유 시에만) — 원장 확정 수량 우선
         if res["shares"] > 0:
-            sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+            _lsq = res.get("ledger_sell_qty")
+            sell_qty = (int(_lsq) if _lsq is not None
+                        else math.floor(res["shares"] * (_sell_ratio / 100.0)))
             sell_tgt = res["next_sell_target"]
             lines.append(f"🔵 매도 LOC {sell_qty:,}주  ${sell_tgt:,.2f}")
 
@@ -268,7 +330,9 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
             if int(buy_qty) > 0:
                 _tng_rows.append(["매수", "LOC", round(float(buy_tgt), 2), int(buy_qty)])
             if res["shares"] > 0:
-                _sq_tng = math.floor(res["shares"] * (_sell_ratio / 100.0))
+                _lsq_tng = res.get("ledger_sell_qty")
+                _sq_tng = (int(_lsq_tng) if _lsq_tng is not None
+                           else math.floor(res["shares"] * (_sell_ratio / 100.0)))
                 if _sq_tng > 0:
                     _tng_rows.append(["매도", "LOC",
                                        round(float(res["next_sell_target"]), 2), _sq_tng])
