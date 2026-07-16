@@ -100,7 +100,9 @@ def _load_sd_ledger(tk: str):
             import gspread as _gs
             gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
             if not gs_url:
-                return pd.DataFrame(), True    # GSheets 미설정 → 빈 원장 취급
+                # Cloud에서 gs_url 미설정 = 원장을 저장할 곳이 없음.
+                # 휘발성 CSV에 시드/저장하면 재배포마다 증발 → 시뮬 재시드 오염.
+                return pd.DataFrame(), False
             client = _get_gspread_client()
             sh = client.open_by_url(gs_url)
             try:
@@ -1476,9 +1478,12 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 # (실패를 빈 원장으로 오인 → 시뮬 재시드 → 원장 오염 사고 방지)
                 _df_led0, _led_ok = _load_sd_ledger(tk)
                 if not _led_ok:
-                    st.error("⛔ 원장(매매기록 GSheets) 접근 실패 — 이번 로드는 시뮬 참고값만 "
-                             "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.** "
-                             "잠시 후 '새로고침'을 다시 눌러주세요. (주문은 원장 반영된 값으로만!)")
+                    st.error("⛔ 원장(매매기록 GSheets) 접근 불가 — 이번 로드는 시뮬 참고값만 "
+                             "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.**\n\n"
+                             "· **구글시트 URL이 미설정**이면: 설정 탭 → '스프레드시트 URL'에 "
+                             "본인 구글시트 주소를 등록하고 서비스 계정을 편집자로 공유하세요. "
+                             "(원장은 구글시트에 저장되어야 재접속/재배포 후에도 유지됩니다)\n"
+                             "· 일시적 접근 실패면: 잠시 후 '새로고침'을 다시 눌러주세요.")
                 if _led_ok and _df_led0.empty and _hist_sd is not None and not _hist_sd.empty:
                     # 원장 신규 시작 — 과거 시뮬 이력 시드 (오늘 제외)
                     # (엄격 로드 성공 + 진짜 빈 원장일 때만)

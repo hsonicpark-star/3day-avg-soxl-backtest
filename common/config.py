@@ -115,7 +115,9 @@ def _load_ticker_ledger(tk: str):
             import gspread as _gs
             gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
             if not gs_url:
-                return pd.DataFrame(), True
+                # Cloud에서 gs_url 미설정 = 원장을 저장할 곳이 없음.
+                # 휘발성 CSV에 시드/저장하면 재배포마다 증발 → 시뮬 재시드 오염.
+                return pd.DataFrame(), False
             client = _get_gspread_client()
             sh = client.open_by_url(gs_url)
             try:
