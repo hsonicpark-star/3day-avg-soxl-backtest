@@ -88,10 +88,11 @@ def _get_sd_history_file(tk: str) -> Path:
 
 
 def _load_sd_ledger(tk: str):
-    """원장 로드 (엄격 모드): (df, ok) 반환.
-
-    ok=False = 원장 소스(GSheets) 접근 실패 — 이때는 원장 처리
-    (정산/시드/저장/오버라이드/보정)를 전부 스킵해야 함.
+    """원장 로드 (엄격 모드): (df, status) 반환. status:
+      "ok"     — 원장 정상 (빈 원장 포함 → 시드 가능)
+      "no_url" — Cloud에서 gs_url 미설정 → 원장 미사용 모드
+                 (시뮬 기준 표시만, 원장 기록/정산/보정 비활성)
+      "error"  — GSheets 접근 실패 (일시 장애) → 원장 처리 전부 스킵
     Cloud에서 로컬 CSV는 재배포 시 초기화되는 휘발성이라 fallback으로 쓰면
     '빈 원장'으로 오인 → 시뮬 재시드 → 원장 오염이 발생함 (실사고 원인).
     """
@@ -100,27 +101,25 @@ def _load_sd_ledger(tk: str):
             import gspread as _gs
             gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
             if not gs_url:
-                # Cloud에서 gs_url 미설정 = 원장을 저장할 곳이 없음.
-                # 휘발성 CSV에 시드/저장하면 재배포마다 증발 → 시뮬 재시드 오염.
-                return pd.DataFrame(), False
+                return pd.DataFrame(), "no_url"
             client = _get_gspread_client()
             sh = client.open_by_url(gs_url)
             try:
                 ws = sh.worksheet(f"sd_{tk}_매매기록")
             except _gs.WorksheetNotFound:
-                return pd.DataFrame(), True    # 진짜 없음 → 빈 원장 (시드 가능)
+                return pd.DataFrame(), "ok"    # 진짜 없음 → 빈 원장 (시드 가능)
             records = ws.get_all_records()
-            return (pd.DataFrame(records) if records else pd.DataFrame()), True
+            return (pd.DataFrame(records) if records else pd.DataFrame()), "ok"
         except Exception:
-            return pd.DataFrame(), False       # 접근 실패 — CSV fallback 금지
-    # 로컬 모드: CSV가 원본
+            return pd.DataFrame(), "error"     # 접근 실패 — CSV fallback 금지
+    # 로컬 모드: CSV가 원본 (영구 저장이므로 원장 사용 가능)
     f = _get_sd_history_file(tk)
     if f.exists():
         try:
-            return pd.read_csv(f, encoding="utf-8-sig"), True
+            return pd.read_csv(f, encoding="utf-8-sig"), "ok"
         except Exception:
-            return pd.DataFrame(), False
-    return pd.DataFrame(), True
+            return pd.DataFrame(), "error"
+    return pd.DataFrame(), "ok"
 
 
 def _load_sd_daily_history(tk: str) -> pd.DataFrame:
@@ -1334,8 +1333,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _fix_clicked = False
         if _fix_clicked:
             # 🔒 엄격 재로드: 보정은 최신 원장 위에서만 (실패 시 중단)
-            _fix_df2, _fix_ok = _load_sd_ledger(tk)
-            if not _fix_ok:
+            _fix_df2, _fix_st = _load_sd_ledger(tk)
+            if _fix_st == "no_url":
+                st.error("⛔ 보정은 원장(구글시트) 저장이 필요합니다 — 설정 탭에서 "
+                         "'스프레드시트 URL'을 먼저 등록해주세요. "
+                         "(주문표 보기만 하려면 보정 없이 그대로 쓰시면 됩니다)")
+                st.stop()
+            elif _fix_st != "ok":
                 st.error("⛔ 원장(GSheets) 접근 실패 — 보정을 진행하지 않았습니다. "
                          "잠시 후 다시 시도해주세요.")
                 st.stop()
@@ -1474,22 +1478,26 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     for _, _hr in _hist_sd.iterrows():
                         _closes_sd_map[str(_hr["날짜"])] = float(_hr["종가"])
 
-                # 🔒 엄격 로드: GSheets 접근 실패면 원장 처리 전부 스킵.
+                # 🔒 엄격 로드: 원장 소스 상태에 따라 처리 분기.
                 # (실패를 빈 원장으로 오인 → 시뮬 재시드 → 원장 오염 사고 방지)
-                _df_led0, _led_ok = _load_sd_ledger(tk)
-                if not _led_ok:
-                    st.error("⛔ 원장(매매기록 GSheets) 접근 불가 — 이번 로드는 시뮬 참고값만 "
-                             "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.**\n\n"
-                             "· **구글시트 URL이 미설정**이면: 설정 탭 → '스프레드시트 URL'에 "
-                             "본인 구글시트 주소를 등록하고 서비스 계정을 편집자로 공유하세요. "
-                             "(원장은 구글시트에 저장되어야 재접속/재배포 후에도 유지됩니다)\n"
-                             "· 일시적 접근 실패면: 잠시 후 '새로고침'을 다시 눌러주세요.")
+                _df_led0, _led_st = _load_sd_ledger(tk)
+                _led_ok = (_led_st == "ok")
+                if _led_st == "no_url":
+                    st.info("📄 **원장 미사용 모드** — 구글시트 URL이 설정되지 않아 주문표를 "
+                            "시뮬레이션 기준으로만 표시합니다 (기록/정산/보정 비활성). "
+                            "실제 매매를 운용하시면 설정 탭에서 스프레드시트 URL을 등록하세요 — "
+                            "실제 체결 기준으로 수량이 관리되어 훨씬 정확합니다.")
+                elif _led_st == "error":
+                    st.error("⛔ 원장(매매기록 GSheets) 접근 실패 — 이번 로드는 시뮬 참고값만 "
+                             "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.** "
+                             "잠시 후 '새로고침'을 다시 눌러주세요. (주문은 원장 반영된 값으로만!)")
                 if _led_ok and _df_led0.empty and _hist_sd is not None and not _hist_sd.empty:
                     # 원장 신규 시작 — 과거 시뮬 이력 시드 (오늘 제외)
                     # (엄격 로드 성공 + 진짜 빈 원장일 때만)
                     _seed = _hist_sd[_hist_sd["날짜"].astype(str) != _today_sd].copy()
                     _save_sd_daily_history(tk, _seed)
-                    _df_led0, _led_ok = _load_sd_ledger(tk)
+                    _df_led0, _led_st = _load_sd_ledger(tk)
+                    _led_ok = (_led_st == "ok")
                 _rows_led = (_df_led0.to_dict("records")
                              if _led_ok and not _df_led0.empty else [])
 

@@ -104,37 +104,36 @@ def _get_ticker_history_file(tk: str) -> Path:
     return Path.home() / ".usd-avg" / f"history_{tk}.csv"
 
 def _load_ticker_ledger(tk: str):
-    """원장 로드 (엄격 모드): (df, ok) 반환.
-
-    ok=False = 원장 소스(GSheets) 접근 실패 — 원장 처리(정산/시드/저장/
-    오버라이드/보정)를 전부 스킵해야 함. Cloud에서 로컬 CSV는 재배포 시
-    초기화되는 휘발성이라 fallback으로 쓰면 '빈 원장'으로 오인 →
-    시뮬 재시드 → 원장 오염이 발생함."""
+    """원장 로드 (엄격 모드): (df, status) 반환. status:
+      "ok"     — 원장 정상 (빈 원장 포함 → 시드 가능)
+      "no_url" — Cloud에서 gs_url 미설정 → 원장 미사용 모드
+                 (시뮬 기준 표시만, 원장 기록/정산/보정 비활성)
+      "error"  — GSheets 접근 실패 (일시 장애) → 원장 처리 전부 스킵
+    Cloud에서 로컬 CSV는 재배포 시 초기화되는 휘발성이라 fallback으로 쓰면
+    '빈 원장'으로 오인 → 시뮬 재시드 → 원장 오염이 발생함."""
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
             import gspread as _gs
             gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
             if not gs_url:
-                # Cloud에서 gs_url 미설정 = 원장을 저장할 곳이 없음.
-                # 휘발성 CSV에 시드/저장하면 재배포마다 증발 → 시뮬 재시드 오염.
-                return pd.DataFrame(), False
+                return pd.DataFrame(), "no_url"
             client = _get_gspread_client()
             sh = client.open_by_url(gs_url)
             try:
                 ws = sh.worksheet(f"{tk}_매매기록")
             except _gs.WorksheetNotFound:
-                return pd.DataFrame(), True
+                return pd.DataFrame(), "ok"
             records = ws.get_all_records()
-            return (pd.DataFrame(records) if records else pd.DataFrame()), True
+            return (pd.DataFrame(records) if records else pd.DataFrame()), "ok"
         except Exception:
-            return pd.DataFrame(), False
+            return pd.DataFrame(), "error"
     f = _get_ticker_history_file(tk)
     if f.exists():
         try:
-            return pd.read_csv(f, encoding="utf-8-sig"), True
+            return pd.read_csv(f, encoding="utf-8-sig"), "ok"
         except Exception:
-            return pd.DataFrame(), False
-    return pd.DataFrame(), True
+            return pd.DataFrame(), "error"
+    return pd.DataFrame(), "ok"
 
 
 def _load_ticker_daily_history(tk: str) -> pd.DataFrame:

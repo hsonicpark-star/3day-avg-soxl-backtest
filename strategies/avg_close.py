@@ -1203,8 +1203,13 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
         if st.button("✅ 현재 상태로 보정", type="secondary", key=f"avg_do_fix_{key_sfx}"):
             # 🔒 엄격 재로드: 보정은 최신 원장 위에서만 (실패 시 중단)
-            _fix_df2, _fix_ok = _load_ticker_ledger(tk)
-            if not _fix_ok:
+            _fix_df2, _fix_st = _load_ticker_ledger(tk)
+            if _fix_st == "no_url":
+                st.error("⛔ 보정은 원장(구글시트) 저장이 필요합니다 — 설정 탭에서 "
+                         "'스프레드시트 URL'을 먼저 등록해주세요. "
+                         "(주문표 보기만 하려면 보정 없이 그대로 쓰시면 됩니다)")
+                st.stop()
+            elif _fix_st != "ok":
                 st.error("⛔ 원장(GSheets) 접근 실패 — 보정을 진행하지 않았습니다. "
                          "잠시 후 다시 시도해주세요.")
                 st.stop()
@@ -1310,23 +1315,27 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _today_str_hist = datetime.today().strftime("%Y-%m-%d")
         _closes_map = {str(row.get("날짜", "")): float(row.get("종가(x)", 0))
                        for row in res.get("daily_log", [])}
-        # 🔒 엄격 로드: GSheets 접근 실패면 원장 처리 전부 스킵.
+        # 🔒 엄격 로드: 원장 소스 상태에 따라 처리 분기.
         # (실패를 빈 원장으로 오인 → 시뮬 재시드 → 원장 오염 사고 방지)
-        _df_hist0, _led_ok = _load_ticker_ledger(tk)
-        if not _led_ok:
-            st.error("⛔ 원장(매매기록 GSheets) 접근 불가 — 이번 로드는 시뮬 참고값만 "
-                     "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.**\n\n"
-                     "· **구글시트 URL이 미설정**이면: 설정 탭 → '스프레드시트 URL'에 "
-                     "본인 구글시트 주소를 등록하고 서비스 계정을 편집자로 공유하세요. "
-                     "(원장은 구글시트에 저장되어야 재접속/재배포 후에도 유지됩니다)\n"
-                     "· 일시적 접근 실패면: 잠시 후 '새로고침'을 다시 눌러주세요.")
+        _df_hist0, _led_st = _load_ticker_ledger(tk)
+        _led_ok = (_led_st == "ok")
+        if _led_st == "no_url":
+            st.info("📄 **원장 미사용 모드** — 구글시트 URL이 설정되지 않아 주문표를 "
+                    "시뮬레이션 기준으로만 표시합니다 (기록/정산/보정 비활성). "
+                    "실제 매매를 운용하시면 설정 탭에서 스프레드시트 URL을 등록하세요 — "
+                    "실제 체결 기준으로 수량이 관리되어 훨씬 정확합니다.")
+        elif _led_st == "error":
+            st.error("⛔ 원장(매매기록 GSheets) 접근 실패 — 이번 로드는 시뮬 참고값만 "
+                     "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.** "
+                     "잠시 후 '새로고침'을 다시 눌러주세요. (주문은 원장 반영된 값으로만!)")
         if _led_ok and _df_hist0.empty:
             # 원장 신규 시작 — 과거 시뮬 이력을 시드로 (오늘 제외)
             # (엄격 로드 성공 + 진짜 빈 원장일 때만)
             _dl_filtered = [row for row in res.get("daily_log", [])
                               if str(row.get("날짜", "")) != _today_str_hist]
             _save_ticker_daily_history(tk, _dl_filtered)
-            _df_hist0, _led_ok = _load_ticker_ledger(tk)
+            _df_hist0, _led_st = _load_ticker_ledger(tk)
+            _led_ok = (_led_st == "ok")
         _rows_led = (_df_hist0.to_dict("records")
                      if _led_ok and not _df_hist0.empty else [])
 
