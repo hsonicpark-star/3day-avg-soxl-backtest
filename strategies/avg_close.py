@@ -24,7 +24,7 @@ from common.config import (
     _IS_CLOUD, _CONFIG, load_config, save_config, _load_full_config,
     get_ticker_settings, save_ticker_setting, delete_ticker_setting,
     _get_ticker_history_file, _load_ticker_daily_history, _save_ticker_daily_history,
-    _update_ticker_history_rows, _rewrite_ticker_daily_history,
+    _update_ticker_history_rows, _rewrite_ticker_daily_history, _load_ticker_ledger,
     _get_gspread_client,
 )
 from common.auth import _save_user_settings_to_sheet, _hash_password
@@ -1202,11 +1202,22 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                        f"**자릿수(0 개수)를 확인하세요!**")
 
         if st.button("✅ 현재 상태로 보정", type="secondary", key=f"avg_do_fix_{key_sfx}"):
-            _rows_fix = _fix_led.to_dict("records") if not _fix_led.empty else []
+            # 🔒 엄격 재로드: 보정은 최신 원장 위에서만 (실패 시 중단)
+            _fix_df2, _fix_ok = _load_ticker_ledger(tk)
+            if not _fix_ok:
+                st.error("⛔ 원장(GSheets) 접근 실패 — 보정을 진행하지 않았습니다. "
+                         "잠시 후 다시 시도해주세요.")
+                st.stop()
+            _rows_fix = _fix_df2.to_dict("records") if not _fix_df2.empty else []
             # 예정 행 제거 (매매가 '예정' 시작 또는 종가 빈칸)
             _rows_fix = [r for r in _rows_fix
                          if not str(r.get("매매", "")).startswith("예정")
                          and str(r.get("종가(x)", "")).strip() not in ("", "-", "None", "nan")]
+            # 중복 날짜 제거 (오염으로 같은 날짜가 여러 번 저장된 경우 첫 행 유지)
+            _seen_d = set()
+            _rows_fix = [r for r in _rows_fix
+                         if str(r.get("날짜", "")).strip() not in _seen_d
+                         and not _seen_d.add(str(r.get("날짜", "")).strip())]
             if _rows_fix:
                 _rows_fix.sort(key=lambda r: str(r.get("날짜", "")))
                 _lf = _rows_fix[-1]
@@ -1223,7 +1234,11 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                               "현금($)": round(float(_in_c), 2),
                               "총자산($)": round(float(_in_c), 2), "종가(x)": "-"})
                 _rows_fix = [_row0]
-            _rewrite_ticker_daily_history(tk, _rows_fix, cols=AVG_HIST_COLS)
+            _rw_ok, _rw_err = _rewrite_ticker_daily_history(tk, _rows_fix, cols=AVG_HIST_COLS)
+            if not _rw_ok:
+                st.error(f"⛔ 보정 저장 실패 — 원장(GSheets)에 기록되지 않았습니다. "
+                         f"다시 시도해주세요. (원인: {_rw_err})")
+                st.stop()
             st.session_state.pop(_ss_key, None)   # 세션 캐시 제거 → 재계산
             st.success(f"✅ 보정 완료: 보유 {int(_in_h):,}주 / 현금 ${_in_c:,.0f}  ·  "
                        f"'주문표 로드'를 다시 눌러주세요.")
@@ -1295,28 +1310,37 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _today_str_hist = datetime.today().strftime("%Y-%m-%d")
         _closes_map = {str(row.get("날짜", "")): float(row.get("종가(x)", 0))
                        for row in res.get("daily_log", [])}
-        _df_hist0 = _load_ticker_daily_history(tk)
-        if _df_hist0.empty:
+        # 🔒 엄격 로드: GSheets 접근 실패면 원장 처리 전부 스킵.
+        # (실패를 빈 원장으로 오인 → 시뮬 재시드 → 원장 오염 사고 방지)
+        _df_hist0, _led_ok = _load_ticker_ledger(tk)
+        if not _led_ok:
+            st.error("⛔ 원장(매매기록 GSheets) 접근 실패 — 이번 로드는 시뮬 참고값만 "
+                     "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.** "
+                     "잠시 후 '새로고침'을 다시 눌러주세요. (주문은 원장 반영된 값으로만!)")
+        if _led_ok and _df_hist0.empty:
             # 원장 신규 시작 — 과거 시뮬 이력을 시드로 (오늘 제외)
+            # (엄격 로드 성공 + 진짜 빈 원장일 때만)
             _dl_filtered = [row for row in res.get("daily_log", [])
                               if str(row.get("날짜", "")) != _today_str_hist]
             _save_ticker_daily_history(tk, _dl_filtered)
-            _df_hist0 = _load_ticker_daily_history(tk)
-        _rows_led = _df_hist0.to_dict("records") if not _df_hist0.empty else []
+            _df_hist0, _led_ok = _load_ticker_ledger(tk)
+        _rows_led = (_df_hist0.to_dict("records")
+                     if _led_ok and not _df_hist0.empty else [])
 
         # 2) 예정 행 정산 (오늘 이전분만 — 오늘 예정은 내일 정산)
-        try:
-            _closes_conf = {d: c for d, c in _closes_map.items()
-                            if d < _today_str_hist}
-            _chg_led = settle_avg_pending_rows(_rows_led, _closes_conf)
-            if _chg_led:
-                _update_ticker_history_rows(tk, _rows_led, _chg_led)
-                for _ci in _chg_led:
-                    st.info(f"🧾 {_rows_led[_ci].get('날짜')} 예정 주문 정산 → "
-                            f"{_rows_led[_ci].get('매매')} "
-                            f"{_rows_led[_ci].get('거래주수')}주")
-        except Exception as _stl_err:
-            st.warning(f"예정 주문 정산 실패 (다음 로드 때 재시도): {_stl_err}")
+        if _led_ok:
+            try:
+                _closes_conf = {d: c for d, c in _closes_map.items()
+                                if d < _today_str_hist}
+                _chg_led = settle_avg_pending_rows(_rows_led, _closes_conf)
+                if _chg_led:
+                    _update_ticker_history_rows(tk, _rows_led, _chg_led)
+                    for _ci in _chg_led:
+                        st.info(f"🧾 {_rows_led[_ci].get('날짜')} 예정 주문 정산 → "
+                                f"{_rows_led[_ci].get('매매')} "
+                                f"{_rows_led[_ci].get('거래주수')}주")
+            except Exception as _stl_err:
+                st.warning(f"예정 주문 정산 실패 (다음 로드 때 재시도): {_stl_err}")
 
         # 3) 원장 상태 → 오늘 주문 수량 (엔진 룰: 1회매수금 = 전일총자산/분할)
         _ledger = None

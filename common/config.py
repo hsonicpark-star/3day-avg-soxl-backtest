@@ -103,6 +103,38 @@ def _get_ticker_history_file(tk: str) -> Path:
         return Path(__file__).parent.parent / f"history_{tk}.csv"
     return Path.home() / ".usd-avg" / f"history_{tk}.csv"
 
+def _load_ticker_ledger(tk: str):
+    """원장 로드 (엄격 모드): (df, ok) 반환.
+
+    ok=False = 원장 소스(GSheets) 접근 실패 — 원장 처리(정산/시드/저장/
+    오버라이드/보정)를 전부 스킵해야 함. Cloud에서 로컬 CSV는 재배포 시
+    초기화되는 휘발성이라 fallback으로 쓰면 '빈 원장'으로 오인 →
+    시뮬 재시드 → 원장 오염이 발생함."""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if not gs_url:
+                return pd.DataFrame(), True
+            client = _get_gspread_client()
+            sh = client.open_by_url(gs_url)
+            try:
+                ws = sh.worksheet(f"{tk}_매매기록")
+            except _gs.WorksheetNotFound:
+                return pd.DataFrame(), True
+            records = ws.get_all_records()
+            return (pd.DataFrame(records) if records else pd.DataFrame()), True
+        except Exception:
+            return pd.DataFrame(), False
+    f = _get_ticker_history_file(tk)
+    if f.exists():
+        try:
+            return pd.read_csv(f, encoding="utf-8-sig"), True
+        except Exception:
+            return pd.DataFrame(), False
+    return pd.DataFrame(), True
+
+
 def _load_ticker_daily_history(tk: str) -> pd.DataFrame:
     """ticker별 누적 매매 히스토리 로드. Cloud: GSheets 우선, 로컬: CSV."""
     if _IS_CLOUD and st.session_state.get("logged_in"):
@@ -212,9 +244,11 @@ def _update_ticker_history_rows(tk: str, rows: list, changed_indices: list):
             pass
 
 
-def _rewrite_ticker_daily_history(tk: str, rows: list, cols: list = None):
+def _rewrite_ticker_daily_history(tk: str, rows: list, cols: list = None) -> tuple:
     """원장 전체를 rows로 교체 (행 삭제/보정 포함). rows: dict 리스트 (날짜 오름차순).
-    현재 상태 보정 전용 — 잘못된 예정 행 제거 + 앵커 행 수정에 사용."""
+    현재 상태 보정 전용 — 잘못된 예정 행 제거 + 앵커 행 수정에 사용.
+    Returns: (ok: bool, err: str) — Cloud에서 GSheets 기록 실패 시 ok=False.
+    실패를 조용히 삼키면 보정이 안 됐는데 성공 표시 → 다음날 재발."""
     if cols is None:
         cols = list(rows[0].keys()) if rows else []
     df = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
@@ -225,19 +259,24 @@ def _rewrite_ticker_daily_history(tk: str, rows: list, cols: list = None):
         df.to_csv(f, index=False, encoding="utf-8-sig")
     except Exception:
         pass
-    # Cloud: GSheets clear 후 전체 재기록
+    # Cloud: GSheets clear 후 전체 재기록 — 여기가 진짜 원장, 실패는 보고
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
             gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
-            if gs_url:
-                client = _get_gspread_client()
-                sh = client.open_by_url(gs_url)
+            if not gs_url:
+                return False, "GSheets URL 미설정"
+            client = _get_gspread_client()
+            sh = client.open_by_url(gs_url)
+            try:
                 ws = sh.worksheet(f"{tk}_매매기록")
-                ws.clear()
-                _data = [list(cols)] + [[str(r.get(c, "")) for c in cols] for r in rows]
-                ws.update(values=_data, range_name="A1", value_input_option="RAW")
-        except Exception:
-            pass
+            except Exception:
+                ws = sh.add_worksheet(title=f"{tk}_매매기록", rows=5000, cols=25)
+            ws.clear()
+            _data = [list(cols)] + [[str(r.get(c, "")) for c in cols] for r in rows]
+            ws.update(values=_data, range_name="A1", value_input_option="RAW")
+        except Exception as _e:
+            return False, str(_e)
+    return True, ""
 
 # 클라우드 서버에 혹시 남은 민감 정보 제거
 if _IS_CLOUD:

@@ -87,8 +87,42 @@ def _get_sd_history_file(tk: str) -> Path:
     return Path.home() / ".usd-avg" / f"sd_history_{tk}.csv"
 
 
+def _load_sd_ledger(tk: str):
+    """원장 로드 (엄격 모드): (df, ok) 반환.
+
+    ok=False = 원장 소스(GSheets) 접근 실패 — 이때는 원장 처리
+    (정산/시드/저장/오버라이드/보정)를 전부 스킵해야 함.
+    Cloud에서 로컬 CSV는 재배포 시 초기화되는 휘발성이라 fallback으로 쓰면
+    '빈 원장'으로 오인 → 시뮬 재시드 → 원장 오염이 발생함 (실사고 원인).
+    """
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        try:
+            import gspread as _gs
+            gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
+            if not gs_url:
+                return pd.DataFrame(), True    # GSheets 미설정 → 빈 원장 취급
+            client = _get_gspread_client()
+            sh = client.open_by_url(gs_url)
+            try:
+                ws = sh.worksheet(f"sd_{tk}_매매기록")
+            except _gs.WorksheetNotFound:
+                return pd.DataFrame(), True    # 진짜 없음 → 빈 원장 (시드 가능)
+            records = ws.get_all_records()
+            return (pd.DataFrame(records) if records else pd.DataFrame()), True
+        except Exception:
+            return pd.DataFrame(), False       # 접근 실패 — CSV fallback 금지
+    # 로컬 모드: CSV가 원본
+    f = _get_sd_history_file(tk)
+    if f.exists():
+        try:
+            return pd.read_csv(f, encoding="utf-8-sig"), True
+        except Exception:
+            return pd.DataFrame(), False
+    return pd.DataFrame(), True
+
+
 def _load_sd_daily_history(tk: str) -> pd.DataFrame:
-    """Cloud: GSheets 우선 읽기. 로컬: CSV 읽기."""
+    """Cloud: GSheets 우선 읽기. 로컬: CSV 읽기. (표시 전용 — 관대 모드)"""
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
             import gspread as _gs
@@ -196,9 +230,12 @@ def _save_sd_daily_history(tk: str, hist_df: pd.DataFrame):
             pass
 
 
-def _rewrite_sd_daily_history(tk: str, rows: list):
+def _rewrite_sd_daily_history(tk: str, rows: list) -> tuple:
     """원장 전체를 rows로 교체 (행 삭제/보정 포함). rows: dict 리스트 (날짜 오름차순).
-    현재 상태 보정 전용 — 잘못된 예정 행 제거 + 앵커 행 수정에 사용."""
+    현재 상태 보정 전용 — 잘못된 예정 행 제거 + 앵커 행 수정에 사용.
+    Returns: (ok: bool, err: str) — Cloud에서 GSheets 기록 실패 시 ok=False.
+    실패를 조용히 삼키면 사용자는 보정됐다고 믿는데 원장은 옛 상태 그대로
+    남아 다음날 잘못된 수량이 재등장함 (실사고 원인)."""
     df = (pd.DataFrame(rows, columns=SD_HIST_COLS) if rows
           else pd.DataFrame(columns=SD_HIST_COLS))
     # 로컬 CSV 전체 재기록
@@ -208,20 +245,25 @@ def _rewrite_sd_daily_history(tk: str, rows: list):
         df.to_csv(f, index=False, encoding="utf-8-sig")
     except Exception:
         pass
-    # Cloud: GSheets clear 후 전체 재기록
+    # Cloud: GSheets clear 후 전체 재기록 — 여기가 진짜 원장, 실패는 보고
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
             gs_url = st.session_state.get("user_settings", {}).get("gs_url", "")
-            if gs_url:
-                client = _get_gspread_client()
-                sh = client.open_by_url(gs_url)
+            if not gs_url:
+                return False, "GSheets URL 미설정"
+            client = _get_gspread_client()
+            sh = client.open_by_url(gs_url)
+            try:
                 ws = sh.worksheet(f"sd_{tk}_매매기록")
-                ws.clear()
-                _data = [list(SD_HIST_COLS)] + [
-                    [str(r.get(c, "")) for c in SD_HIST_COLS] for r in rows]
-                ws.update(values=_data, range_name="A1", value_input_option="RAW")
-        except Exception:
-            pass
+            except Exception:
+                ws = sh.add_worksheet(title=f"sd_{tk}_매매기록", rows=5000, cols=25)
+            ws.clear()
+            _data = [list(SD_HIST_COLS)] + [
+                [str(r.get(c, "")) for c in SD_HIST_COLS] for r in rows]
+            ws.update(values=_data, range_name="A1", value_input_option="RAW")
+        except Exception as _e:
+            return False, str(_e)
+    return True, ""
 
 
 def _update_sd_daily_history_rows(tk: str, rows: list, changed_indices: list):
@@ -1289,10 +1331,21 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             st.error("⛔ 1회매수금을 입력하세요 (0보다 커야 합니다).")
             _fix_clicked = False
         if _fix_clicked:
-            _rows_fix = _fix_led.to_dict("records") if not _fix_led.empty else []
+            # 🔒 엄격 재로드: 보정은 최신 원장 위에서만 (실패 시 중단)
+            _fix_df2, _fix_ok = _load_sd_ledger(tk)
+            if not _fix_ok:
+                st.error("⛔ 원장(GSheets) 접근 실패 — 보정을 진행하지 않았습니다. "
+                         "잠시 후 다시 시도해주세요.")
+                st.stop()
+            _rows_fix = _fix_df2.to_dict("records") if not _fix_df2.empty else []
             # 1) 예정(미확정) 행 제거
             _rows_fix = [r for r in _rows_fix
                          if str(r.get("종가", "")).strip() not in ("", "-", "None", "nan")]
+            # 1-2) 중복 날짜 제거 (오염으로 같은 날짜가 여러 번 저장된 경우 첫 행 유지)
+            _seen_d = set()
+            _rows_fix = [r for r in _rows_fix
+                         if str(r.get("날짜", "")).strip() not in _seen_d
+                         and not _seen_d.add(str(r.get("날짜", "")).strip())]
             _new_ti = None
             _divN = int(_div) if _div > 0 else 1
             _reset_clock = _ti_mode in ("1회매수금 직접 입력", "현재 총자산으로 재설정")
@@ -1338,7 +1391,11 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                               "예수금": round(float(_in_c), 2),
                               "총자산": _tot_asset})
                 _rows_fix = [_row0]
-            _rewrite_sd_daily_history(tk, _rows_fix)
+            _rw_ok, _rw_err = _rewrite_sd_daily_history(tk, _rows_fix)
+            if not _rw_ok:
+                st.error(f"⛔ 보정 저장 실패 — 원장(GSheets)에 기록되지 않았습니다. "
+                         f"다시 시도해주세요. (원인: {_rw_err})")
+                st.stop()
             st.session_state.pop(_sd_ss, None)   # 세션 캐시 제거 → 재계산
             _div_msg = int(_div) if _div > 0 else 1
             st.success(f"✅ 보정 완료: 보유 {int(_in_h):,}주 / 예수금 ${_in_c:,.0f} / "
@@ -1415,26 +1472,35 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     for _, _hr in _hist_sd.iterrows():
                         _closes_sd_map[str(_hr["날짜"])] = float(_hr["종가"])
 
-                _df_led0 = _load_sd_daily_history(tk)
-                if _df_led0.empty and _hist_sd is not None and not _hist_sd.empty:
+                # 🔒 엄격 로드: GSheets 접근 실패면 원장 처리 전부 스킵.
+                # (실패를 빈 원장으로 오인 → 시뮬 재시드 → 원장 오염 사고 방지)
+                _df_led0, _led_ok = _load_sd_ledger(tk)
+                if not _led_ok:
+                    st.error("⛔ 원장(매매기록 GSheets) 접근 실패 — 이번 로드는 시뮬 참고값만 "
+                             "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.** "
+                             "잠시 후 '새로고침'을 다시 눌러주세요. (주문은 원장 반영된 값으로만!)")
+                if _led_ok and _df_led0.empty and _hist_sd is not None and not _hist_sd.empty:
                     # 원장 신규 시작 — 과거 시뮬 이력 시드 (오늘 제외)
+                    # (엄격 로드 성공 + 진짜 빈 원장일 때만)
                     _seed = _hist_sd[_hist_sd["날짜"].astype(str) != _today_sd].copy()
                     _save_sd_daily_history(tk, _seed)
-                    _df_led0 = _load_sd_daily_history(tk)
-                _rows_led = _df_led0.to_dict("records") if not _df_led0.empty else []
+                    _df_led0, _led_ok = _load_sd_ledger(tk)
+                _rows_led = (_df_led0.to_dict("records")
+                             if _led_ok and not _df_led0.empty else [])
 
                 # 2) 예정 정산 (오늘 이전분만)
-                try:
-                    _cc = {d: c for d, c in _closes_sd_map.items() if d < _today_sd}
-                    _chg = settle_sd_pending_rows(_rows_led, _cc)
-                    if _chg:
-                        _update_sd_daily_history_rows(tk, _rows_led, _chg)
-                        for _ci in _chg:
-                            st.info(f"🧾 {_rows_led[_ci].get('날짜')} 예정 정산 → "
-                                    f"매수 {_rows_led[_ci].get('매수량')} / "
-                                    f"매도 {_rows_led[_ci].get('매도량')}주")
-                except Exception as _stl:
-                    st.warning(f"예정 정산 실패 (다음 로드 때 재시도): {_stl}")
+                if _led_ok:
+                    try:
+                        _cc = {d: c for d, c in _closes_sd_map.items() if d < _today_sd}
+                        _chg = settle_sd_pending_rows(_rows_led, _cc)
+                        if _chg:
+                            _update_sd_daily_history_rows(tk, _rows_led, _chg)
+                            for _ci in _chg:
+                                st.info(f"🧾 {_rows_led[_ci].get('날짜')} 예정 정산 → "
+                                        f"매수 {_rows_led[_ci].get('매수량')} / "
+                                        f"매도 {_rows_led[_ci].get('매도량')}주")
+                    except Exception as _stl:
+                        st.warning(f"예정 정산 실패 (다음 로드 때 재시도): {_stl}")
 
                 # 3) 원장 상태 → 오늘 주문 수량 (엔진 룰: 티어/renewal 포함)
                 _sd_ledger = None
