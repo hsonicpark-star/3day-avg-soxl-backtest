@@ -1,0 +1,426 @@
+<title>표준편차매매법 가이드</title>
+<style>
+  :root {
+    --bg: #F6F7F5;
+    --surface: #FFFFFF;
+    --ink: #20262B;
+    --ink-soft: #5A6570;
+    --line: #E2E6E3;
+    --accent: #8A6D1E;
+    --buy: #C0392B;
+    --buy-bg: #FBEFED;
+    --sell: #1D5FA7;
+    --sell-bg: #EDF3FA;
+    --both: #C77700;
+    --both-bg: #FBF3E4;
+    --mono: Consolas, "D2Coding", "Nanum Gothic Coding", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181A; --surface: #1C2023; --ink: #E4E7E4; --ink-soft: #9AA5A5;
+      --line: #2C3235; --accent: #D4AE4E;
+      --buy: #E0685C; --buy-bg: #33221F; --sell: #6EA3E0; --sell-bg: #1D2733;
+      --both: #E0A34E; --both-bg: #332A1C;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181A; --surface: #1C2023; --ink: #E4E7E4; --ink-soft: #9AA5A5;
+    --line: #2C3235; --accent: #D4AE4E;
+    --buy: #E0685C; --buy-bg: #33221F; --sell: #6EA3E0; --sell-bg: #1D2733;
+    --both: #E0A34E; --both-bg: #332A1C;
+  }
+  :root[data-theme="light"] {
+    --bg: #F6F7F5; --surface: #FFFFFF; --ink: #20262B; --ink-soft: #5A6570;
+    --line: #E2E6E3; --accent: #8A6D1E;
+    --buy: #C0392B; --buy-bg: #FBEFED; --sell: #1D5FA7; --sell-bg: #EDF3FA;
+    --both: #C77700; --both-bg: #FBF3E4;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", sans-serif;
+    font-size: 15.5px; line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  /* ── 헤더 ── */
+  header { padding: 28px 0 36px; border-bottom: 2px solid var(--ink); margin-bottom: 40px; }
+  .doc-label {
+    font-size: 12px; letter-spacing: .14em; color: var(--accent);
+    font-weight: 700; margin-bottom: 14px;
+  }
+  h1 {
+    font-size: 34px; line-height: 1.2; margin: 0 0 14px; font-weight: 800;
+    letter-spacing: -.01em; text-wrap: balance;
+  }
+  .lede { color: var(--ink-soft); font-size: 16.5px; max-width: 620px; margin: 0; }
+  .sigma-mark {
+    font-family: var(--mono); color: var(--accent); font-weight: 400;
+  }
+
+  /* ── 목차 ── */
+  nav.toc {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 28px;
+    padding: 20px 24px; background: var(--surface); border: 1px solid var(--line);
+    margin-bottom: 48px; font-size: 14px;
+  }
+  nav.toc a { color: var(--ink); text-decoration: none; padding: 3px 0; display: block; }
+  nav.toc a:hover, nav.toc a:focus { color: var(--accent); }
+  nav.toc .toc-num { color: var(--accent); font-family: var(--mono); font-size: 12.5px; margin-right: 8px; }
+  @media (max-width: 560px) { nav.toc { grid-template-columns: 1fr; } }
+
+  /* ── 섹션 ── */
+  section { margin-bottom: 56px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 22px; }
+  .sec-num { font-family: var(--mono); color: var(--accent); font-size: 15px; font-weight: 700; }
+  h2 { font-size: 22px; margin: 0; font-weight: 750; letter-spacing: -.01em; }
+  h3 { font-size: 16.5px; margin: 30px 0 10px; font-weight: 700; }
+  p { margin: 0 0 14px; max-width: 680px; }
+  strong { font-weight: 700; }
+  .soft { color: var(--ink-soft); }
+  .buy-t { color: var(--buy); font-weight: 700; }
+  .sell-t { color: var(--sell); font-weight: 700; }
+  .both-t { color: var(--both); font-weight: 700; }
+
+  /* ── 수식 ── */
+  .formula {
+    font-family: var(--mono); font-size: 14.5px; line-height: 1.9;
+    background: var(--surface); border: 1px solid var(--line);
+    padding: 16px 20px; margin: 16px 0; overflow-x: auto; white-space: pre;
+  }
+  .formula b { color: var(--accent); font-weight: 700; }
+  code {
+    font-family: var(--mono); font-size: .92em; background: var(--surface);
+    border: 1px solid var(--line); padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* ── 예시 박스 ── */
+  .example {
+    background: var(--surface); border: 1px solid var(--line);
+    padding: 18px 22px; margin: 18px 0;
+  }
+  .example .ex-label {
+    font-size: 12px; letter-spacing: .1em; color: var(--accent); font-weight: 700;
+    margin-bottom: 10px;
+  }
+  .example p:last-child { margin-bottom: 0; }
+
+  /* ── 체결 구간 다이어그램 ── */
+  .zone-bar { display: flex; height: 46px; margin: 26px 0 0; font-size: 13px; font-weight: 700; text-align: center; }
+  .zone-bar > div { display: flex; align-items: center; justify-content: center; padding: 0 8px; }
+  .z-buy  { flex: 1.2; background: var(--buy-bg);  color: var(--buy);  border: 1px solid var(--line); border-right: none; }
+  .z-both { flex: 1;   background: var(--both-bg); color: var(--both); border: 1px solid var(--line); border-right: none; }
+  .z-sell { flex: 1.2; background: var(--sell-bg); color: var(--sell); border: 1px solid var(--line); }
+  .zone-ticks { display: flex; font-family: var(--mono); font-size: 12px; color: var(--ink-soft); margin-bottom: 8px; }
+  .zone-ticks > div { padding-top: 6px; }
+  .zt-1 { flex: 1.2; text-align: right; transform: translateX(34px); }
+  .zt-2 { flex: 1; text-align: right; transform: translateX(34px); }
+  .zt-3 { flex: 1.2; }
+  .zone-caption { font-size: 13px; color: var(--ink-soft); margin-top: 18px; }
+  .zone-axis { font-size: 12px; color: var(--ink-soft); font-family: var(--mono); margin-top: 4px; }
+
+  /* ── 표 ── */
+  .tbl-scroll { overflow-x: auto; margin: 18px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; background: var(--surface); }
+  th {
+    text-align: left; font-size: 12.5px; letter-spacing: .05em; color: var(--ink-soft);
+    border-bottom: 2px solid var(--accent); padding: 10px 14px; white-space: nowrap; font-weight: 700;
+  }
+  td { border-bottom: 1px solid var(--line); padding: 10px 14px; vertical-align: top; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 13.5px; }
+  tr.hl td { background: var(--both-bg); }
+  .tbl-note { font-size: 12.5px; color: var(--ink-soft); margin-top: 6px; }
+
+  /* ── 흐름 타임라인 ── */
+  .flow { border-left: 2px solid var(--accent); margin: 22px 0 8px 6px; padding-left: 24px; display: flex; flex-direction: column; gap: 22px; }
+  .flow-step { position: relative; }
+  .flow-step::before {
+    content: ""; position: absolute; left: -30px; top: 7px; width: 10px; height: 10px;
+    background: var(--accent); border-radius: 50%;
+  }
+  .flow-time { font-family: var(--mono); font-size: 12.5px; color: var(--accent); font-weight: 700; }
+  .flow-step h4 { margin: 2px 0 6px; font-size: 15.5px; }
+  .flow-step p { margin: 0; font-size: 14.5px; color: var(--ink-soft); max-width: 600px; }
+
+  /* ── 콜아웃 ── */
+  .callout { border: 1px solid var(--line); border-left: 4px solid var(--accent); background: var(--surface); padding: 14px 20px; margin: 18px 0; font-size: 14.5px; }
+  .callout.warn { border-left-color: var(--buy); }
+  .callout p:last-child { margin-bottom: 0; }
+
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 8px; }
+  li::marker { color: var(--accent); }
+
+  /* ── 용어 ── */
+  dl.glossary { margin: 0; }
+  dl.glossary dt { font-weight: 700; margin-top: 14px; }
+  dl.glossary dd { margin: 2px 0 0 0; color: var(--ink-soft); font-size: 14.5px; }
+
+  footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-soft); }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="doc-label">전략 매뉴얼 · SOXL 자동매매</div>
+  <h1>표준편차매매법 <span class="sigma-mark">σ</span></h1>
+  <p class="lede">어제의 변동성으로 오늘의 매매 가격을 정하고, 종가에 기계적으로 사고파는 LOC 분할매매 전략. 개념부터 수식·프리셋·실전 운용까지 전부 담았습니다.</p>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <a href="#s1"><span class="toc-num">1</span>한눈에 보기</a>
+  <a href="#s2"><span class="toc-num">2</span>핵심 아이디어 — 왜 σ인가</a>
+  <a href="#s3"><span class="toc-num">3</span>오늘의 주문 가격 만들기</a>
+  <a href="#s4"><span class="toc-num">4</span>체결 판정 — 세 구간</a>
+  <a href="#s5"><span class="toc-num">5</span>수량 계산</a>
+  <a href="#s6"><span class="toc-num">6</span>티어와 복리 갱신</a>
+  <a href="#s7"><span class="toc-num">7</span>프리셋 5종 비교</a>
+  <a href="#s8"><span class="toc-num">8</span>실전 운용 — 하루의 흐름</a>
+  <a href="#s9"><span class="toc-num">9</span>리스크와 유의점</a>
+  <a href="#s10"><span class="toc-num">10</span>용어 사전</a>
+</nav>
+
+<!-- ══════════ 1 ══════════ -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-num">1</span><h2>한눈에 보기</h2></div>
+  <p>표준편차매매법은 <strong>매일 딱 두 개의 주문</strong>을 내는 전략입니다.</p>
+  <ul>
+    <li><span class="buy-t">매수 LOC</span> — 오늘 종가가 "급등"이 아니면, 정해진 금액만큼 삽니다.</li>
+    <li><span class="sell-t">매도 LOC</span> — 오늘 종가가 어느 정도 오르면, 보유분의 일정 비율을 팝니다.</li>
+  </ul>
+  <p>"급등"과 "어느 정도"의 기준선은 사람이 감으로 정하지 않습니다. <strong>최근 며칠의 변동성(표준편차 σ)</strong>이 매일 자동으로 계산해 줍니다. 시장이 거칠면 기준선이 넓어지고, 잠잠하면 좁아집니다.</p>
+  <p>주문은 모두 <strong>LOC(Limit-On-Close)</strong> — 장 마감 단일가(종가)에만 체결되는 조건부 주문입니다. 장중 시세를 볼 필요가 없고, 하루 한 번 주문만 넣으면 끝입니다.</p>
+</section>
+
+<!-- ══════════ 2 ══════════ -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-num">2</span><h2>핵심 아이디어 — 왜 σ인가</h2></div>
+  <p>SOXL 같은 3배 레버리지 ETF는 하루에 몇 %씩 출렁입니다. 이 출렁임을 이용해 <strong>내려올 때 조금씩 사 모으고, 튀어오를 때 일부를 파는</strong> 것이 이 전략의 뼈대입니다.</p>
+  <p>문제는 "얼마나 움직여야 사고팔 것인가"입니다. 고정된 % 기준(예: ±3%)을 쓰면, 조용한 장에서는 매매가 아예 안 일어나고 폭풍장에서는 너무 자주 일어납니다.</p>
+  <p>그래서 기준을 <strong>시장 스스로 정하게</strong> 합니다:</p>
+  <div class="formula">σ = 최근 <b>σ기간</b>일(기본 2일) 일간 수익률의 표준편차</div>
+  <p>어제·그제 시장이 2%씩 움직였다면 σ ≈ 2%가 되고, 오늘의 매매 기준선도 그만큼 벌어집니다. 시장이 잠잠해지면 σ가 줄면서 기준선도 저절로 좁혀집니다. <strong>변동성에 자동으로 적응하는 매매</strong> — 이것이 이름의 유래입니다.</p>
+</section>
+
+<!-- ══════════ 3 ══════════ -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-num">3</span><h2>오늘의 주문 가격 만들기</h2></div>
+  <p>매일 장이 열리기 전, 전일 종가와 σ로 두 개의 기준가를 계산합니다.</p>
+  <div class="formula"><span class="buy-t">매수LOC</span> = 전일종가 × (1 + σ × <b>k_buy</b>)
+<span class="sell-t">매도LOC</span> = 전일종가 × (1 + σ × <b>k_sell</b>)</div>
+  <p><code>k_buy</code>·<code>k_sell</code>은 σ를 몇 배로 쓸지 정하는 <strong>민감도 계수</strong>입니다 (프리셋마다 다름, 예: 0.65 / 0.45).</p>
+  <p>눈여겨볼 점 — <strong>두 기준가 모두 전일종가보다 위에 있습니다.</strong> 직관과 달라 보이지만 LOC의 체결 조건과 합치면 의미가 명확해집니다:</p>
+  <ul>
+    <li><span class="buy-t">매수 LOC</span>는 "종가가 매수LOC <strong>이하</strong>면 체결" → 즉 <strong>σ×k_buy 이상 급등한 날만 매수를 건너뜁니다.</strong> 보합·하락·완만한 상승일엔 꾸준히 사 모으는 구조.</li>
+    <li><span class="sell-t">매도 LOC</span>는 "종가가 매도LOC <strong>이상</strong>이면 체결" → <strong>σ×k_sell 이상 오른 날 이익을 실현</strong>합니다.</li>
+  </ul>
+  <div class="example">
+    <div class="ex-label">예시 — 전일종가 $100.00, σ = 2%</div>
+    <p style="font-family: var(--mono); font-size: 14px; margin-bottom: 6px;">
+      k_buy 0.65 → <span class="buy-t">매수LOC = 100 × (1 + 0.02×0.65) = $101.30</span><br>
+      k_sell 0.45 → <span class="sell-t">매도LOC = 100 × (1 + 0.02×0.45) = $100.90</span>
+    </p>
+    <p class="soft" style="font-size: 13.5px;">σ가 4%로 커지면 매수LOC $102.60 / 매도LOC $101.80 — 기준선이 자동으로 두 배 벌어집니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 4 ══════════ -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-num">4</span><h2>체결 판정 — 세 구간</h2></div>
+  <p><code>k_sell &lt; k_buy</code>이면 매도LOC가 매수LOC보다 <strong>아래</strong>에 놓입니다. 그러면 오늘 종가가 어디에 떨어지느냐에 따라 결과가 세 구간으로 나뉩니다.</p>
+
+  <div aria-label="종가 위치별 체결 구간 다이어그램">
+    <div class="zone-bar">
+      <div class="z-buy">매수만 체결</div>
+      <div class="z-both">매수 + 매도 동시</div>
+      <div class="z-sell">매도만 체결</div>
+    </div>
+    <div class="zone-ticks">
+      <div class="zt-1">매도LOC $100.90</div>
+      <div class="zt-2">매수LOC $101.30</div>
+      <div class="zt-3"></div>
+    </div>
+    <div class="zone-axis">← 낮은 종가 ····································· 높은 종가 →</div>
+  </div>
+
+  <ul style="margin-top: 20px;">
+    <li><strong>종가 &lt; 매도LOC</strong> (하락~보합): <span class="buy-t">매수만</span> 체결. 눌림에 한 티어를 사 모읍니다.</li>
+    <li><strong>매도LOC ≤ 종가 ≤ 매수LOC</strong> (완만한 상승): <span class="both-t">매수와 매도가 같은 날 동시 체결</span>됩니다. 보유분 일부를 이익 실현하면서, 동시에 새 티어를 삽니다 — 포지션이 "회전"하는 구간입니다.</li>
+    <li><strong>종가 &gt; 매수LOC</strong> (급등): <span class="sell-t">매도만</span> 체결. 급등을 쫓아 사지 않고 이익만 챙깁니다.</li>
+  </ul>
+  <div class="callout">
+    <p><strong>체결가는 항상 그날의 종가</strong>입니다. LOC 주문은 기준가로 체결되는 것이 아니라, 조건을 만족하면 종가 단일가에 체결됩니다. 그래서 매수 조건이 맞은 날은 기준가보다 <em>싸게</em> 사게 됩니다.</p>
+  </div>
+  <div class="callout">
+    <p><strong>퉁치기 주문</strong> — 동시 체결 구간에서는 내 매도 주문과 내 매수 주문이 같은 종가에 체결되어 <em>자전거래</em>로 거부하는 증권사가 있습니다. 앱의 "퉁치기 주문" 탭은 순 체결 결과가 동일하도록 상계·분해한 대체 주문을 만들어 줍니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 5 ══════════ -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-num">5</span><h2>수량 계산</h2></div>
+  <h3>매수 수량</h3>
+  <div class="formula">1회매수금 = <b>총투자금</b> ÷ <b>분할수</b>
+매수 수량 = ⌊ min(1회매수금, 예수금) ÷ 매수LOC ⌋</div>
+  <p>총투자금을 분할수만큼 나눠 하루치 실탄을 정합니다. 예수금이 그보다 적으면 남은 현금 안에서만 삽니다. 수량은 주문 시점에 매수LOC 기준으로 확정되고, <strong>이후 절대 재계산하지 않습니다.</strong></p>
+  <h3>매도 수량</h3>
+  <div class="formula">매도 수량 = round( 보유주수 × <b>매도비율</b>% )</div>
+  <p>전량 매도가 아니라 <strong>비율 매도</strong>입니다 (예: 95%). 남긴 소량은 추가 상승 시 이익을 이어가고, 매도한 현금은 다음 매수 실탄이 됩니다.</p>
+  <div class="example">
+    <div class="ex-label">예시 — 총투자금 $30,000 · 3분할 · 매도비율 95% · 보유 120주</div>
+    <p style="font-family: var(--mono); font-size: 14px; margin-bottom: 0;">
+      1회매수금 = 30,000 ÷ 3 = $10,000<br>
+      <span class="buy-t">매수 = ⌊10,000 ÷ 101.30⌋ = 98주</span> (체결 시 실제 지불은 종가 기준)<br>
+      <span class="sell-t">매도 = round(120 × 0.95) = 114주</span>
+    </p>
+  </div>
+</section>
+
+<!-- ══════════ 6 ══════════ -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-num">6</span><h2>티어와 복리 갱신 (renewal)</h2></div>
+  <p><strong>티어</strong>는 1 → 분할수 → 1 로 <strong>매 거래일 순환하는 카운터</strong>입니다. 거래가 없는 날에도 돌아갑니다. 분할수가 3이면 3거래일마다 티어 1로 돌아옵니다.</p>
+  <p>티어가 1로 돌아오는 날, <strong>총투자금이 갱신</strong>됩니다:</p>
+  <div class="formula">티어 1 진입 시:
+총투자금 += 최근 <b>갱신주기</b>(renewal) 동안의 실현손익 증가분</div>
+  <p>즉 매도로 벌어들인 이익이 주기적으로 총투자금에 편입되어 <strong>1회매수금이 커지는 100% 복리 구조</strong>입니다. 손실이 났다면 반대로 총투자금이 줄어 자동으로 베팅이 작아집니다 — 이기면 판을 키우고, 지면 판을 줄이는 자기 조절 장치입니다.</p>
+  <div class="callout">
+    <p>총투자금은 <strong>총자산과 다른 값</strong>입니다. 총자산은 "지금 내 계좌가 얼마인가"(현금+평가액)이고, 총투자금은 "매수 페이스를 정하는 복리 기준금액"입니다. 갱신주기마다 실현손익만큼만 따라 움직입니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 7 ══════════ -->
+<section id="s7">
+  <div class="sec-head"><span class="sec-num">7</span><h2>프리셋 5종 비교 (SOXL)</h2></div>
+  <p>19,200개 파라미터 조합을 그리드 탐색해 선별한 프리셋입니다. 모두 σ기간 2일 기준.</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>프리셋</th>
+          <th class="num">k_buy</th><th class="num">k_sell</th>
+          <th class="num">매도비율</th><th class="num">분할수</th><th class="num">갱신주기</th>
+          <th class="num">CAGR</th><th class="num">MDD</th><th class="num">Calmar</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>공격형</strong><br><span class="soft" style="font-size:12.5px">CAGR 최고 · 3분할 초공격</span></td>
+          <td class="num">0.65</td><td class="num">0.45</td><td class="num">85%</td><td class="num">3</td><td class="num">3</td>
+          <td class="num">83.6%</td><td class="num">41.1%</td><td class="num">2.04</td>
+        </tr>
+        <tr class="hl">
+          <td><strong>Sonic형</strong><br><span class="soft" style="font-size:12.5px">Calmar 1위 · 공격과 효율의 균형</span></td>
+          <td class="num">0.55</td><td class="num">0.45</td><td class="num">95%</td><td class="num">3</td><td class="num">3</td>
+          <td class="num">77.3%</td><td class="num">35.8%</td><td class="num">2.16</td>
+        </tr>
+        <tr>
+          <td><strong>균형형</strong><br><span class="soft" style="font-size:12.5px">6분할 · 독립적 매매 패턴</span></td>
+          <td class="num">0.65</td><td class="num">0.55</td><td class="num">90%</td><td class="num">6</td><td class="num">10</td>
+          <td class="num">65.9%</td><td class="num">31.3%</td><td class="num">2.11</td>
+        </tr>
+        <tr>
+          <td><strong>안정형</strong><br><span class="soft" style="font-size:12.5px">검증된 클래식</span></td>
+          <td class="num">0.65</td><td class="num">0.45</td><td class="num">85%</td><td class="num">5</td><td class="num">5</td>
+          <td class="num">57.4%</td><td class="num">28.0%</td><td class="num">2.05</td>
+        </tr>
+        <tr>
+          <td><strong>Ultra-Safe형</strong><br><span class="soft" style="font-size:12.5px">MDD 17% · 심리 안정 우선</span></td>
+          <td class="num">0.55</td><td class="num">0.30</td><td class="num">95%</td><td class="num">7</td><td class="num">7</td>
+          <td class="num">35.8%</td><td class="num">17.4%</td><td class="num">2.06</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="tbl-note">※ 백테스트 기준 수치이며 미래 수익을 보장하지 않습니다. Calmar = CAGR ÷ MDD (높을수록 낙폭 대비 효율이 좋음).</p>
+  <p>파라미터를 읽는 감각:</p>
+  <ul>
+    <li><strong>분할수↓</strong> = 하루 베팅이 커짐 → 수익도 낙폭도 커짐 (공격형 3 vs Ultra-Safe 7)</li>
+    <li><strong>k_sell↓</strong> = 매도 문턱이 낮아짐 → 이익을 더 자주, 더 빨리 실현 (Ultra-Safe 0.30)</li>
+    <li><strong>매도비율↑</strong> = 반등 때 더 많이 털어냄 → 현금 회전이 빨라짐</li>
+    <li><strong>갱신주기</strong> = 복리 편입 속도 — 분할수와 같게 두는 조합이 많음</li>
+  </ul>
+</section>
+
+<!-- ══════════ 8 ══════════ -->
+<section id="s8">
+  <div class="sec-head"><span class="sec-num">8</span><h2>실전 운용 — 하루의 흐름</h2></div>
+  <p>이 앱의 실전 운용은 <strong>원장(매매기록) 체계</strong>로 돌아갑니다. 원칙은 하나 — <strong>"기록이 진실"</strong>. 주문 수량은 발송 시점에 확정되고, 미래의 종가가 과거의 주문을 바꾸는 일은 없습니다.</p>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-time">14:00 KST — 자동발송</div>
+      <h4>어제 주문 정산 → 오늘 주문 계산 → 텔레그램 발송</h4>
+      <p>어제의 '예정' 주문을 어제 실제 종가로 체결/미체결 확정하고, 정산된 원장의 보유·현금·총투자금으로 오늘 수량을 계산해 발송합니다. 발송된 주문은 '예정' 상태로 원장에 기록됩니다.</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-time">개장 전 — 주문 입력</div>
+      <h4>텔레그램 수량 그대로 증권사에 LOC 주문</h4>
+      <p>매수 LOC와 매도 LOC를 그대로 넣습니다. LOC 교차를 거부하는 증권사라면 퉁치기 주문을 사용합니다.</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-time">새벽 — 미국장 마감</div>
+      <h4>종가 단일가에서 자동 체결</h4>
+      <p>종가가 어느 구간에 있느냐에 따라 매수/매도/동시/미체결이 결정됩니다. 지켜볼 필요 없습니다.</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-time">다음날 14:00 — 반복</div>
+      <h4>정산 → 새 주문, 매일 반복</h4>
+      <p>원장의 일별 매매 상세표에서 🕓 예정 → BUY/SELL/미체결로 확정되는 과정을 확인할 수 있습니다.</p>
+    </div>
+  </div>
+  <h3>계좌와 어긋났을 때 — 보정 버튼</h3>
+  <p>부분체결·수동매매·입출금 등으로 원장과 실계좌가 어긋나면, 주문표 탭의 <strong>"🔧 현재 보유 상태 보정"</strong>에 실제 보유주수·예수금·평단가를 입력하세요. 미리보기에서 보정 후 1회매수금과 매도 수량을 확인한 뒤 적용하면, 다음 주문부터 실계좌 기준으로 계산됩니다.</p>
+  <div class="callout">
+    <p><strong>클라우드에서 실전 운용 시 구글시트 등록은 필수</strong>입니다 (설정 탭 → 스프레드시트 URL). 원장이 구글시트에 저장되어야 재접속 후에도 유지됩니다. 등록하지 않으면 "원장 미사용 모드"로 시뮬레이션 조회만 가능합니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 9 ══════════ -->
+<section id="s9">
+  <div class="sec-head"><span class="sec-num">9</span><h2>리스크와 유의점</h2></div>
+  <div class="callout warn">
+    <p><strong>지속 하락장이 최대 약점입니다.</strong> 이 전략은 급등한 날을 제외하면 매일 사는 구조라, 길게 흘러내리는 장에서는 분할수만큼 사 모은 뒤 현금이 마르고, 반등 없이는 평가손실이 누적됩니다. SOXL은 3배 레버리지라 낙폭이 특히 깊습니다 (공격형 백테스트 MDD 41%).</p>
+  </div>
+  <ul>
+    <li><strong>MDD는 반드시 온다</strong> — 백테스트의 MDD는 "최악의 순간 계좌가 이만큼 빠진 적이 있다"는 뜻입니다. 그 낙폭을 버틸 수 있는 프리셋을 고르는 것이 수익률보다 먼저입니다.</li>
+    <li><strong>수량을 임의로 바꾸지 않기</strong> — 알림 수량과 다르게 주문하면 원장과 실계좌가 어긋나기 시작합니다. 바꿨다면 보정 버튼으로 즉시 동기화하세요.</li>
+    <li><strong>σ기간 2일은 예민합니다</strong> — 이틀만에 기준선이 바뀌므로 급변 후 하루이틀은 기준가가 크게 벌어질 수 있습니다. 이는 의도된 적응 동작입니다.</li>
+    <li><strong>입출금은 기록으로</strong> — 계좌에 돈을 넣거나 뺄 때는 증액/감액 기능이나 보정 버튼으로 반영해야 매수 페이스가 정확합니다.</li>
+    <li><strong>백테스트 ≠ 미래</strong> — 프리셋 수치는 과거 데이터 기준입니다. 반도체 사이클·시장 구조가 바뀌면 성과도 달라집니다.</li>
+  </ul>
+</section>
+
+<!-- ══════════ 10 ══════════ -->
+<section id="s10">
+  <div class="sec-head"><span class="sec-num">10</span><h2>용어 사전</h2></div>
+  <dl class="glossary">
+    <dt>σ (시그마, 표준편차)</dt>
+    <dd>최근 σ기간(기본 2일) 일간 수익률의 흩어짐 정도. 오늘의 매매 기준선 폭을 정한다.</dd>
+    <dt>LOC (Limit-On-Close)</dt>
+    <dd>장 마감 단일가(종가)에만 체결되는 지정가 주문. 매수는 종가 ≤ 지정가일 때, 매도는 종가 ≥ 지정가일 때 종가로 체결.</dd>
+    <dt>티어</dt>
+    <dd>1부터 분할수까지 매 거래일 순환하는 카운터. 티어 1 진입일에 총투자금이 갱신된다.</dd>
+    <dt>총투자금</dt>
+    <dd>매수 페이스를 정하는 복리 기준금액. 1회매수금 = 총투자금 ÷ 분할수. 갱신주기마다 실현손익이 편입된다.</dd>
+    <dt>갱신주기 (renewal)</dt>
+    <dd>실현손익을 총투자금에 반영할 때 되돌아보는 거래일 수.</dd>
+    <dt>Calmar</dt>
+    <dd>CAGR ÷ MDD. 낙폭 1%를 감수할 때 얻는 연수익. 프리셋 선별의 핵심 지표.</dd>
+    <dt>원장 (매매기록)</dt>
+    <dd>실제 발송·체결 수량의 누적 기록. 다음 주문 수량 계산의 유일한 기준 — "기록이 진실".</dd>
+    <dt>예정 → 정산</dt>
+    <dd>발송된 주문은 '예정'으로 기록되고, 다음 거래일에 실제 종가로 체결/미체결이 확정된다. 수량은 절대 재계산되지 않는다.</dd>
+    <dt>퉁치기 주문</dt>
+    <dd>같은 날 내 매수·매도가 교차(자전거래)하지 않도록 상계·분해한 대체 주문. 순 체결 결과는 원 주문과 동일.</dd>
+  </dl>
+</section>
+
+<footer>
+  표준편차매매법 가이드 · 02.종가평균매매 통합 앱 기준 · 백테스트 수치는 과거 데이터 기반이며 투자 손실의 책임은 투자자 본인에게 있습니다.
+</footer>
+
+</div>
