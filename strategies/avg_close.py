@@ -1265,11 +1265,38 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 if _preview_cap <= 0:
                     st.error(f"현재 자본금이 0 이하가 됩니다 (${_preview_cap:,.0f}). 수정 불가.")
                 else:
+                    # 원장반영 항목의 삭제·금액수정 → 원장에도 대칭 반영 (되돌리기)
+                    # 적용이 원장에 더했으니, 삭제하면 빼고 수정하면 차액만 반영
+                    _bake_delta = 0.0
+                    _valid_kept = set()
+                    for _ix, _r in _edited.iterrows():
+                        if pd.isna(_r.get("날짜")) or pd.isna(_r.get("조정금액")):
+                            continue
+                        if isinstance(_ix, int) and _ix < len(_adj_history):
+                            _valid_kept.add(_ix)
+                            _old_e = _adj_history[_ix]
+                            if _old_e.get("원장반영"):
+                                _bake_delta += (float(_r["조정금액"])
+                                                 - float(_old_e.get("조정금액", 0) or 0))
+                    for _oix, _old_e in enumerate(_adj_history):
+                        if _oix not in _valid_kept and _old_e.get("원장반영"):
+                            _bake_delta -= float(_old_e.get("조정금액", 0) or 0)
+                    _unbake_msg = ""
+                    if abs(_bake_delta) > 0.005:
+                        _bk_ok2, _ = _bake_adj_into_avg_ledger(tk, _bake_delta)
+                        if not _bk_ok2:
+                            st.error("⛔ 원장 반영 실패 — 이력 변경을 저장하지 않았습니다. "
+                                     "잠시 후 다시 시도해주세요.")
+                            st.stop()
+                        _unbake_msg = (f"  ·  원장에도 반영: "
+                                       f"{'+' if _bake_delta > 0 else ''}${_bake_delta:,.0f} "
+                                       f"(삭제/수정분 되돌림)")
                     # os_capital(시작 자본) 은 변경하지 않음 (base 유지)
                     save_ticker_setting(tk, {
                         "capital_adj_history": json.dumps(_preview_list, ensure_ascii=False)
                     }, prefix="", settings_key="ticker_settings")
-                    st.success(f"✅ 이력 업데이트 완료. 현재 자본금: **${_preview_cap:,.0f}**")
+                    st.session_state.pop(f"os_res_{key_sfx}", None)  # 캐시 갱신
+                    st.success(f"✅ 이력 업데이트 완료. 현재 자본금: **${_preview_cap:,.0f}**{_unbake_msg}")
                     st.rerun()
         else:
             st.info("아직 자본 조정 이력이 없습니다.")
