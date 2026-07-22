@@ -1409,6 +1409,24 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.error(f"⛔ 보정 저장 실패 — 원장(GSheets)에 기록되지 않았습니다. "
                          f"다시 시도해주세요. (원인: {_rw_err})")
                 st.stop()
+            # 보정 = "현재 상태가 진실" 선언 → 기존 자본조정 이력은 모두
+            # 이 상태에 이미 포함된 것으로 마킹 (이후 어떤 경로로도 이중 합산 불가)
+            try:
+                _adj_raw_fx = tk_cfg.get("capital_adj_history", "[]")
+                _adj_fx = (json.loads(_adj_raw_fx)
+                           if isinstance(_adj_raw_fx, str) else _adj_raw_fx)
+                if isinstance(_adj_fx, list) and _adj_fx:
+                    _marked_fx = False
+                    for _e in _adj_fx:
+                        if not _e.get("원장반영"):
+                            _e["원장반영"] = True
+                            _marked_fx = True
+                    if _marked_fx:
+                        save_ticker_setting(tk, {
+                            "capital_adj_history": json.dumps(_adj_fx, ensure_ascii=False)
+                        }, prefix="", settings_key="ticker_settings")
+            except Exception:
+                pass
             st.session_state.pop(_ss_key, None)   # 세션 캐시 제거 → 재계산
             st.success(f"✅ 보정 완료: 보유 {int(_in_h):,}주 / 현금 ${_in_c:,.0f}  ·  "
                        f"'주문표 로드'를 다시 눌러주세요.")
