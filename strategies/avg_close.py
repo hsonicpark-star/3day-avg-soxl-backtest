@@ -168,6 +168,42 @@ def compute_monthly_pivot(history_df, initial_capital):
 # Telegram text builder
 # ══════════════════════════════════════════════
 
+def _bake_adj_into_avg_ledger(tk: str, amount: float):
+    """자본 조정(입출금)을 원장에 즉시 반영.
+
+    마지막 확정 행부터 이후 모든 행(예정 포함)의 현금($)/총자산($)에
+    조정액을 가산. 종가평균은 1회매수금 = 총자산 ÷ 분할수이므로 총자산
+    반영만으로 다음 주문부터 매수량이 커짐.
+    예정 행의 계획 수량은 불변 (발송 수량 불변 원칙).
+    Returns: (ok: bool, status: str)"""
+    df, status = _load_ticker_ledger(tk)
+    if status != "ok" or df.empty:
+        return False, status
+    rows = df.to_dict("records")
+
+    def _is_pend(r):
+        return (str(r.get("매매", "")).startswith("예정")
+                or str(r.get("종가(x)", "")).strip() in ("", "-", "None", "nan"))
+
+    last_conf = -1
+    for i, r in enumerate(rows):
+        if not _is_pend(r):
+            last_conf = i
+    if last_conf < 0:
+        return False, "no_confirmed"
+    changed = []
+    for i in range(last_conf, len(rows)):
+        for col in ("현금($)", "총자산($)"):
+            try:
+                v = float(str(rows[i].get(col, 0)).replace(",", "").strip() or 0)
+                rows[i][col] = round(v + amount, 2)
+            except Exception:
+                pass
+        changed.append(i)
+    _update_ticker_history_rows(tk, rows, changed)
+    return True, "ok"
+
+
 def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                   _sell_ratio: float, _divisions: int, _n_days: int = 2,
                   _os_start=None, _os_capital: float = 10000.0,
@@ -253,6 +289,8 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                                    if isinstance(capital_adj_history, str)
                                    else capital_adj_history)
                             for _it in (_al if isinstance(_al, list) else []):
+                                if _it.get("원장반영"):
+                                    continue   # 이미 원장에 가산됨
                                 _da = str(pd.Timestamp(_it.get("날짜")).date())
                                 if _stg_led["last_date"] < _da <= _today_led:
                                     _extra_led += float(_it.get("조정금액", 0))
@@ -1129,19 +1167,31 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             if _cur_total + _adj_amount <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
             else:
-                _adj_history.append({
+                _new_entry = {
                     "날짜": _adj_date.strftime("%Y-%m-%d"),
                     "조정금액": float(_adj_amount),
                     "누적자본금": 0.0,
                     "메모": _adj_memo or ("증액" if _adj_amount > 0 else "감액"),
-                })
+                }
+                # 원장 활성 시 즉시 반영 — 현금·총자산 가산
+                # (원장반영 플래그로 주문 계산의 날짜 필터 이중 합산 방지)
+                _baked, _bk_st = _bake_adj_into_avg_ledger(tk, float(_adj_amount))
+                if _baked:
+                    _new_entry["원장반영"] = True
+                _adj_history.append(_new_entry)
                 _adj_history, _final_cap = _recalc_adj_history(
                     _adj_history, _default_capital)
                 # os_capital(시작 자본) 은 변경하지 않음 (base 유지)
                 save_ticker_setting(tk, {
                     "capital_adj_history": json.dumps(_adj_history, ensure_ascii=False)
                 }, prefix="", settings_key="ticker_settings")
-                st.success(f"✅ {_adj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
+                st.session_state.pop(f"os_res_{key_sfx}", None)  # 캐시 갱신
+                if _baked:
+                    st.success(f"✅ {_adj_date} 자본 조정 완료 — **원장에 즉시 반영**되었습니다. "
+                               f"다음 주문부터 1회매수금·매수량에 적용됩니다. "
+                               f"(오늘 이미 발송된 주문 수량은 그대로)")
+                else:
+                    st.success(f"✅ {_adj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
                 st.rerun()
 
         if _adj_history:
@@ -1430,6 +1480,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 _extra_adj_led = 0.0
                 for _it in _adj_list_os:
                     try:
+                        if _it.get("원장반영"):
+                            continue   # 이미 원장에 가산됨 → 이중 합산 방지
                         _d_adj = str(pd.Timestamp(_it.get("날짜")).date())
                         if _state_led["last_date"] < _d_adj <= _today_str_hist:
                             _extra_adj_led += float(_it.get("조정금액", 0))

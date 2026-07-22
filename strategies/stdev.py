@@ -300,6 +300,38 @@ def _update_sd_daily_history_rows(tk: str, rows: list, changed_indices: list):
             pass
 
 
+def _bake_adj_into_sd_ledger(tk: str, amount: float):
+    """자본 조정(입출금)을 원장에 즉시 반영.
+
+    마지막 확정 행부터 이후 모든 행(예정 포함)의 예수금/총자산/총투자금에
+    조정액을 가산. 표준편차는 1회매수금 = 총투자금 ÷ 분할수이므로 입금이
+    총투자금까지 반영되어야 다음 주문부터 매수량이 커짐.
+    예정 행의 계획 수량은 불변 (발송 수량 불변 원칙 — 오늘 주문은 그대로,
+    내일 주문부터 증액 반영).
+    Returns: (ok: bool, status: str)"""
+    df, status = _load_sd_ledger(tk)
+    if status != "ok" or df.empty:
+        return False, status
+    rows = df.to_dict("records")
+    last_conf = -1
+    for i, r in enumerate(rows):
+        if not sd_row_is_pending(r):
+            last_conf = i
+    if last_conf < 0:
+        return False, "no_confirmed"
+    changed = []
+    for i in range(last_conf, len(rows)):
+        for col in ("예수금", "총자산", "총투자금"):
+            try:
+                v = float(str(rows[i].get(col, 0)).replace(",", "").strip() or 0)
+                rows[i][col] = round(v + amount, 2)
+            except Exception:
+                pass
+        changed.append(i)
+    _update_sd_daily_history_rows(tk, rows, changed)
+    return True, "ok"
+
+
 # ══════════════════════════════════════════════
 # Telegram text builder
 # ══════════════════════════════════════════════
@@ -386,6 +418,8 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                             _al = (json.loads(capital_adj_history)
                                    if isinstance(capital_adj_history, str) else capital_adj_history)
                             for _it in (_al if isinstance(_al, list) else []):
+                                if _it.get("원장반영"):
+                                    continue   # 이미 원장에 가산됨
                                 _da = str(pd.Timestamp(_it.get("날짜")).date())
                                 if _stg_led["last_date"] < _da <= _today_led:
                                     _extra_led += float(_it.get("조정금액", 0))
@@ -1154,17 +1188,29 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             if _cur_total + _sadj_amt <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
             else:
-                _sd_adj_hist.append({
+                _new_entry = {
                     "날짜": _sadj_date.strftime("%Y-%m-%d"),
                     "조정금액": float(_sadj_amt),
                     "누적자본금": 0.0,
                     "메모": _sadj_memo or ("증액" if _sadj_amt > 0 else "감액"),
-                })
+                }
+                # 원장 활성 시 즉시 반영 — 예수금·총자산·총투자금 가산
+                # (원장반영 플래그로 주문 계산의 날짜 필터 이중 합산 방지)
+                _baked, _bk_st = _bake_adj_into_sd_ledger(tk, float(_sadj_amt))
+                if _baked:
+                    _new_entry["원장반영"] = True
+                _sd_adj_hist.append(_new_entry)
                 _sd_adj_hist, _final_cap = _recalc_adj_history(_sd_adj_hist, _def_cap)
                 _save_sd_ticker_setting(tk, {
                     "capital_adj_history": json.dumps(_sd_adj_hist, ensure_ascii=False),
                 })
-                st.success(f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
+                st.session_state.pop(f"sd_os_res_{key_sfx}", None)  # 캐시 갱신
+                if _baked:
+                    st.success(f"✅ {_sadj_date} 자본 조정 완료 — **원장에 즉시 반영**되었습니다. "
+                               f"다음 주문부터 1회매수금·매수량에 적용됩니다. "
+                               f"(오늘 이미 발송된 주문 수량은 그대로)")
+                else:
+                    st.success(f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
                 st.rerun()
 
         if _sd_adj_hist:
@@ -1524,9 +1570,12 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     _stg = calc_sd_record_state(_prev_led)
                     if _stg:
                         # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
+                        # ('원장반영' 플래그 항목은 이미 원장에 가산됨 → 스킵)
                         _extra = 0.0
                         for _it in _adj_list_sd:
                             try:
+                                if _it.get("원장반영"):
+                                    continue
                                 _da = str(pd.Timestamp(_it.get("날짜")).date())
                                 if _stg["last_date"] < _da <= _today_sd:
                                     _extra += float(_it.get("조정금액", 0))

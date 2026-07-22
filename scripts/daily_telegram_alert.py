@@ -211,6 +211,9 @@ def _sum_adj_between(cfg: dict, after_date: str, upto_date: str) -> float:
     total = 0.0
     for _it in _adj_list:
         try:
+            # '원장반영' 플래그 = 웹에서 적용 시 원장에 이미 가산됨 → 스킵
+            if _it.get("원장반영"):
+                continue
             _d = str(pd.Timestamp(_it.get("날짜")).date())
             if after_date < _d <= upto_date:
                 total += float(_it.get("조정금액", 0))
