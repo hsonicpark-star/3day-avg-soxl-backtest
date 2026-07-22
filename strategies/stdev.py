@@ -1183,10 +1183,25 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         )
         _sadj_memo = _sadj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
                                           key=f"sd_adj_memo_{key_sfx}")
+        # 중복 적용 가드 — 같은 날짜·금액이 이미 있으면 실수 재클릭일 가능성
+        _dup_exists_sd = any(
+            str(_e.get("날짜", "")) == _sadj_date.strftime("%Y-%m-%d")
+            and abs(float(_e.get("조정금액", 0) or 0) - float(_sadj_amt)) < 0.01
+            for _e in _sd_adj_hist) if _sadj_amt != 0 else False
+        _dup_ok_sd = True
+        if _dup_exists_sd:
+            _dup_ok_sd = _sadj_c1.checkbox(
+                "⚠️ 같은 날짜·금액 이력이 이미 있습니다 — 실제로 한 번 더 "
+                "입출금한 경우에만 체크 후 적용하세요",
+                value=False, key=f"sd_dup_ok_{key_sfx}")
         if _sadj_c2.button("적용", use_container_width=True,
                             key=f"sd_apply_adj_{key_sfx}", disabled=(_sadj_amt == 0)):
             if _cur_total + _sadj_amt <= 0:
                 st.error("자본금은 0보다 커야 합니다.")
+            elif _dup_exists_sd and not _dup_ok_sd:
+                st.error("⛔ 같은 날짜·금액 이력이 이미 있어 적용하지 않았습니다. "
+                         "(이미 반영된 입출금의 중복 클릭 방지) 실제 추가 입출금이면 "
+                         "위 체크박스를 켠 뒤 다시 적용하세요.")
             else:
                 _new_entry = {
                     "날짜": _sadj_date.strftime("%Y-%m-%d"),
@@ -1219,13 +1234,21 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _df_sadj_edit = pd.DataFrame(_sd_adj_hist)
             _df_sadj_edit["날짜"] = pd.to_datetime(_df_sadj_edit["날짜"]).dt.date
             _df_sadj_edit["조정금액"] = _df_sadj_edit["조정금액"].astype(float)
+            # 원장반영 플래그 왕복 보존 (편집 저장 시 유실되면 이중 합산 발생)
+            if "원장반영" not in _df_sadj_edit.columns:
+                _df_sadj_edit["원장반영"] = False
+            _df_sadj_edit["원장반영"] = (_df_sadj_edit["원장반영"]
+                                          .fillna(False).astype(bool))
             _sd_edited = st.data_editor(
-                _df_sadj_edit[["날짜", "조정금액", "메모"]],
+                _df_sadj_edit[["날짜", "조정금액", "메모", "원장반영"]],
                 column_config={
                     "날짜": st.column_config.DateColumn("날짜", format="YYYY-MM-DD", required=True),
                     "조정금액": st.column_config.NumberColumn("조정금액 ($)",
                                                               format="$%.0f", required=True),
                     "메모": st.column_config.TextColumn("메모"),
+                    "원장반영": st.column_config.CheckboxColumn(
+                        "원장반영", disabled=True,
+                        help="적용 시 원장(매매기록)에 이미 가산된 항목 표시 — 수정 불가"),
                 },
                 num_rows="dynamic",
                 use_container_width=True,
@@ -1241,6 +1264,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "조정금액": float(_r["조정금액"]),
                     "누적자본금": 0.0,
                     "메모": str(_r.get("메모") or ""),
+                    "원장반영": bool(_r.get("원장반영", False)),
                 })
             _preview_list, _preview_cap = _recalc_adj_history(
                 _preview_list, _def_cap)
