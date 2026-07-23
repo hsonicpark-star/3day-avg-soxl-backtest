@@ -547,7 +547,7 @@ def render_sidebar():
 
     dc1, dc2 = st.sidebar.columns(2)
     start_date = dc1.date_input("투자시작일", value=pd.Timestamp("2010-03-12"), key="dss_start")
-    end_date = dc2.date_input("투자종료일", value=pd.Timestamp("2026-04-10"), key="dss_end")
+    end_date = dc2.date_input("투자종료일", value=datetime.today().date(), key="dss_end")
 
     return {
         "sf_div": sf_div, "sf_hold": sf_hold, "sf_buy": sf_buy, "sf_sell": sf_sell,
