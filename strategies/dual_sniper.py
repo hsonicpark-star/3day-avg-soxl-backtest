@@ -1649,6 +1649,15 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                            "MOC는 손절일 도래분(시장가 종가 청산). MOC가 있는 날은 다른 LOC 매도가 보류됩니다.")
             else:
                 st.info("💤 오늘은 매수/매도 주문 없음 (매수 대기 or 현금 부족)")
+            # 1티어 매도 보류 안내 — 전일종가>전일MA5 + 슬롯1 보유 시 매도가 빠진 이유
+            _held_t1 = any(pv.get("티어") == 1 for pv in r["positions"])
+            _has_sell = any(o["구분"] == "매도" and o["거래방법"] == "LOC" for o in r["orders"])
+            if r.get("hold_tier1") and _held_t1 and not _has_sell:
+                _m5 = r.get("last_ma5")
+                _detail = (f" (전일종가 ${r['last_close']:,.2f} > MA5 ${_m5:,.2f})"
+                           if _m5 is not None else "")
+                st.info(f"ℹ️ **전일 종가가 MA(5)보다 큰 경우 1티어는 매도하지 않습니다.**{_detail} "
+                        f"→ 상승 초입에서 첫 슬롯을 끌고 가는 규칙이라 오늘은 매도 주문이 없습니다.")
 
         with _ord_tab2_ds:
             # 진단 기준: '원 주문 vs 퉁치기 결과가 실제로 다른가' (orders_differ)

@@ -1069,4 +1069,6 @@ def build_today_orders(prices, params, mode_map=None, start_date=None, mode_rule
         'unit_price': round(unit_price_now, 6),   # 좌당가
         'return_pct': round(ret_pct_now, 2),      # 좌당가 기준 누적 손익률(%)
         'wrsi_now': _wrsi_now, 'wrsi_prev': _wrsi_prev,   # 주간 RSI (헤더 표시용)
+        'hold_tier1': bool(ag_hold_tier1),                # 전일종가>전일MA5 → 1티어 매도 보류
+        'last_ma5': round(last_ma5, 2) if last_ma5 is not None else None,
     }
