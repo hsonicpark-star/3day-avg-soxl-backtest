@@ -11,12 +11,29 @@ from datetime import datetime, date, timedelta
 # ── 페이지 설정 (반드시 첫 Streamlit 호출) ───────────────────
 st.set_page_config(page_title="📊 전략 백테스터", layout="wide")
 
-# ── st.date_input 선택 범위 전역 확장 ────────────────────────
+# ── date_input 선택 범위 전역 확장 ───────────────────────────
 # Streamlit 기본값은 value ± 10년으로 제한됨 → 시작일 기본이 2014년이면
 # 달력에서 2024년까지만 선택 가능한 문제 발생.
 # min/max 미지정 호출에 전역 기본치(2000-01-01 ~ 2035-12-31)를 적용.
 # 전략 모듈 전체(37곳)에 일괄 적용 — 명시적으로 min/max를 넘기면 그 값 우선.
 # NOTE: 2035년이 가까워지면 상한을 다시 연장할 것.
+# 두 단계 패치 필수:
+#  1) DeltaGenerator 클래스 메서드 — col1.date_input(...), st.sidebar.date_input(...)
+#     등 컨테이너 객체 경유 호출 (앱 대부분의 호출이 이 형태)
+#  2) st.date_input 모듈 어트리뷰트 — import 시점에 이미 바인딩된 직접 호출
+from streamlit.delta_generator import DeltaGenerator as _DG
+
+if not getattr(_DG.date_input, "_wide_range_patched", False):
+    _orig_dg_date_input = _DG.date_input
+
+    def _dg_date_input_wide(self, *args, **kwargs):
+        kwargs.setdefault("min_value", date(2000, 1, 1))
+        kwargs.setdefault("max_value", date(2035, 12, 31))
+        return _orig_dg_date_input(self, *args, **kwargs)
+
+    _dg_date_input_wide._wide_range_patched = True
+    _DG.date_input = _dg_date_input_wide
+
 if not getattr(st.date_input, "_wide_range_patched", False):
     _orig_date_input = st.date_input
 
