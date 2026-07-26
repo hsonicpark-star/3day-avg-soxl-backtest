@@ -6,10 +6,26 @@ app.py — 전략 백테스터 라우터 (thin entry point)
 """
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 # ── 페이지 설정 (반드시 첫 Streamlit 호출) ───────────────────
 st.set_page_config(page_title="📊 전략 백테스터", layout="wide")
+
+# ── st.date_input 선택 범위 전역 확장 ────────────────────────
+# Streamlit 기본값은 value ± 10년으로 제한됨 → 시작일 기본이 2014년이면
+# 달력에서 2024년까지만 선택 가능한 문제 발생.
+# min/max 미지정 호출에 전역 기본치(2000-01-01 ~ 내년)를 적용.
+# 전략 모듈 전체(37곳)에 일괄 적용 — 명시적으로 min/max를 넘기면 그 값 우선.
+if not getattr(st.date_input, "_wide_range_patched", False):
+    _orig_date_input = st.date_input
+
+    def _date_input_wide(*args, **kwargs):
+        kwargs.setdefault("min_value", date(2000, 1, 1))
+        kwargs.setdefault("max_value", date.today() + timedelta(days=366))
+        return _orig_date_input(*args, **kwargs)
+
+    _date_input_wide._wide_range_patched = True
+    st.date_input = _date_input_wide
 
 # ── 공통 모듈 import ─────────────────────────────────────────
 from common.config import _IS_CLOUD, _CONFIG, load_config, get_ticker_settings
