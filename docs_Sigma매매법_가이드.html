@@ -1,0 +1,119 @@
+<title>Sigma매매법 가이드</title>
+<style>
+  :root {
+    --bg:#F6F7F5; --surface:#FFF; --ink:#20262B; --ink-soft:#5A6570; --line:#E2E6E3;
+    --accent:#8A6D1E; --buy:#C0392B; --buy-bg:#FBEFED; --sell:#1D5FA7; --sell-bg:#EDF3FA;
+    --both:#C77700; --both-bg:#FBF3E4; --mono:Consolas,"D2Coding",monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#15181A; --surface:#1C2023; --ink:#E4E7E4; --ink-soft:#9AA5A5; --line:#2C3235;
+    --accent:#D4AE4E; --buy:#E0685C; --buy-bg:#33221F; --sell:#6EA3E0; --sell-bg:#1D2733;
+    --both:#E0A34E; --both-bg:#332A1C; } }
+  :root[data-theme="dark"] {
+    --bg:#15181A; --surface:#1C2023; --ink:#E4E7E4; --ink-soft:#9AA5A5; --line:#2C3235;
+    --accent:#D4AE4E; --buy:#E0685C; --buy-bg:#33221F; --sell:#6EA3E0; --sell-bg:#1D2733;
+    --both:#E0A34E; --both-bg:#332A1C; }
+  :root[data-theme="light"] {
+    --bg:#F6F7F5; --surface:#FFF; --ink:#20262B; --ink-soft:#5A6570; --line:#E2E6E3;
+    --accent:#8A6D1E; --buy:#C0392B; --buy-bg:#FBEFED; --sell:#1D5FA7; --sell-bg:#EDF3FA;
+    --both:#C77700; --both-bg:#FBF3E4; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic","Segoe UI",sans-serif;
+    font-size:15.5px; line-height:1.75; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:780px; margin:0 auto; padding:48px 24px 96px; }
+  header { padding:28px 0 36px; border-bottom:2px solid var(--ink); margin-bottom:40px; }
+  .doc-label { font-size:12px; letter-spacing:.14em; color:var(--accent); font-weight:700; margin-bottom:14px; }
+  h1 { font-size:34px; line-height:1.2; margin:0 0 14px; font-weight:800; letter-spacing:-.01em; text-wrap:balance; }
+  .lede { color:var(--ink-soft); font-size:16.5px; max-width:620px; margin:0; }
+  section { margin-bottom:56px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+    padding-bottom:10px; margin-bottom:22px; }
+  .sec-num { font-family:var(--mono); color:var(--accent); font-size:15px; font-weight:700; }
+  h2 { font-size:22px; margin:0; font-weight:750; letter-spacing:-.01em; }
+  h3 { font-size:16.5px; margin:30px 0 10px; font-weight:700; }
+  p { margin:0 0 14px; max-width:680px; }
+  .soft { color:var(--ink-soft); }
+  .buy-t { color:var(--buy); font-weight:700; }
+  .sell-t { color:var(--sell); font-weight:700; }
+  .formula { font-family:var(--mono); font-size:14.5px; line-height:1.9; background:var(--surface);
+    border:1px solid var(--line); padding:16px 20px; margin:16px 0; overflow-x:auto; white-space:pre; }
+  .formula b { color:var(--accent); font-weight:700; }
+  code { font-family:var(--mono); font-size:.92em; background:var(--surface);
+    border:1px solid var(--line); padding:1px 6px; border-radius:3px; }
+  .example { background:var(--surface); border:1px solid var(--line); padding:18px 22px; margin:18px 0; }
+  .example .ex-label { font-size:12px; letter-spacing:.1em; color:var(--accent); font-weight:700; margin-bottom:10px; }
+  .example p:last-child { margin-bottom:0; }
+  .tbl-scroll { overflow-x:auto; margin:18px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; background:var(--surface); }
+  th { text-align:left; font-size:12.5px; letter-spacing:.05em; color:var(--ink-soft);
+    border-bottom:2px solid var(--accent); padding:10px 14px; white-space:nowrap; font-weight:700; }
+  td { border-bottom:1px solid var(--line); padding:10px 14px; vertical-align:top; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:13.5px; }
+  .callout { border:1px solid var(--line); border-left:4px solid var(--accent); background:var(--surface);
+    padding:14px 20px; margin:18px 0; font-size:14.5px; }
+  .callout.warn { border-left-color:var(--buy); }
+  .callout p:last-child { margin-bottom:0; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:8px; }
+  li::marker { color:var(--accent); }
+  dl.glossary dt { font-weight:700; margin-top:14px; }
+  dl.glossary dd { margin:2px 0 0 0; color:var(--ink-soft); font-size:14.5px; }
+  footer { margin-top:64px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink-soft); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="doc-label">전략 매뉴얼 · 자동매매</div>
+  <h1>Sigma매매법 <span style="font-family:var(--mono); color:var(--accent); font-weight:400;">μ±σ</span></h1>
+  <p class="lede">1년치 일간 수익률의 평균(μ)과 표준편차(σ)로 "통계적으로 싼 날"을 계산해 1σ·2σ·3σ 세 단계로 사 모으고, 고점 회복 수준에 따라 분할 매도하는 장기 통계 전략입니다.</p>
+</header>
+
+<section id="s1">
+  <div class="sec-head"><span class="sec-num">1</span><h2>핵심 아이디어</h2></div>
+  <p>표준편차매매(σ기간 2일)가 "요 며칠"의 변동성을 쓴다면, Sigma매매법은 <strong>최근 252거래일(약 1년)</strong>의 통계를 씁니다. 1년 동안 이 종목의 하루 수익률이 평균 μ, 흩어짐 σ였다면 — 오늘 하루 만에 μ−1σ보다 더 빠지는 건 통계적으로 드문 일이고, μ−2σ, μ−3σ는 훨씬 더 드뭅니다. 그 드문 눌림을 매수 기회로 삼습니다.</p>
+  <div class="formula">μ, σ = 최근 <b>252일</b> 일간 수익률의 평균과 표준편차
+
+<span class="buy-t">1σ 매수 LOC = 전일종가 × (1 + μ − 1σ)</span>   ← 기본 매수선
+<span class="buy-t">2σ 참고선   = 전일종가 × (1 + μ − 2σ)</span>   ← 더 깊은 눌림
+<span class="buy-t">3σ 참고선   = 전일종가 × (1 + μ − 3σ)</span>   ← 극단적 눌림</div>
+  <p>오늘 종가가 1σ선 이하로 마감하면 1회 매매금만큼 매수합니다 (체결가 = 종가). 2σ·3σ선은 "얼마나 깊은 눌림인지"를 알려주는 참고선으로, 백테스트에서 단계별 추가 매수 시뮬이 가능합니다.</p>
+</section>
+
+<section id="s2">
+  <div class="sec-head"><span class="sec-num">2</span><h2>매도 — 고점 회복 분할 매도</h2></div>
+  <p>매도 기준은 <strong>롤링 최고가(전고점)</strong>입니다. 주가가 전고점 근처로 회복될수록 더 큰 비중을 던집니다 (기본값):</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>종가 위치</th><th class="num">매도 비중</th><th>직관</th></tr></thead>
+      <tbody>
+        <tr><td>전고점의 93% 도달 (−7% 지점 회복)</td><td class="num">10%</td><td>회복 시작 — 일부 실현</td></tr>
+        <tr><td>전고점의 95% 도달 (−5%)</td><td class="num">30%</td><td>회복 진행 — 비중 확대</td></tr>
+        <tr><td>전고점의 97% 도달 (−3%)</td><td class="num">60%</td><td>고점 임박 — 대량 실현</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>백테스트에서는 고정가 지정 매도, 퍼센트 커스텀, 수익률 기반 익절, 트레일링 스탑 등 다양한 매도 방식을 선택해 비교할 수 있습니다.</p>
+</section>
+
+<section id="s3">
+  <div class="sec-head"><span class="sec-num">3</span><h2>운용 특징</h2></div>
+  <ul>
+    <li><strong>1년 통계라 기준선이 묵직합니다</strong> — 하루이틀 요동에 흔들리지 않는 대신, 시장 체질이 바뀌면 적응이 느립니다.</li>
+    <li><strong>자동 증액 옵션</strong> — 백테스트에서 매수 신호에 현금이 부족하면 자동으로 자금을 투입하는 시뮬 옵션이 있습니다 (필요 자금 규모 파악용).</li>
+    <li><strong>주문표는 참고가 중심</strong> — 다른 전략과 달리 보유·현금 상태 추적(원장) 없이, 매일의 1σ/2σ/3σ LOC 가격과 수량을 계산해 텔레그램·시트로 발송합니다. 체결·보유 관리는 사용자 몫입니다.</li>
+  </ul>
+  <div class="callout warn">
+    <p><strong>주의:</strong> 통계적 눌림 매수는 "드문 일은 곧 되돌아온다"에 베팅합니다. 구조적 폭락(드문 일이 계속되는 장)에서는 1σ→2σ→3σ를 연달아 맞으며 물량이 쌓입니다. 1회 매매금을 보수적으로 잡으세요.</p>
+  </div>
+  <dl class="glossary">
+    <dt>μ (뮤)</dt><dd>최근 252일 일간 수익률의 평균 — 이 종목의 "평소 하루".</dd>
+    <dt>σ (시그마)</dt><dd>일간 수익률의 표준편차 — 평소 하루에서 벗어나는 정도.</dd>
+    <dt>롤링 최고가</dt><dd>기간 내 최고 종가. 매도 레벨의 기준점.</dd>
+  </dl>
+</section>
+
+<footer>Sigma매매법 가이드 · 02.종가평균매매 통합 앱 기준 · 투자 손실의 책임은 투자자 본인에게 있습니다.</footer>
+</div>

@@ -1,0 +1,117 @@
+<title>카마릴라 돌파 가이드</title>
+<style>
+  :root {
+    --bg:#F6F7F5; --surface:#FFF; --ink:#20262B; --ink-soft:#5A6570; --line:#E2E6E3;
+    --accent:#8A6D1E; --buy:#C0392B; --buy-bg:#FBEFED; --sell:#1D5FA7; --sell-bg:#EDF3FA;
+    --both:#C77700; --both-bg:#FBF3E4; --mono:Consolas,"D2Coding",monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#15181A; --surface:#1C2023; --ink:#E4E7E4; --ink-soft:#9AA5A5; --line:#2C3235;
+    --accent:#D4AE4E; --buy:#E0685C; --buy-bg:#33221F; --sell:#6EA3E0; --sell-bg:#1D2733;
+    --both:#E0A34E; --both-bg:#332A1C; } }
+  :root[data-theme="dark"] {
+    --bg:#15181A; --surface:#1C2023; --ink:#E4E7E4; --ink-soft:#9AA5A5; --line:#2C3235;
+    --accent:#D4AE4E; --buy:#E0685C; --buy-bg:#33221F; --sell:#6EA3E0; --sell-bg:#1D2733;
+    --both:#E0A34E; --both-bg:#332A1C; }
+  :root[data-theme="light"] {
+    --bg:#F6F7F5; --surface:#FFF; --ink:#20262B; --ink-soft:#5A6570; --line:#E2E6E3;
+    --accent:#8A6D1E; --buy:#C0392B; --buy-bg:#FBEFED; --sell:#1D5FA7; --sell-bg:#EDF3FA;
+    --both:#C77700; --both-bg:#FBF3E4; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic","Segoe UI",sans-serif;
+    font-size:15.5px; line-height:1.75; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:780px; margin:0 auto; padding:48px 24px 96px; }
+  header { padding:28px 0 36px; border-bottom:2px solid var(--ink); margin-bottom:40px; }
+  .doc-label { font-size:12px; letter-spacing:.14em; color:var(--accent); font-weight:700; margin-bottom:14px; }
+  h1 { font-size:34px; line-height:1.2; margin:0 0 14px; font-weight:800; letter-spacing:-.01em; text-wrap:balance; }
+  .lede { color:var(--ink-soft); font-size:16.5px; max-width:620px; margin:0; }
+  section { margin-bottom:56px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+    padding-bottom:10px; margin-bottom:22px; }
+  .sec-num { font-family:var(--mono); color:var(--accent); font-size:15px; font-weight:700; }
+  h2 { font-size:22px; margin:0; font-weight:750; letter-spacing:-.01em; }
+  p { margin:0 0 14px; max-width:680px; }
+  .soft { color:var(--ink-soft); }
+  .buy-t { color:var(--buy); font-weight:700; }
+  .sell-t { color:var(--sell); font-weight:700; }
+  .formula { font-family:var(--mono); font-size:14.5px; line-height:1.9; background:var(--surface);
+    border:1px solid var(--line); padding:16px 20px; margin:16px 0; overflow-x:auto; white-space:pre; }
+  .formula b { color:var(--accent); font-weight:700; }
+  code { font-family:var(--mono); font-size:.92em; background:var(--surface);
+    border:1px solid var(--line); padding:1px 6px; border-radius:3px; }
+  .tbl-scroll { overflow-x:auto; margin:18px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; background:var(--surface); }
+  th { text-align:left; font-size:12.5px; letter-spacing:.05em; color:var(--ink-soft);
+    border-bottom:2px solid var(--accent); padding:10px 14px; white-space:nowrap; font-weight:700; }
+  td { border-bottom:1px solid var(--line); padding:10px 14px; vertical-align:top; }
+  .callout { border:1px solid var(--line); border-left:4px solid var(--accent); background:var(--surface);
+    padding:14px 20px; margin:18px 0; font-size:14.5px; }
+  .callout.warn { border-left-color:var(--buy); }
+  .callout p:last-child { margin-bottom:0; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:8px; }
+  li::marker { color:var(--accent); }
+  dl.glossary dt { font-weight:700; margin-top:14px; }
+  dl.glossary dd { margin:2px 0 0 0; color:var(--ink-soft); font-size:14.5px; }
+  footer { margin-top:64px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink-soft); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="doc-label">전략 매뉴얼 · SOXL 애드온 오버레이</div>
+  <h1>카마릴라 돌파 🎲</h1>
+  <p class="lede">전일 가격 폭으로 계산한 "4차 저항선"을 종가가 뚫으면 진입해 다음 날 시가에 파는 초단기 돌파 전략. 단독 전략이 아니라 DSS 계좌의 노는 예수금을 굴리는 애드온 오버레이입니다.</p>
+</header>
+
+<section id="s1">
+  <div class="sec-head"><span class="sec-num">1</span><h2>핵심 아이디어 — 하루짜리 돌파 추종</h2></div>
+  <p>카마릴라 피봇은 전일의 고가·저가·종가로 오늘의 지지/저항 레벨을 그리는 고전 기법입니다. 그중 가장 바깥의 <strong>4차 저항선(R4)</strong>을 종가가 넘어서면 — 그날의 매수 압력이 하루 변동폭의 통계적 한계를 뚫었다는 뜻이라, 다음 날 아침까지 이어질 확률에 베팅합니다:</p>
+  <div class="formula">R4 = 전일종가 + (전일고가 − 전일저가) × <b>계수</b>   (권장 0.70)
+
+<span class="buy-t">진입: 오늘 종가가 R4 돌파 → 종가 매수</span>
+<span class="sell-t">청산: 다음 날 시가 MOO (Market-On-Open) 전량 매도</span></div>
+  <p>보유 기간이 <strong>하룻밤(오버나이트)</strong>뿐입니다. 백테스트 검증에서 "익일 시가 청산"이 갭 상승·갭 하락 모두에 가장 강건한 청산으로 확인됐습니다.</p>
+</section>
+
+<section id="s2">
+  <div class="sec-head"><span class="sec-num">2</span><h2>변동성 타게팅 — 자동 디레버리징</h2></div>
+  <div class="formula">포지션 배율 = <b>목표 변동성</b>(70%) ÷ 최근 20일 실현 변동성   (상한 1)</div>
+  <p>시장이 거칠어지면(변동성 급등) 포지션을 자동으로 줄입니다. 급락기에 돌파 신호가 자주 나오는 위험(변동성 폭발 구간의 가짜 돌파)을 구조적으로 눌러주는 안전판입니다.</p>
+</section>
+
+<section id="s3">
+  <div class="sec-head"><span class="sec-num">3</span><h2>애드온 오버레이 — DSS 예수금 활용</h2></div>
+  <p>이 전략의 포지셔닝이 특별합니다. 독립 계좌가 아니라 <strong>DSS 계좌의 유휴 예수금</strong> 위에서 돌아갑니다:</p>
+  <ul>
+    <li>DSS는 슬롯이 안 찬 날 예수금이 놀고 있습니다 — 카마릴라는 그 현금으로 하룻밤 돌파를 먹습니다.</li>
+    <li>주문표가 DSS 계좌 설정(예수금·투자금·분할수·보유)을 직접 읽어와 <strong>워터폴 자금관리</strong>로 가용 금액을 산출합니다 — DSS 본전략의 매수 여력을 침범하지 않는 한도 내에서만.</li>
+    <li>진입일 밤 → 다음 날 아침 청산이므로 DSS의 다음 날 매수와 자금이 겹치지 않게 설계되어 있습니다.</li>
+  </ul>
+  <div class="callout">
+    <p>같은 돈이 낮에는 DSS 대기 자금, 밤에는 카마릴라 포지션 — <strong>자본 가동률을 높이는 오버레이</strong>가 이 전략의 존재 이유입니다.</p>
+  </div>
+</section>
+
+<section id="s4">
+  <div class="sec-head"><span class="sec-num">4</span><h2>운용과 리스크</h2></div>
+  <ul>
+    <li><strong>신호가 드뭅니다</strong> — R4 돌파는 며칠에 한 번 나올까 말까입니다. "매일 주문"이 아니라 "신호 뜨는 날만" 참여합니다.</li>
+    <li><strong>계수(0.70)가 민감도</strong> — 낮출수록 신호가 잦아지고 질이 떨어지며, 높일수록 드물고 강한 돌파만 잡습니다.</li>
+  </ul>
+  <div class="callout warn">
+    <p><strong>오버나이트 갭 리스크</strong>가 본질적 위험입니다. 종가 돌파 후 밤사이 악재가 터지면 시가 청산이 손실로 시작합니다. 변동성 타게팅이 크기를 줄여줄 뿐 갭 자체를 막지는 못합니다 — 애드온답게 소액으로 운용하세요.</p>
+  </div>
+  <dl class="glossary">
+    <dt>카마릴라 피봇</dt><dd>전일 H/L/C로 당일 지지·저항 레벨을 계산하는 고전 피봇 기법.</dd>
+    <dt>R4 (4차 저항)</dt><dd>가장 바깥 저항선 — 이것의 돌파를 추세 신호로 봄.</dd>
+    <dt>MOO (Market-On-Open)</dt><dd>개장 단일가 시장가 주문. 익일 시가 청산에 사용.</dd>
+    <dt>변동성 타게팅</dt><dd>실현 변동성이 목표를 넘으면 포지션을 비례 축소하는 위험관리.</dd>
+    <dt>워터폴 자금관리</dt><dd>DSS 본전략의 필요 자금을 먼저 확보하고 남는 예수금만 오버레이에 배정하는 우선순위 구조.</dd>
+  </dl>
+</section>
+
+<footer>카마릴라 돌파 가이드 · 02.종가평균매매 통합 앱 기준 · 투자 손실의 책임은 투자자 본인에게 있습니다.</footer>
+</div>

@@ -1,0 +1,262 @@
+<title>DSS 동파법 가이드</title>
+<style>
+  :root {
+    --bg:#F6F7F5; --surface:#FFF; --ink:#20262B; --ink-soft:#5A6570; --line:#E2E6E3;
+    --accent:#8A6D1E; --buy:#C0392B; --buy-bg:#FBEFED; --sell:#1D5FA7; --sell-bg:#EDF3FA;
+    --both:#C77700; --both-bg:#FBF3E4; --mono:Consolas,"D2Coding",monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#15181A; --surface:#1C2023; --ink:#E4E7E4; --ink-soft:#9AA5A5; --line:#2C3235;
+    --accent:#D4AE4E; --buy:#E0685C; --buy-bg:#33221F; --sell:#6EA3E0; --sell-bg:#1D2733;
+    --both:#E0A34E; --both-bg:#332A1C; } }
+  :root[data-theme="dark"] {
+    --bg:#15181A; --surface:#1C2023; --ink:#E4E7E4; --ink-soft:#9AA5A5; --line:#2C3235;
+    --accent:#D4AE4E; --buy:#E0685C; --buy-bg:#33221F; --sell:#6EA3E0; --sell-bg:#1D2733;
+    --both:#E0A34E; --both-bg:#332A1C; }
+  :root[data-theme="light"] {
+    --bg:#F6F7F5; --surface:#FFF; --ink:#20262B; --ink-soft:#5A6570; --line:#E2E6E3;
+    --accent:#8A6D1E; --buy:#C0392B; --buy-bg:#FBEFED; --sell:#1D5FA7; --sell-bg:#EDF3FA;
+    --both:#C77700; --both-bg:#FBF3E4; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic","Segoe UI",sans-serif;
+    font-size:15.5px; line-height:1.75; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:780px; margin:0 auto; padding:48px 24px 96px; }
+  header { padding:28px 0 36px; border-bottom:2px solid var(--ink); margin-bottom:40px; }
+  .doc-label { font-size:12px; letter-spacing:.14em; color:var(--accent); font-weight:700; margin-bottom:14px; }
+  h1 { font-size:34px; line-height:1.2; margin:0 0 14px; font-weight:800; letter-spacing:-.01em; text-wrap:balance; }
+  .lede { color:var(--ink-soft); font-size:16.5px; max-width:620px; margin:0; }
+  nav.toc { display:grid; grid-template-columns:1fr 1fr; gap:6px 28px; padding:20px 24px;
+    background:var(--surface); border:1px solid var(--line); margin-bottom:48px; font-size:14px; }
+  nav.toc a { color:var(--ink); text-decoration:none; padding:3px 0; display:block; }
+  nav.toc a:hover, nav.toc a:focus { color:var(--accent); }
+  nav.toc .toc-num { color:var(--accent); font-family:var(--mono); font-size:12.5px; margin-right:8px; }
+  @media (max-width:560px) { nav.toc { grid-template-columns:1fr; } }
+  section { margin-bottom:56px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; border-bottom:1px solid var(--line);
+    padding-bottom:10px; margin-bottom:22px; }
+  .sec-num { font-family:var(--mono); color:var(--accent); font-size:15px; font-weight:700; }
+  h2 { font-size:22px; margin:0; font-weight:750; letter-spacing:-.01em; }
+  h3 { font-size:16.5px; margin:30px 0 10px; font-weight:700; }
+  p { margin:0 0 14px; max-width:680px; }
+  .soft { color:var(--ink-soft); }
+  .buy-t { color:var(--buy); font-weight:700; }
+  .sell-t { color:var(--sell); font-weight:700; }
+  .ag-t { color:var(--buy); font-weight:700; }
+  .sf-t { color:var(--sell); font-weight:700; }
+  .formula { font-family:var(--mono); font-size:14.5px; line-height:1.9; background:var(--surface);
+    border:1px solid var(--line); padding:16px 20px; margin:16px 0; overflow-x:auto; white-space:pre; }
+  .formula b { color:var(--accent); font-weight:700; }
+  code { font-family:var(--mono); font-size:.92em; background:var(--surface);
+    border:1px solid var(--line); padding:1px 6px; border-radius:3px; }
+  .example { background:var(--surface); border:1px solid var(--line); padding:18px 22px; margin:18px 0; }
+  .example .ex-label { font-size:12px; letter-spacing:.1em; color:var(--accent); font-weight:700; margin-bottom:10px; }
+  .example p:last-child { margin-bottom:0; }
+  .tbl-scroll { overflow-x:auto; margin:18px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; background:var(--surface); }
+  th { text-align:left; font-size:12.5px; letter-spacing:.05em; color:var(--ink-soft);
+    border-bottom:2px solid var(--accent); padding:10px 14px; white-space:nowrap; font-weight:700; }
+  td { border-bottom:1px solid var(--line); padding:10px 14px; vertical-align:top; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:13.5px; }
+  tr.hl td { background:var(--both-bg); }
+  .tbl-note { font-size:12.5px; color:var(--ink-soft); margin-top:6px; }
+  .flow { border-left:2px solid var(--accent); margin:22px 0 8px 6px; padding-left:24px;
+    display:flex; flex-direction:column; gap:22px; }
+  .flow-step { position:relative; }
+  .flow-step::before { content:""; position:absolute; left:-30px; top:7px; width:10px; height:10px;
+    background:var(--accent); border-radius:50%; }
+  .flow-time { font-family:var(--mono); font-size:12.5px; color:var(--accent); font-weight:700; }
+  .flow-step h4 { margin:2px 0 6px; font-size:15.5px; }
+  .flow-step p { margin:0; font-size:14.5px; color:var(--ink-soft); max-width:600px; }
+  .callout { border:1px solid var(--line); border-left:4px solid var(--accent); background:var(--surface);
+    padding:14px 20px; margin:18px 0; font-size:14.5px; }
+  .callout.warn { border-left-color:var(--buy); }
+  .callout p:last-child { margin-bottom:0; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:8px; }
+  li::marker { color:var(--accent); }
+  dl.glossary dt { font-weight:700; margin-top:14px; }
+  dl.glossary dd { margin:2px 0 0 0; color:var(--ink-soft); font-size:14.5px; }
+  footer { margin-top:64px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink-soft); }
+  a { color:var(--accent); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="doc-label">전략 매뉴얼 · SOXL 자동매매</div>
+  <h1>DSS 동파법 🌊</h1>
+  <p class="lede">QQQ 주간 RSI로 시장의 체질을 읽어 공격(AG)과 안전(SF), 두 벌의 매매 규칙을 갈아끼우는 티어 슬롯 그리드 전략. 각 포지션이 독립된 목표가와 손절일을 갖는 것이 특징입니다.</p>
+</header>
+
+<nav class="toc" aria-label="목차">
+  <a href="#s1"><span class="toc-num">1</span>한눈에 보기</a>
+  <a href="#s2"><span class="toc-num">2</span>두 개의 모드 — 왜 QQQ 주간 RSI인가</a>
+  <a href="#s3"><span class="toc-num">3</span>모드 전환 규칙</a>
+  <a href="#s4"><span class="toc-num">4</span>매수 룰 — 슬롯과 주문가</a>
+  <a href="#s5"><span class="toc-num">5</span>매도 룰 — 목표가와 손절일</a>
+  <a href="#s6"><span class="toc-num">6</span>투자금 갱신 (복리)</a>
+  <a href="#s7"><span class="toc-num">7</span>기본 파라미터</a>
+  <a href="#s8"><span class="toc-num">8</span>실전 운용</a>
+  <a href="#s9"><span class="toc-num">9</span>리스크와 용어</a>
+</nav>
+
+<!-- ══════════ 1 ══════════ -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-num">1</span><h2>한눈에 보기</h2></div>
+  <ul>
+    <li>매주 QQQ 주간 RSI를 보고 이번 주의 모드를 정합니다 — <span class="ag-t">AG(공격)</span> 또는 <span class="sf-t">SF(안전)</span>.</li>
+    <li>모드마다 분할수·매수%·매도%·보유일이 <strong>통째로 다른 한 벌</strong>로 바뀝니다.</li>
+    <li>매일: 슬롯(티어)이 비어 있으면 <span class="buy-t">LOC 매수 1건</span>, 보유 중인 각 포지션은 <span class="sell-t">자기만의 매도목표가로 LOC 매도</span>.</li>
+    <li>목표가에 못 가고 보유일이 다 되면 <strong>손절일 MOC(시장가 종가) 청산</strong> — 물리는 포지션을 시간으로 자릅니다.</li>
+    <li>N거래일마다 실현손익을 투자금에 편입 (복리).</li>
+  </ul>
+  <p>종가평균·표준편차가 "보유 전체를 하나의 덩어리"로 다룬다면, DSS는 <strong>포지션 하나하나가 독립 생명체</strong>입니다. 각자 태어난 날(매수일), 목표(매도목표가), 수명(손절일)을 갖습니다.</p>
+</section>
+
+<!-- ══════════ 2 ══════════ -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-num">2</span><h2>두 개의 모드 — 왜 QQQ 주간 RSI인가</h2></div>
+  <p>SOXL은 반도체 3배 레버리지라 시장 체질에 극도로 민감합니다. 상승장에서 통하는 규칙이 하락장에서는 독이 되죠. DSS는 이 문제를 <strong>규칙을 두 벌 준비하고 시장에 맞춰 갈아끼우는</strong> 방식으로 풉니다.</p>
+  <p>체질 판정 지표는 <strong>QQQ의 주간 RSI(14, Wilder)</strong>입니다. SOXL 자신이 아니라 QQQ를 보는 이유 — 나스닥 대형주의 큰 흐름이 반도체 레버리지의 운명을 좌우하고, 주간 단위라 일간 노이즈에 흔들리지 않기 때문입니다.</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>모드</th><th>시장 해석</th><th>매매 성격</th></tr></thead>
+      <tbody>
+        <tr><td><span class="ag-t">AG (공격)</span></td><td>상승 추세 — 반등·돌파 국면</td><td>큰 익절 목표(+3.06%), 짧은 보유(8일) — 빠른 회전으로 추세를 탄다</td></tr>
+        <tr><td><span class="sf-t">SF (안전)</span></td><td>하락·조정 — 방어 국면</td><td>작은 익절(+0.9%)을 자주, 긴 보유 유예(36일) — 잔파도를 수확하며 버틴다</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════ 3 ══════════ -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-num">3</span><h2>모드 전환 규칙</h2></div>
+  <p>매주 <code>rr</code>(2주 전 RSI)과 <code>r</code>(1주 전 RSI)을 비교해 판정합니다. 위에서부터 먼저 맞는 규칙 적용, 아무것도 안 맞으면 유지:</p>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>조건</th><th>판정</th><th>직관</th></tr></thead>
+      <tbody>
+        <tr><td class="num">rr ≤ 35 이고 상승 (rr &lt; r)</td><td><span class="ag-t">AG</span></td><td>바닥권에서 고개를 들면 공격</td></tr>
+        <tr><td class="num">rr 40~50 이고 하락 (rr &gt; r)</td><td><span class="sf-t">SF</span></td><td>중립권에서 꺾이면 방어</td></tr>
+        <tr><td class="num">rr ≤ 50 인데 r &gt; 50</td><td><span class="ag-t">AG</span></td><td>50선 상향 돌파 = 추세 전환</td></tr>
+        <tr><td class="num">rr ≥ 50 인데 r &lt; 50</td><td><span class="sf-t">SF</span></td><td>50선 하향 돌파 = 추세 이탈</td></tr>
+        <tr><td class="num">rr 50~60 이고 상승 (rr &lt; r)</td><td><span class="ag-t">AG</span></td><td>추세 지속 확인</td></tr>
+        <tr><td class="num">rr &gt; 65 이고 하락 (rr &gt; r)</td><td><span class="sf-t">SF</span></td><td>과열권에서 꺾이면 선제 방어</td></tr>
+        <tr><td class="num">그 외</td><td>유지</td><td>애매하면 바꾸지 않는다</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="tbl-note">※ 주문표는 "다음 거래일이 속한 주"의 모드로 계산합니다 — 주가 바뀌는 월요일에 AG↔SF 전환이 정확히 반영됩니다.</p>
+</section>
+
+<!-- ══════════ 4 ══════════ -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-num">4</span><h2>매수 룰 — 슬롯과 주문가</h2></div>
+  <p>보유 포지션 수가 분할수보다 적으면(빈 슬롯이 있으면) 매일 매수 주문 1건을 냅니다:</p>
+  <div class="formula">매수주문가 = ⌊ 전일종가 × (1 + <b>매수%</b>) ⌋ (2자리 내림)
+체결 조건  = 종가 ≤ 매수주문가  (체결가 = 종가)
+수량      = ⌊ (투자금 ÷ 분할수) ÷ 매수주문가 ⌋</div>
+  <p>매수%가 양수라 주문가는 전일종가보다 <strong>위</strong>에 있습니다 — 즉 "그 %를 넘는 급등일만 빼고 산다"는 뜻입니다. AG(+2.77%)보다 SF(+4.91%)의 문턱이 더 관대해서, 안전 모드가 오히려 더 꾸준히 슬롯을 채웁니다. 잔파도 수확 엔진이니까요.</p>
+  <div class="example">
+    <div class="ex-label">예시 — SF 모드 · 전일종가 $150 · 투자금 $70,000 · 7분할</div>
+    <p style="font-family:var(--mono); font-size:14px; margin-bottom:0;">
+      매수주문가 = ⌊150 × 1.0491⌋ = $157.36<br>
+      오늘 종가 $148 (≤ 157.36) → <span class="buy-t">체결 @ $148</span><br>
+      수량 = ⌊(70,000÷7) ÷ 157.36⌋ = 63주 · 이 포지션의 목표가 = 148×1.009 = $149.33
+    </p>
+  </div>
+  <p>슬롯이 다 차면(포지션 수 = 분할수) 매수는 쉽니다 — "전 슬롯 사용 중"이 그 상태입니다.</p>
+</section>
+
+<!-- ══════════ 5 ══════════ -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-num">5</span><h2>매도 룰 — 목표가와 손절일</h2></div>
+  <p>포지션마다 매수 체결 순간 두 가지가 새겨집니다:</p>
+  <div class="formula">매도목표가 = 체결가 × (1 + <b>매도%</b>)     → 종가 ≥ 목표가면 <b>LOC 매도</b>
+손절일     = 매수일 + <b>보유일</b> (거래일)   → 도래하면 <b>MOC 시장가 청산</b></div>
+  <ul>
+    <li><span class="sell-t">목표 달성 매도</span> — 종가가 목표가를 넘으면 그 포지션만 종가에 매도. 다른 포지션은 각자 목표를 계속 기다립니다.</li>
+    <li><strong>손절일 MOC</strong> — 목표에 못 간 채 보유일이 다 되면 손익 무관하게 종가 시장가로 청산. "물린 포지션을 시간이 잘라준다"가 DSS 위험관리의 핵심입니다. AG는 8일(빠른 손절), SF는 36일(길게 버티며 반등 기회).</li>
+  </ul>
+  <div class="callout">
+    <p><strong>MOC가 있는 날은 다른 LOC 매도가 보류</strong>됩니다 — 같은 날 시장가 청산과 지정가 매도가 겹치며 생기는 중복·자전거래를 피하기 위한 운용 규칙입니다. 주문표에 "매도 없는 날" 안내가 뜨는 이유이기도 합니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 6 ══════════ -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-num">6</span><h2>투자금 갱신 (복리)</h2></div>
+  <div class="formula">매 <b>갱신주기</b>(N 거래일)마다:
+투자금 += 그동안의 실현손익 합 × (이익이면 <b>pcr</b> / 손실이면 <b>lcr</b>)</div>
+  <p>매도로 확정된 손익이 주기적으로 투자금에 편입되어 슬롯당 매수금(투자금÷분할수)이 커지고 작아집니다. 이기면 판을 키우고 지면 줄이는 자기 조절 — 표준편차매매의 renewal과 같은 사상입니다. pcr/lcr로 이익·손실의 반영 비율을 따로 정할 수 있습니다 (1.0 = 100% 복리).</p>
+</section>
+
+<!-- ══════════ 7 ══════════ -->
+<section id="s7">
+  <div class="sec-head"><span class="sec-num">7</span><h2>기본 파라미터</h2></div>
+  <div class="tbl-scroll">
+    <table>
+      <thead><tr><th>파라미터</th><th class="num">AG (공격)</th><th class="num">SF (안전)</th><th>의미</th></tr></thead>
+      <tbody>
+        <tr><td><strong>분할수</strong></td><td class="num">7</td><td class="num">7</td><td>동시 보유 가능한 슬롯 수</td></tr>
+        <tr><td><strong>매수%</strong></td><td class="num">+2.77%</td><td class="num">+4.91%</td><td>전일종가 대비 매수주문가 (이 % 넘는 급등일만 매수 스킵)</td></tr>
+        <tr><td><strong>매도%</strong></td><td class="num">+3.06%</td><td class="num">+0.90%</td><td>체결가 대비 매도목표가</td></tr>
+        <tr><td><strong>보유일</strong></td><td class="num">8일</td><td class="num">36일</td><td>손절일까지의 거래일 수</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="tbl-note">※ 계좌별로 파라미터를 다르게 저장할 수 있으며, 최적화 탭에서 그리드 탐색이 가능합니다.</p>
+  <p>두 모드의 설계 철학이 표에 그대로 드러납니다: <span class="ag-t">AG</span>는 "크게 먹고 빨리 자른다", <span class="sf-t">SF</span>는 "잘게 자주 먹고 오래 버틴다".</p>
+</section>
+
+<!-- ══════════ 8 ══════════ -->
+<section id="s8">
+  <div class="sec-head"><span class="sec-num">8</span><h2>실전 운용</h2></div>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-time">14:00 KST — 자동발송</div>
+      <h4>모드 판정 → 오늘 주문 계산 → 텔레그램 발송</h4>
+      <p>계좌별로 LOC매수 1건 + 보유 포지션별 LOC매도 + (해당 시) MOC 청산이 발송됩니다. 구글시트 주문표에도 기록됩니다.</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-time">개장 전 — 주문 입력</div>
+      <h4>티어별 주문을 그대로 입력</h4>
+      <p>LOC 교차가 거부되는 증권사는 퉁치기 주문 탭을 사용합니다.</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-time">상시 — 검증</div>
+      <h4>알고리C 시트 원본대조</h4>
+      <p>원전략 시트와 주문을 대조하는 검증 기능(운영자 전용)으로 엔진 정확성을 상시 확인합니다.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <p>DSS는 <strong>시뮬 체계</strong>로 운용됩니다 — 주문 수량이 매일 새로 돌린 백테스트에서 나오며, 매매기록은 표시용 로그입니다. 계좌별 설정은 <code>~/.dss/config.json</code>(로컬) 또는 개인설정(클라우드)에 저장됩니다. 자본 조정(증액/감액)은 엔진이 백테스트 도중 직접 반영합니다.</p>
+  </div>
+</section>
+
+<!-- ══════════ 9 ══════════ -->
+<section id="s9">
+  <div class="sec-head"><span class="sec-num">9</span><h2>리스크와 용어</h2></div>
+  <div class="callout warn">
+    <p><strong>모드 오판이 가장 아픕니다.</strong> RSI 규칙이 시장을 잘못 읽으면 하락장에서 AG 파라미터로, 상승장에서 SF 파라미터로 매매하게 됩니다. 주간 지표라 전환이 최대 1~2주 늦을 수 있는 것도 감안하세요.</p>
+  </div>
+  <ul>
+    <li><strong>손절일 MOC는 손실 확정</strong> — 시간 손절은 큰 손실을 방지하는 대신 반등 직전에 잘리는 아픔도 있습니다. SF 36일은 그 균형점으로 튜닝된 값입니다.</li>
+    <li><strong>슬롯 전부 소진 후 하락 지속</strong> — 7슬롯이 다 차면 추가 방어 수단이 없습니다. MDD를 버틸 투자금 배분이 우선입니다.</li>
+    <li><strong>시뮬 체계 특성</strong> — 실제 체결이 시뮬과 다르면(부분체결 등) 드리프트가 생길 수 있습니다. 이상 징후 시 원본대조 기능으로 확인하세요.</li>
+  </ul>
+  <dl class="glossary">
+    <dt>AG / SF</dt><dd>공격(Aggressive) / 안전(Safe) 모드. QQQ 주간 RSI로 판정.</dd>
+    <dt>슬롯 (티어)</dt><dd>동시 보유 가능한 포지션 자리. 분할수만큼 존재.</dd>
+    <dt>매도목표가</dt><dd>포지션별로 체결가 × (1+매도%)에 고정되는 익절 가격.</dd>
+    <dt>손절일</dt><dd>매수일로부터 보유일(거래일)이 지나는 날. 도래 시 MOC 청산.</dd>
+    <dt>MOC (Market-On-Close)</dt><dd>장 마감 단일가에 체결되는 시장가 주문. 가격 조건 없이 무조건 체결.</dd>
+    <dt>투자금 갱신</dt><dd>갱신주기마다 실현손익을 투자금에 편입하는 복리 장치.</dd>
+  </dl>
+</section>
+
+<footer>DSS 동파법 가이드 · 02.종가평균매매 통합 앱 기준 · 투자 손실의 책임은 투자자 본인에게 있습니다.</footer>
+</div>
