@@ -19,6 +19,10 @@ on:
         description: '미국 휴장일에도 강제 실행 (1=강제, 빈 값=정상 스킵)'
         required: false
         default: ''
+      ds_only:
+        description: '듀얼스나이퍼만 발송 (1=DS만, 재발송용)'
+        required: false
+        default: ''
 
 jobs:
   send-alerts:
@@ -46,6 +50,7 @@ jobs:
           ADMIN_SHEET_URL: ${{ secrets.ADMIN_SHEET_URL }}
           FILTER_USER: ${{ github.event.inputs.filter_user }}
           FORCE_RUN: ${{ github.event.inputs.force_run }}
+          DS_ONLY: ${{ github.event.inputs.ds_only }}
         run: python scripts/daily_telegram_alert.py
 
       - name: Keep Streamlit app awake (절전 방지 ping)

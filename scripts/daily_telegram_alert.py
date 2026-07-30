@@ -1802,6 +1802,9 @@ def main():
 
     filter_user = os.environ.get("FILTER_USER", "").strip()
     force_run = os.environ.get("FORCE_RUN", "").strip()
+    ds_only = os.environ.get("DS_ONLY", "").strip()   # 1=듀얼스나이퍼만 발송 (재발송용)
+    if ds_only:
+        print("🎯 DS_ONLY 모드: 듀얼스나이퍼만 발송 (다른 전략 스킵)")
 
     # ── 중복 발송 방지 ──
     # 외부 cron(정시)과 GitHub 백업 cron(지연)이 같은 날 둘 다 실행될 때
@@ -1838,7 +1841,7 @@ def main():
         avg_token   = str(user.get("tg_token",   "")).strip()
         avg_settings = parse_ticker_settings(user)
 
-        if avg_chat_id and avg_token and avg_settings:
+        if not ds_only and avg_chat_id and avg_token and avg_settings:
             print(f"  👤 {username} [종가평균]: {list(avg_settings.keys())} 처리 중...")
             for tk, cfg in avg_settings.items():
                 a_buy      = float(cfg.get("a_buy",      DEFAULT_A_BUY))
@@ -2035,7 +2038,7 @@ def main():
         sd_token    = str(user.get("sd_tg_token",   "")).strip()
         sd_settings = parse_sd_ticker_settings(user)
 
-        if sd_chat_id and sd_token and sd_settings:
+        if not ds_only and sd_chat_id and sd_token and sd_settings:
             print(f"  👤 {username} [표준편차]: {list(sd_settings.keys())} 처리 중...")
             for tk, cfg in sd_settings.items():
                 k_buy        = float(cfg.get("k_buy",        SD_DEFAULT_K_BUY))
@@ -2244,7 +2247,7 @@ def main():
         # 검증용 알고리C 시트 (verify_url + 계좌별 verify_sheets)
         dss_verify = parse_dss_verify_sheets(dss_cfg)
 
-        if dss_chat_id and dss_token and dss_accounts:
+        if not ds_only and dss_chat_id and dss_token and dss_accounts:
             print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
             for acct_name, acct_data in dss_accounts.items():
                 # 계좌별 gs_sheets 매핑 우선 → 레거시 acct_data.gs_sheet → 레거시 dss_config.gs_sheet
@@ -2326,7 +2329,7 @@ def main():
         sg_token    = str(user.get("sigma_tg_token",   "")).strip()
         sg_settings = parse_sigma_ticker_settings(user)
 
-        if sg_chat_id and sg_token and sg_settings:
+        if not ds_only and sg_chat_id and sg_token and sg_settings:
             print(f"  👤 {username} [Sigma]: {list(sg_settings.keys())} 처리 중...")
             for tk, cfg in sg_settings.items():
                 sigma_period = int(float(cfg.get("sigma_period", SIGMA_DEFAULT_PERIOD)))
@@ -2389,7 +2392,7 @@ def main():
         iuo_accounts = iuo_cfg.get("accounts", {})
         iuo_gs_url   = str(iuo_cfg.get("gs_url", "")).strip()
 
-        if iuo_chat_id and iuo_token and iuo_accounts:
+        if not ds_only and iuo_chat_id and iuo_token and iuo_accounts:
             print(f"  👤 {username} [IUO]: {list(iuo_accounts.keys())} 처리 중...")
             for acct_name, acct_data in iuo_accounts.items():
                 # IUO 시트명: iuo_config["gs_sheet_{ticker}"] 플랫 키 우선 → acct 내 → 기본
