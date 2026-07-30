@@ -198,6 +198,21 @@ def _apply_capital_adj(r: dict, cfg: dict) -> float:
     return _adj_total
 
 
+def _gs_retry(fn, tries: int = 3, base_delay: int = 5):
+    """gspread 호출 재시도 — 레이트리밋(429) 등 일시 오류 대비.
+
+    자동발송은 여러 사용자×전략이 같은 시각에 GSheets API를 두드려
+    쿼터에 걸리기 쉬움. 원장 읽기가 한 번 실패하면 시뮬 fallback으로
+    잘못된 수량이 발송되므로, 지수 백오프로 재시도해 성공률을 높인다."""
+    for _i in range(tries):
+        try:
+            return fn()
+        except Exception:
+            if _i == tries - 1:
+                raise
+            time.sleep(base_delay * (_i + 1))
+
+
 def _sum_adj_between(cfg: dict, after_date: str, upto_date: str) -> float:
     """capital_adj_history 중 after_date < 날짜 <= upto_date 구간 합산.
     원장(매매기록) 기반 계산에서 마지막 기록 이후의 입출금만 현금에 반영."""
@@ -1889,14 +1904,14 @@ def main():
                             AVG_HIST_COLS, settle_avg_pending_rows,
                             calc_avg_record_state, calc_avg_order_from_state,
                             build_avg_pending_row)
-                        _sh_rec = client.open_by_url(shared_gs_url)
+                        _sh_rec = _gs_retry(lambda: client.open_by_url(shared_gs_url))
                         try:
                             _ws_hist = _sh_rec.worksheet(f"{tk}_매매기록")
                         except gspread.exceptions.WorksheetNotFound:
                             _ws_hist = _sh_rec.add_worksheet(
                                 title=f"{tk}_매매기록", rows=5000, cols=25)
                             _ws_hist.append_row(AVG_HIST_COLS)
-                        _vals_rec = _ws_hist.get_all_values()
+                        _vals_rec = _gs_retry(_ws_hist.get_all_values)
                         if len(_vals_rec) > 1:
                             _hdr_rec = _vals_rec[0]
                             _rows_rec = [dict(zip(_hdr_rec, rw)) for rw in _vals_rec[1:]]
@@ -1965,6 +1980,13 @@ def main():
                 user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])
 
                 msg = build_avg_message(res, tk)
+                # 원장 사용자인데 원장 처리 실패 → 시뮬 값 발송임을 크게 경고
+                # (실패를 멀쩡한 주문표처럼 보내면 잘못된 수량으로 주문하게 됨)
+                if shared_gs_url and not _ledger_on:
+                    msg = ("🚨 *원장 접근 실패 — 아래는 시뮬 참고값입니다!*\n"
+                           "*이 수량으로 주문하지 마세요.* 웹 주문표를 열어 "
+                           "원장 기준 수량을 확인한 뒤 주문하세요.\n"
+                           "━━━━━━━━━━━━━━━\n" + msg)
                 ok, resp = send_telegram(avg_chat_id, avg_token, msg, parse_mode="Markdown")
                 if ok:
                     print(f"    ✅ [종가평균/{tk}] 발송 성공")
@@ -2084,14 +2106,14 @@ def main():
                             SD_HIST_COLS, settle_sd_pending_rows,
                             calc_sd_record_state, calc_sd_order_from_state,
                             build_sd_pending_row)
-                        _sh_sd = client.open_by_url(shared_gs_url)
+                        _sh_sd = _gs_retry(lambda: client.open_by_url(shared_gs_url))
                         try:
                             _ws_hist_sd = _sh_sd.worksheet(f"sd_{tk}_매매기록")
                         except gspread.exceptions.WorksheetNotFound:
                             _ws_hist_sd = _sh_sd.add_worksheet(
                                 title=f"sd_{tk}_매매기록", rows=5000, cols=25)
                             _ws_hist_sd.append_row(SD_HIST_COLS)
-                        _vals_sd = _ws_hist_sd.get_all_values()
+                        _vals_sd = _gs_retry(_ws_hist_sd.get_all_values)
                         if len(_vals_sd) > 1:
                             _hdr_sd = _vals_sd[0]
                             _rows_sd = [dict(zip(_hdr_sd, rw)) for rw in _vals_sd[1:]]
@@ -2153,6 +2175,13 @@ def main():
                 user_warnings.extend([f"[표준편차/{tk}] {m}" for m in _issues])
 
                 msg = build_sd_message(r)
+                # 원장 사용자인데 원장 처리 실패 → 시뮬 값 발송임을 크게 경고
+                # (실패를 멀쩡한 주문표처럼 보내면 잘못된 수량으로 주문하게 됨)
+                if shared_gs_url and not _sd_ledger_on:
+                    msg = ("🚨 <b>원장 접근 실패 — 아래는 시뮬 참고값입니다!</b>\n"
+                           "<b>이 수량으로 주문하지 마세요.</b> 웹 주문표를 열어 "
+                           "원장 기준 수량을 확인한 뒤 주문하세요.\n"
+                           "━━━━━━━━━━━━━━━\n" + msg)
                 ok, resp = send_telegram(sd_chat_id, sd_token, msg, parse_mode="HTML")
                 if ok:
                     print(f"    ✅ [표준편차/{tk}] 발송 성공")
