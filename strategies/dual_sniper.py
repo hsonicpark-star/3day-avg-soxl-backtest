@@ -1000,9 +1000,16 @@ def _infer_mode_from_orders(rows, c1, c2, ds_p):
         best = min(cands, key=lambda c: abs(c[1] - bp))
         if abs(best[1] - bp) < 0.15:
             return best[0], detail
-    # 매수 없으면 매도가 균일성으로 판정 (방어=동일 MA가, 공격=슬롯별 상이)
+    # 매수 없으면 매도 패턴으로 판정.
+    # 방어 시그니처 = '동일 가격 매도 2건 이상'(그룹 MA청산). 공격은 티어별 가격이 전부 다름.
+    # 주의: 공격 잔여 익절(다른 가격)이 방어 청산과 섞일 수 있으므로 max-min 방식은 오판
+    #       (2026-07-30 사례: 공T1 익절 167.78 + 방어 101.83×5 → 구버전이 공격으로 오판).
+    #       또한 공격모드는 빈 슬롯이 있는 한 매일 매수를 내므로 '매수 없음' 자체가 방어 신호.
     if len(sells) >= 2:
-        return ("방어" if (max(sells) - min(sells) < 0.02) else "공격"), detail
+        from collections import Counter
+        _cnt = Counter(round(s, 2) for s in sells)
+        _same_max = max(_cnt.values())
+        return ("방어" if _same_max >= 2 else "공격"), detail
     if len(sells) == 1:
         fs = 1 + ds_p.sf_sell_pct / 100
         sf_sell = (fs * (c1 + c2)) / (ds_p.sf_ma_base - fs)

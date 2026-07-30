@@ -158,7 +158,11 @@ def _infer_mode(rows, c1, c2):
         if abs(best[1] - bp) < 0.15:
             return best[0], {"buy": bp, "ag+": ag_plus, "ag-": ag_minus, "sf": sf_k}
     if len(sells) >= 2:
-        return ("방어" if (max(sells) - min(sells) < 0.02) else "공격"), {"sells": sells}
+        # 방어 시그니처 = 동일 가격 매도 2건 이상(그룹 MA청산). 공격 잔여 익절(다른 가격)이
+        # 섞여도 오판하지 않도록 max-min 대신 동일가 최대 그룹으로 판정. (2026-07-30 오판 수정)
+        from collections import Counter
+        _same_max = max(Counter(round(s, 2) for s in sells).values())
+        return ("방어" if _same_max >= 2 else "공격"), {"sells": sells}
     if len(sells) == 1:
         fs = 1 + SF_SELL / 100
         sf_sell = (fs * (c1 + c2)) / (SF_MA_BASE - fs)
