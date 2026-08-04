@@ -1341,13 +1341,19 @@ def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
 
         def _do_write():
             # ① 먼저 넓은 범위를 clear → 이전 기록 완전 제거 (27행 방어 마진)
-            ws.batch_clear(["L4:O30"])
-            # ② 그 다음 L4부터 새 rows만 작성 → 오늘 발송분만 표시됨
-            ws.update(range_name="L4", values=rows)
-            # ③ B11 업데이트 시각 (KST) — 주문표가 언제 갱신됐는지 확인용.
-            #    소비자(자동매매 봇)는 B11 날짜가 오늘인지 확인 후 사용 권장.
-            ws.update(range_name="B11",
-                      values=[[pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
+            ws.batch_clear(["L4:O30", "P4"])
+            _ts = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")
+            # ② 주문 + 신선도 마커를 배치 1회로 기록 (API 호출 수 최소화)
+            #    - L4~: 오늘 주문 rows
+            #    - P4 : 주문 블록 전용 신선도 마커 ★자동매매 봇 검증용★
+            #      (B11은 ASTRA 등 외부 도구가 자기 시각으로 덮을 수 있어
+            #       주문 신선도 증거가 못 됨 — 주문과 같은 배치로 쓰는 P4가 진실)
+            #    - B11: 레거시 위치 유지 (웹 표시용)
+            ws.batch_update([
+                {"range": "L4", "values": rows},
+                {"range": "P4", "values": [[f"주문기준 {_ts}"]]},
+                {"range": "B11", "values": [[_ts]]},
+            ])
 
         _gs_retry(_do_write)
         print(f"      📊 [{label}] GSheet '{gs_sheet}' L4에 {len(rows)}건 기록 (이전 기록 clear 완료)")
