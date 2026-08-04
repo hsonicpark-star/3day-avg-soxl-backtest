@@ -1341,17 +1341,14 @@ def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
 
         def _do_write():
             # ① 먼저 넓은 범위를 clear → 이전 기록 완전 제거 (27행 방어 마진)
-            ws.batch_clear(["L4:O30", "P4"])
+            # (기존에 쓰던 범위만 사용 — 새 셀 추가 금지. 유저별 시트 템플릿/봇
+            #  구성을 모르는 상태에서 임의 셀에 쓰면 기존 운용이 틀어질 수 있음)
+            ws.batch_clear(["L4:O30"])
             _ts = pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")
-            # ② 주문 + 신선도 마커를 배치 1회로 기록 (API 호출 수 최소화)
-            #    - L4~: 오늘 주문 rows
-            #    - P4 : 주문 블록 전용 신선도 마커 ★자동매매 봇 검증용★
-            #      (B11은 ASTRA 등 외부 도구가 자기 시각으로 덮을 수 있어
-            #       주문 신선도 증거가 못 됨 — 주문과 같은 배치로 쓰는 P4가 진실)
-            #    - B11: 레거시 위치 유지 (웹 표시용)
+            # ② 주문(L4~) + 갱신시각(B11)을 배치 1회로 기록 — 기록 대상은
+            #    기존과 동일, API 호출 수만 감소 (레이트리밋 확률 완화)
             ws.batch_update([
                 {"range": "L4", "values": rows},
-                {"range": "P4", "values": [[f"주문기준 {_ts}"]]},
                 {"range": "B11", "values": [[_ts]]},
             ])
 
