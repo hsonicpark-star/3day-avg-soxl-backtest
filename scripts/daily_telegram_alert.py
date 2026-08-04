@@ -1330,19 +1330,26 @@ def write_orders_to_gsheet(client, gs_url: str, gs_sheet: str,
     if not gs_url or not gs_sheet or not rows:
         return False
     try:
-        sh = client.open_by_url(gs_url)
+        # 레이트리밋(429) 등 일시 오류로 기록이 실패하면 시트에 '어제 주문'이
+        # 그대로 남아 자동매매 봇이 낡은 주문을 읽는 사고 발생 → 재시도 필수
+        sh = _gs_retry(lambda: client.open_by_url(gs_url))
         try:
             ws = sh.worksheet(gs_sheet)
         except gspread.exceptions.WorksheetNotFound:
             print(f"      ⚠️ [{label}] 시트 탭 '{gs_sheet}' 없음 — 건너뜀")
             return False
-        # ① 먼저 넓은 범위를 clear → 이전 기록 완전 제거 (최대 전략 8행 대비 27행 여유)
-        ws.batch_clear(["L4:O30"])
-        # ② 그 다음 L4부터 새 rows만 작성 → 오늘 발송분만 표시됨
-        ws.update(range_name="L4", values=rows)
-        # ③ B11 업데이트 시각 (KST) — 주문표가 언제 갱신됐는지 확인용
-        ws.update(range_name="B11",
-                  values=[[pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
+
+        def _do_write():
+            # ① 먼저 넓은 범위를 clear → 이전 기록 완전 제거 (27행 방어 마진)
+            ws.batch_clear(["L4:O30"])
+            # ② 그 다음 L4부터 새 rows만 작성 → 오늘 발송분만 표시됨
+            ws.update(range_name="L4", values=rows)
+            # ③ B11 업데이트 시각 (KST) — 주문표가 언제 갱신됐는지 확인용.
+            #    소비자(자동매매 봇)는 B11 날짜가 오늘인지 확인 후 사용 권장.
+            ws.update(range_name="B11",
+                      values=[[pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
+
+        _gs_retry(_do_write)
         print(f"      📊 [{label}] GSheet '{gs_sheet}' L4에 {len(rows)}건 기록 (이전 기록 clear 완료)")
         return True
     except Exception as e:
@@ -2006,8 +2013,15 @@ def main():
                         from dss_engine import rows_to_tungchigi_rows
                         _rows = rows_to_tungchigi_rows(_rows)
                         _label = f"{_label}(퉁치기)"
-                    write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
-                                              _label, status="OK")
+                    _sheet_ok = write_gsheet_with_status(
+                        client, shared_gs_url, _gs_sheet, _rows, _label, status="OK")
+                    if not _sheet_ok:
+                        # 시트에 어제 주문이 남은 채 방치되면 자동매매 봇이
+                        # 낡은 주문을 읽는 사고 발생 → 유저에게 즉시 경고
+                        user_warnings.append(
+                            f"[종가평균/{tk}] 🚨 구글시트 주문표 기록 실패 — 시트에 "
+                            f"어제 주문이 남아있을 수 있습니다. 자동매매 봇 사용 시 "
+                            f"B11 갱신시각을 확인하세요!")
 
                 # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태) ──
                 # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산.
@@ -2201,8 +2215,15 @@ def main():
                         from dss_engine import rows_to_tungchigi_rows
                         _rows = rows_to_tungchigi_rows(_rows)
                         _label = f"{_label}(퉁치기)"
-                    write_gsheet_with_status(client, shared_gs_url, _gs_sheet, _rows,
-                                              _label, status="OK")
+                    _sheet_ok = write_gsheet_with_status(
+                        client, shared_gs_url, _gs_sheet, _rows, _label, status="OK")
+                    if not _sheet_ok:
+                        # 시트에 어제 주문이 남은 채 방치되면 자동매매 봇이
+                        # 낡은 주문을 읽는 사고 발생 → 유저에게 즉시 경고
+                        user_warnings.append(
+                            f"[표준편차/{tk}] 🚨 구글시트 주문표 기록 실패 — 시트에 "
+                            f"어제 주문이 남아있을 수 있습니다. 자동매매 봇 사용 시 "
+                            f"B11 갱신시각을 확인하세요!")
 
                 # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태, 종가 빈칸) ──
                 # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산. 수량 불변 (B방식).
