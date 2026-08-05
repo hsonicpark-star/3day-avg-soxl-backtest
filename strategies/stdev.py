@@ -1934,7 +1934,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             if _col in _sd_show.columns:
                 _num = pd.to_numeric(_sd_show[_col], errors="coerce")
                 _sd_show[_col] = _num.apply(lambda v: f"${v:,.4f}" if pd.notna(v) else "-")
-        for _col in ["예수금", "총자산"]:
+        for _col in ["총투자금", "예수금", "총자산"]:
             if _col in _sd_show.columns:
                 _num = pd.to_numeric(_sd_show[_col], errors="coerce")
                 _sd_show[_col] = _num.apply(lambda v: f"${v:,.2f}" if pd.notna(v) else "-")
@@ -1991,7 +1991,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
         # 표시 컬럼 순서 정리
         _display_cols = ["날짜", "매매", "종가", "σ(%)", "매수LOC", "매도LOC",
-                         "매수량", "매도량", "보유량", "평단가", "실현손익", "예수금", "총자산", "티어"]
+                         "매수량", "매도량", "보유량", "평단가", "실현손익",
+                         "총투자금", "예수금", "총자산", "티어"]
         _display_cols = [c for c in _display_cols if c in _sd_show.columns]
 
         st.dataframe(
