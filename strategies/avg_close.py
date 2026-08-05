@@ -1059,7 +1059,31 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             st.rerun()
 
     # ── 적용 파라미터 표시 + 수정 ──
+    # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
+    _cur_preset_avg = None
+    for _pp0 in _AVG_PRESETS_DB.get(tk, []):
+        if (abs(float(_pp0["a_buy"]) - _a_buy) < 1e-9
+                and abs(float(_pp0["a_sell"]) - _a_sell) < 1e-9
+                and abs(float(_pp0["sell_ratio"]) - _sell_ratio) < 1e-9
+                and int(_pp0["divisions"]) == int(_divisions)
+                and int(_pp0.get("n_days", 2)) == int(_n_days)):
+            _cur_preset_avg = _pp0["label"]
+            break
+
     with st.container(border=True):
+        if _cur_preset_avg:
+            st.markdown(
+                f'<div style="margin-bottom:8px"><span style="display:inline-block;'
+                f'background:linear-gradient(90deg,#FFF3E0,#FFE0B2);color:#E65100;'
+                f'border:1px solid #FFB74D;border-radius:14px;padding:3px 14px;'
+                f'font-size:0.9em;font-weight:700">🏷️ {_cur_preset_avg} 프리셋 적용 중'
+                f'</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="margin-bottom:8px"><span style="display:inline-block;'
+                'background:#ECEFF1;color:#546E7A;border:1px solid #B0BEC5;'
+                'border-radius:14px;padding:3px 14px;font-size:0.9em;font-weight:700">'
+                '🛠️ 커스텀 파라미터</span></div>', unsafe_allow_html=True)
         _p1, _p2, _p3, _p4, _p5 = st.columns(5)
         _p1.metric("매수기준 (a_buy)",  f"{_a_buy:.4f}")
         _p2.metric("매도기준 (a_sell)", f"{_a_sell:.4f}")

@@ -1088,7 +1088,32 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             st.rerun()
 
     # -- 파라미터 표시 + 수정 ----
+    # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
+    _cur_preset_sd = None
+    for _pp0 in _SD_PRESETS_DB.get(tk, []):
+        if (abs(float(_pp0["k_buy"]) - _kb) < 1e-9
+                and abs(float(_pp0["k_sell"]) - _ks) < 1e-9
+                and abs(float(_pp0["sell_ratio"]) - _sr) < 1e-9
+                and int(_pp0["divisions"]) == int(_div)
+                and int(_pp0["sigma_period"]) == int(_sp)
+                and int(_pp0["renewal"]) == int(_rn)):
+            _cur_preset_sd = _pp0["label"]
+            break
+
     with st.container(border=True):
+        if _cur_preset_sd:
+            st.markdown(
+                f'<div style="margin-bottom:8px"><span style="display:inline-block;'
+                f'background:linear-gradient(90deg,#FFF3E0,#FFE0B2);color:#E65100;'
+                f'border:1px solid #FFB74D;border-radius:14px;padding:3px 14px;'
+                f'font-size:0.9em;font-weight:700">🏷️ {_cur_preset_sd} 프리셋 적용 중'
+                f'</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="margin-bottom:8px"><span style="display:inline-block;'
+                'background:#ECEFF1;color:#546E7A;border:1px solid #B0BEC5;'
+                'border-radius:14px;padding:3px 14px;font-size:0.9em;font-weight:700">'
+                '🛠️ 커스텀 파라미터</span></div>', unsafe_allow_html=True)
         _p1,_p2,_p3,_p4,_p5,_p6 = st.columns(6)
         _p1.metric("k_buy",    f"{_kb:.2f}")
         _p2.metric("k_sell",   f"{_ks:.2f}")
