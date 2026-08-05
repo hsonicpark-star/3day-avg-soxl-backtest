@@ -519,7 +519,12 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     # mode_map에 있으면 그 값, 없으면(새 주 시작) 2주치 RSI로 직접 판정.
     _next_td = next_us_trading_days(last_date, 1)
     _next_date = _next_td[0] if len(_next_td) > 0 else last_date
-    mode_map = get_week_mode_map(mode_series_df, soxl.index)
+    # 주의: _next_date는 미래 날짜라 soxl.index에 없음 → 반드시 포함해서 매핑.
+    # (soxl.index만 쓰면 항상 fallback으로 빠지고, 진행 중인 주가 mode_series에
+    #  이미 있는 경우 get_current_week_mode가 미확정 주 RSI를 '1주 전'으로
+    #  오인해 다음 주 모드를 잘못 계산함 — 웹앱과 모드 불일치 버그의 원인)
+    mode_map = get_week_mode_map(
+        mode_series_df, soxl.index.append(pd.DatetimeIndex([_next_date])))
     if _next_date in mode_map:
         last_mode = mode_map[_next_date]
     else:

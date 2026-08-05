@@ -1440,11 +1440,14 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
     # 다음 거래일이 mode_map에 있으면 그 값, 없으면(새 주 시작) 2주치 RSI로 판정.
     _next_td = next_us_trading_days(last_date, 1)
     _next_date = _next_td[0] if len(_next_td) > 0 else last_date
-    mode_map = get_week_mode_map(mode_series_df, soxl.index)
+    # 주의: _next_date는 미래 날짜라 soxl.index에 없음 → 반드시 포함해서 매핑
+    # (진행 중인 주가 mode_series에 있으면 그 행의 모드가 정답)
+    mode_map = get_week_mode_map(
+        mode_series_df, soxl.index.append(pd.DatetimeIndex([_next_date])))
     if _next_date in mode_map:
         last_mode = mode_map[_next_date]
     else:
-        # 진행 중인 새 주 → RR(2주전)/R(1주전) RSI로 직접 판정
+        # 진행 중인 새 주(행 없음) → RR(2주전)/R(1주전) RSI로 직접 판정
         last_mode = get_current_week_mode(mode_series_df)
 
     if last_mode == "AG":
