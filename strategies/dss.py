@@ -1553,7 +1553,36 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     cur_fee     = _ap.get("fee_rate", _DSS_DEFAULT_PARAMS["fee_rate"])
 
     # ── 파라미터 테이블 ──
+    # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
+    _cur_vals_dss = {
+        "sf_div": cur_sf_div, "sf_hold": cur_sf_hold,
+        "sf_buy": cur_sf_buy, "sf_sell": cur_sf_sell,
+        "ag_div": cur_ag_div, "ag_hold": cur_ag_hold,
+        "ag_buy": cur_ag_buy, "ag_sell": cur_ag_sell,
+        "pcr": cur_pcr, "lcr": cur_lcr,
+        "renewal_period": cur_renew, "fee_rate": cur_fee,
+    }
+    _cur_preset_dss = None
+    for _pp0 in _DSS_PRESETS:
+        if all(abs(float(_cur_vals_dss[_k]) - float(_pp0[_k])) < 1e-9
+               for _k in _DSS_PARAM_KEYS):
+            _cur_preset_dss = _pp0["label"]
+            break
+
     with st.container(border=True):
+        if _cur_preset_dss:
+            st.markdown(
+                f'<div style="margin-bottom:8px"><span style="display:inline-block;'
+                f'background:linear-gradient(90deg,#FFF3E0,#FFE0B2);color:#E65100;'
+                f'border:1px solid #FFB74D;border-radius:14px;padding:3px 14px;'
+                f'font-size:0.9em;font-weight:700">🏷️ {_cur_preset_dss} 프리셋 적용 중'
+                f'</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="margin-bottom:8px"><span style="display:inline-block;'
+                'background:#ECEFF1;color:#546E7A;border:1px solid #B0BEC5;'
+                'border-radius:14px;padding:3px 14px;font-size:0.9em;font-weight:700">'
+                '🛠️ 커스텀 파라미터</span></div>', unsafe_allow_html=True)
         st.markdown(
             f"""
             <table style="width:100%; border-collapse:collapse; font-size:14px;">
