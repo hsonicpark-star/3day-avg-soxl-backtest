@@ -129,10 +129,18 @@ def _filter_incomplete_today(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
+def fetch_prices(ticker: str, start_date: str, auto_adjust: bool = True) -> pd.DataFrame:
+    """가격 로드 + 검증 (intraday 필터, SOXL 백업, 중간 구멍 차단).
+
+    auto_adjust: 웹앱의 해당 전략 엔진과 반드시 일치시킬 것.
+      - 종가평균/표준편차 (common.data): True (조정 종가)
+      - DSS (dss_engine) / 듀얼스나이퍼 (dual_sniper_engine): False (미조정)
+        → 불일치 시 배당 발생 시점부터 과거 종가가 밀려 웹과 수량이 어긋남.
+    """
     end = datetime.today() + timedelta(days=1)
     df = yf.download(ticker, start=start_date,
-                     end=end.strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
+                     end=end.strftime("%Y-%m-%d"), progress=False,
+                     auto_adjust=auto_adjust)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     df = df[["Close"]].dropna()
@@ -497,8 +505,9 @@ def calc_dss_order(acct_data: dict) -> dict | None:
 
     # 데이터 로드 — 실패(전일 종가 미확보 포함) 시 예외 전파
     # → main에서 해당 계좌 발송 차단 + 사용자 에러 알림
-    soxl = fetch_prices("SOXL", "2009-06-01")
-    qqq  = fetch_prices("QQQ",  "2009-01-01")
+    # auto_adjust=False: DSS 웹(dss_engine.load_price_data)과 동일한 미조정 종가
+    soxl = fetch_prices("SOXL", "2009-06-01", auto_adjust=False)
+    qqq  = fetch_prices("QQQ",  "2009-01-01", auto_adjust=False)
 
     if soxl.empty or qqq.empty:
         raise RuntimeError("가격 데이터 비어있음 (yfinance)")
