@@ -1808,18 +1808,32 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         except Exception as _e_tng_avg:
             st.error(f"퉁치기 계산 실패: {_e_tng_avg}")
 
-    # 현재 보유 현황
+    # 현재 보유 현황 (카드 스타일)
+    def _avg_card(label, value, sub="", vcolor="#333", scolor="#888"):
+        _sub_html = (f'<div style="font-size:0.68em;color:{scolor};font-weight:600">{sub}</div>'
+                     if sub else "")
+        return (f'<div style="flex:1;background:#FAFAFA;border:1px solid #EEE;'
+                f'border-radius:10px;padding:14px 18px;text-align:center">'
+                f'<div style="font-size:0.72em;color:#888;margin-bottom:2px">{label}</div>'
+                f'<div style="font-size:1.15em;font-weight:700;color:{vcolor}">{value}</div>'
+                f'{_sub_html}</div>')
+
     st.subheader("📦 현재 보유 현황")
+    avg_c = res["avg_cost"]
+    _ev_pnl = (lp - avg_c) * res["shares"] if res["shares"] > 0 else 0.0
+    _ev_pct = (lp / avg_c - 1) * 100 if (res["shares"] > 0 and avg_c > 0) else 0.0
+    _ev_c = "#2E7D32" if _ev_pnl >= 0 else "#C62828"
     if res["shares"] > 0:
-        avg_c = res["avg_cost"]
-        hc = st.columns(6)
-        hc[0].metric("보유주수",  f"{res['shares']:,}주")
-        hc[1].metric("평균단가",  f"${avg_c:.2f}")
-        hc[2].metric("현재가",    f"${lp:.2f}")
-        hc[3].metric("평가금액",  f"${res['shares']*lp:,.2f}")
-        hc[4].metric("평가손익",  f"${(lp-avg_c)*res['shares']:,.2f}",
-                      delta=f"{(lp/avg_c-1)*100:+.2f}%" if avg_c > 0 else "")
-        hc[5].metric("보유현금",  f"${res['cash']:,.2f}")
+        st.markdown(
+            '<div style="display:flex;gap:10px;margin-bottom:8px">'
+            + _avg_card("보유주수", f"{res['shares']:,}주")
+            + _avg_card("평균단가", f"${avg_c:,.2f}")
+            + _avg_card("현재가", f"${lp:,.2f}")
+            + _avg_card("평가금액", f"${res['shares']*lp:,.2f}")
+            + _avg_card("평가손익", f"${_ev_pnl:+,.2f}",
+                        sub=f"{_ev_pct:+.2f}%", vcolor=_ev_c, scolor=_ev_c)
+            + _avg_card("보유현금", f"${res['cash']:,.2f}")
+            + "</div>", unsafe_allow_html=True)
         if res["open_tiers"]:
             with st.expander(f"보유 티어 상세 ({len(res['open_tiers'])}개 배치)"):
                 tiers_rows = []
@@ -1836,12 +1850,93 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.dataframe(pd.DataFrame(tiers_rows), hide_index=True, use_container_width=True)
     else:
         st.info("현재 보유 주식 없음 (전량 현금)")
-        st.metric("보유현금", f"${res['cash']:,.2f}")
+        st.markdown(
+            '<div style="display:flex;gap:10px;margin-bottom:8px">'
+            + _avg_card("보유현금", f"${res['cash']:,.2f}")
+            + "</div>", unsafe_allow_html=True)
+
+    # -- 성과 (원장 기준) ---
+    st.subheader("성과")
+    _df_hist = _load_ticker_daily_history(tk)   # 아래 일별 매매 상세표에서도 재사용
+    try:
+        _adj_raw_pf = tk_cfg.get("capital_adj_history", "[]")
+        _adj_pf = (json.loads(_adj_raw_pf)
+                   if isinstance(_adj_raw_pf, str) else (_adj_raw_pf or []))
+        if not isinstance(_adj_pf, list):
+            _adj_pf = []
+        _adj_pairs = []
+        for _it in _adj_pf:
+            try:
+                _adj_pairs.append((str(pd.Timestamp(_it.get("날짜")).date()),
+                                   float(_it.get("조정금액", 0)),
+                                   bool(_it.get("원장반영", False))))
+            except Exception:
+                continue
+        _tot_adj_pf = sum(a for _, a, _f in _adj_pairs)
+        _base_pf = float(os_capital) + _tot_adj_pf
+        # DD 곡선에서 제거할 입출금 = '원장반영' 항목만 (레거시는 원장 숫자에
+        # 미포함이라 날짜 기준으로 빼면 가짜 절벽 발생)
+        _adj_pairs_dd = [(d, a) for d, a, _f in _adj_pairs if _f]
+
+        _rl_pf = 0.0
+        if not _df_hist.empty and "실현손익($)" in _df_hist.columns:
+            _rl_pf = float(pd.to_numeric(_df_hist["실현손익($)"],
+                                          errors="coerce").fillna(0).sum())
+        _period_pnl = _rl_pf + _ev_pnl
+
+        _cur_dd = _mdd_v = None
+        if not _df_hist.empty and "총자산($)" in _df_hist.columns:
+            _dfp = _df_hist.copy()
+            _dfp["_d"] = _dfp["날짜"].astype(str)
+            _dfp["_ta"] = pd.to_numeric(_dfp["총자산($)"], errors="coerce")
+            _dfp = _dfp[_dfp["_ta"].notna()].sort_values("_d")
+            if len(_dfp) >= 2:
+                _eq = np.array([float(_ta) - sum(a for ad, a in _adj_pairs_dd if ad <= _dstr)
+                                for _dstr, _ta in zip(_dfp["_d"], _dfp["_ta"])],
+                               dtype=float)
+                _pk = np.maximum.accumulate(_eq)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    _ddv = np.where(_pk > 0, (_eq - _pk) / _pk, 0.0)
+                _cur_dd = float(_ddv[-1]) * 100
+                _mdd_v = float(_ddv.min()) * 100
+
+        try:
+            from dateutil.relativedelta import relativedelta as _rdelta
+            _rd = _rdelta(datetime.today().date(), os_start)
+            _period_txt = ((f"{_rd.years}년 " if _rd.years else "")
+                           + f"{_rd.months}개월 {_rd.days}일").strip()
+        except Exception:
+            _days_pf = (datetime.today().date() - os_start).days
+            _period_txt = f"{_days_pf // 30}개월 {_days_pf % 30}일"
+
+        _pp_c = "#2E7D32" if _period_pnl >= 0 else "#C62828"
+        _rl_c = "#2E7D32" if _rl_pf >= 0 else "#C62828"
+        _dd_txt = f"{_cur_dd:.2f}%" if _cur_dd is not None else "-"
+        _mdd_txt = f"{_mdd_v:.2f}%" if _mdd_v is not None else "-"
+        st.markdown(
+            '<div style="display:flex;gap:10px;margin-bottom:8px">'
+            + _avg_card("기간 손익", f"${_period_pnl:+,.2f}",
+                        sub=(f"{_period_pnl / _base_pf * 100:+.2f}%" if _base_pf > 0 else ""),
+                        vcolor=_pp_c, scolor=_pp_c)
+            + _avg_card("기간 실현손익", f"${_rl_pf:+,.2f}",
+                        sub=(f"{_rl_pf / _base_pf * 100:+.2f}%" if _base_pf > 0 else ""),
+                        vcolor=_rl_c, scolor=_rl_c)
+            + _avg_card("미실현손익", f"${_ev_pnl:+,.2f}",
+                        sub=f"{_ev_pct:+.2f}%", vcolor=_ev_c, scolor=_ev_c)
+            + _avg_card("현재 DD", _dd_txt,
+                        vcolor="#C62828" if (_cur_dd is not None and _cur_dd < -0.005) else "#333")
+            + _avg_card("MDD", _mdd_txt,
+                        vcolor="#C62828" if (_mdd_v is not None and _mdd_v < -0.005) else "#333")
+            + _avg_card("운용 기간", _period_txt)
+            + "</div>", unsafe_allow_html=True)
+        st.caption("성과는 원장(매매기록) 총자산 기준 · DD/MDD는 원장에 반영된 입출금"
+                   "('원장반영' 표시 조정)을 제거한 수익 곡선으로 계산합니다.")
+    except Exception as _perf_err:
+        st.caption(f"성과 계산 실패: {_perf_err}")
 
     # 일별 매매 상세표 (파일 기반 누적 기록 — 파라미터 변경 무관)
     st.divider()
     st.subheader("📅 일별 매매 상세표")
-    _df_hist = _load_ticker_daily_history(tk)
     if _df_hist.empty:
         # 히스토리 파일 없을 때 시뮬레이션 결과를 fallback으로 사용
         _dl = res.get("daily_log", [])

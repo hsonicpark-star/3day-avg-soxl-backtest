@@ -2370,15 +2370,118 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
             _total_holding_qty = sum(pos['qty'] for pos in _os['open_positions'])
             _avg_buy_price = sum(pos['buy_price'] * pos['qty'] for pos in _os['open_positions']) / _total_holding_qty if _total_holding_qty > 0 else 0
-            hc1, hc2, hc3, hc4 = st.columns(4)
-            hc1.metric("총 보유주수", f"{_total_holding_qty:,}주")
-            hc2.metric("평균매수가", f"${_avg_buy_price:.2f}")
-            hc3.metric("현재가 (종가)", f"${_os['prev_close']:,.2f}")
-            hc4.metric("평가금액", f"${_os['holding_value']:,.0f}",
-                       delta=f"{(_os['prev_close']/_avg_buy_price-1)*100:+.2f}%" if _avg_buy_price > 0 else "")
         else:
             st.info("현재 보유 시드 없음 (전량 현금)")
-            st.metric("보유현금", f"${_os['cash']:,.0f}")
+            _total_holding_qty = 0
+            _avg_buy_price = 0.0
+
+        # ── 보유 요약 + 성과 (카드 스타일) ──
+        def _dss_card(label, value, sub="", vcolor="#333", scolor="#888"):
+            _sub_html = (f'<div style="font-size:0.68em;color:{scolor};font-weight:600">{sub}</div>'
+                         if sub else "")
+            return (f'<div style="flex:1;background:#FAFAFA;border:1px solid #EEE;'
+                    f'border-radius:10px;padding:14px 18px;text-align:center">'
+                    f'<div style="font-size:0.72em;color:#888;margin-bottom:2px">{label}</div>'
+                    f'<div style="font-size:1.15em;font-weight:700;color:{vcolor}">{value}</div>'
+                    f'{_sub_html}</div>')
+
+        _dss_ev_pnl = (_os['holding_value']
+                       - _avg_buy_price * _total_holding_qty) if _total_holding_qty > 0 else 0.0
+        _dss_ev_pct = ((_os['prev_close'] / _avg_buy_price - 1) * 100
+                       if _avg_buy_price > 0 else 0.0)
+        _dss_ev_c = "#2E7D32" if _dss_ev_pnl >= 0 else "#C62828"
+        if _total_holding_qty > 0:
+            st.markdown(
+                '<div style="display:flex;gap:10px;margin-bottom:8px">'
+                + _dss_card("총 보유주수", f"{_total_holding_qty:,}주")
+                + _dss_card("평균매수가", f"${_avg_buy_price:,.2f}")
+                + _dss_card("현재가 (종가)", f"${_os['prev_close']:,.2f}")
+                + _dss_card("평가금액", f"${_os['holding_value']:,.0f}")
+                + _dss_card("평가손익", f"${_dss_ev_pnl:+,.0f}",
+                            sub=f"{_dss_ev_pct:+.2f}%", vcolor=_dss_ev_c, scolor=_dss_ev_c)
+                + _dss_card("보유현금", f"${_os['cash']:,.0f}")
+                + "</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="display:flex;gap:10px;margin-bottom:8px">'
+                + _dss_card("보유현금", f"${_os['cash']:,.0f}")
+                + "</div>", unsafe_allow_html=True)
+
+        # ── 성과 (히스토리 기준) ──
+        st.subheader("성과")
+        try:
+            _adj_list_pf = acct_data.get("capital_adj_history", []) or []
+            _adj_pairs_dss = []
+            for _it in _adj_list_pf:
+                try:
+                    _adj_pairs_dss.append((str(pd.Timestamp(_it.get("날짜")).date()),
+                                            float(_it.get("조정금액", 0))))
+                except Exception:
+                    continue
+            _tot_adj_dss = sum(a for _, a in _adj_pairs_dss)
+            _base_dss = float(os_capital) + _tot_adj_dss
+
+            _rl_dss = float(_os.get('cum_realized', 0) or 0)
+            _period_pnl_dss = _rl_dss + _dss_ev_pnl
+
+            # DD/MDD — 히스토리 총자산에서 입출금 누적 제거
+            # (DSS 엔진은 자본조정을 해당 날짜에 직접 주입 → 날짜 기준 차감이 정확)
+            _cur_dd_d = _mdd_d = None
+            _hist_dss = _load_dss_history(acct_name)
+            if not _hist_dss.empty and "총자산($)" in _hist_dss.columns:
+                _dfp = _hist_dss.copy()
+                _dfp["_d"] = _dfp["날짜"].astype(str)
+                _dfp["_ta"] = pd.to_numeric(
+                    _dfp["총자산($)"].astype(str)
+                        .str.replace("$", "", regex=False)
+                        .str.replace(",", "", regex=False),
+                    errors="coerce")
+                _dfp = _dfp[_dfp["_ta"].notna()].sort_values("_d")
+                if len(_dfp) >= 2:
+                    _eq = np.array(
+                        [float(_ta) - sum(a for ad, a in _adj_pairs_dss if ad <= _dstr)
+                         for _dstr, _ta in zip(_dfp["_d"], _dfp["_ta"])], dtype=float)
+                    _pk = np.maximum.accumulate(_eq)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        _ddv = np.where(_pk > 0, (_eq - _pk) / _pk, 0.0)
+                    _cur_dd_d = float(_ddv[-1]) * 100
+                    _mdd_d = float(_ddv.min()) * 100
+
+            try:
+                from dateutil.relativedelta import relativedelta as _rdelta
+                _rd = _rdelta(datetime.today().date(), os_start)
+                _period_txt_d = ((f"{_rd.years}년 " if _rd.years else "")
+                                 + f"{_rd.months}개월 {_rd.days}일").strip()
+            except Exception:
+                _days_d = (datetime.today().date() - os_start).days
+                _period_txt_d = f"{_days_d // 30}개월 {_days_d % 30}일"
+
+            _pp_c = "#2E7D32" if _period_pnl_dss >= 0 else "#C62828"
+            _rl_c = "#2E7D32" if _rl_dss >= 0 else "#C62828"
+            _dd_txt = f"{_cur_dd_d:.2f}%" if _cur_dd_d is not None else "-"
+            _mdd_txt = f"{_mdd_d:.2f}%" if _mdd_d is not None else "-"
+            st.markdown(
+                '<div style="display:flex;gap:10px;margin-bottom:8px">'
+                + _dss_card("기간 손익", f"${_period_pnl_dss:+,.0f}",
+                            sub=(f"{_period_pnl_dss / _base_dss * 100:+.2f}%"
+                                 if _base_dss > 0 else ""),
+                            vcolor=_pp_c, scolor=_pp_c)
+                + _dss_card("기간 실현손익", f"${_rl_dss:+,.0f}",
+                            sub=(f"{_rl_dss / _base_dss * 100:+.2f}%"
+                                 if _base_dss > 0 else ""),
+                            vcolor=_rl_c, scolor=_rl_c)
+                + _dss_card("미실현손익", f"${_dss_ev_pnl:+,.0f}",
+                            sub=f"{_dss_ev_pct:+.2f}%", vcolor=_dss_ev_c, scolor=_dss_ev_c)
+                + _dss_card("현재 DD", _dd_txt,
+                            vcolor="#C62828" if (_cur_dd_d is not None and _cur_dd_d < -0.005) else "#333")
+                + _dss_card("MDD", _mdd_txt,
+                            vcolor="#C62828" if (_mdd_d is not None and _mdd_d < -0.005) else "#333")
+                + _dss_card("운용 기간", _period_txt_d)
+                + "</div>", unsafe_allow_html=True)
+            st.caption("성과는 매매기록 총자산 기준 · DD/MDD는 자본조정(입출금) 영향을 "
+                       "제거한 수익 곡선으로 계산합니다.")
+        except Exception as _perf_err_d:
+            st.caption(f"성과 계산 실패: {_perf_err_d}")
 
         # ── 최근 매도 기록 ──
         st.divider()
