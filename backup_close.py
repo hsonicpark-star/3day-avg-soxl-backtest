@@ -138,7 +138,10 @@ def check_and_patch_soxl(df: pd.DataFrame, gc=None):
     last_valid = pd.Timestamp(valid.index[-1]).normalize()
 
     if last_valid >= expected:
-        return df, None, True  # 최신 — 정상
+        # 마지막 날이 최신이어도 '중간 구멍'이 있을 수 있음
+        # (2026-08-06 사고: yfinance가 8/4 하루만 빼고 반환 → 마지막 날
+        #  검사는 통과 → 백테스트 왜곡 → 텔레그램 매수수량 오발송 400 vs 404)
+        return _patch_mid_holes(df, gc)
 
     # stale: expected까지의 누락 거래일을 백업에서 보충
     missing_desc = f"{last_valid.date()} 이후 ~ {expected.date()}"
@@ -164,11 +167,61 @@ def check_and_patch_soxl(df: pd.DataFrame, gc=None):
     patched_last = pd.Timestamp(patched_valid.index[-1]).normalize() if not patched_valid.empty else last_valid
 
     if patched_last >= expected:
-        return patched, (f"⚠️ yfinance 종가 누락 감지 → 백업 시트(DB)로 보충: "
-                         f"{', '.join(added)}"), True
+        # 꼬리 보충 성공 → 중간 구멍도 이어서 검사
+        patched2, hole_warn, hole_ok = _patch_mid_holes(patched, gc)
+        tail_warn = (f"⚠️ yfinance 종가 누락 감지 → 백업 시트(DB)로 보충: "
+                     f"{', '.join(added)}")
+        warn = tail_warn + (f" / {hole_warn}" if hole_warn else "")
+        return patched2, warn, hole_ok
     if added:
         return patched, (f"⛔ 전일 종가 미확보: 백업에서 일부만 보충"
                          f"({', '.join(added)}) — 최신 거래일({expected.date()}) "
                          f"종가는 백업에도 없음"), False
     return df, (f"⛔ 전일 종가 미확보: yfinance 누락({missing_desc}) "
                 f"+ 백업 시트에도 해당 날짜 없음"), False
+
+
+def _patch_mid_holes(df: pd.DataFrame, gc=None, window_days: int = 45):
+    """최근 구간의 '중간 구멍'(마지막 날은 있지만 사이에 빠진 거래일) 감지·보충.
+
+    yfinance가 간헐적으로 중간 하루를 빼고 반환하거나 NaN 행(사전 제거됨)으로
+    주는 경우, 마지막 날짜 검사만으로는 잡히지 않는다. 주말/휴장일 오탐을
+    피하기 위해 1차로 bdate_range 후보를 뽑고, 후보가 있을 때만 백업 DB의
+    실제 거래일 목록과 대조해 진짜 누락만 보충한다 (휴장일은 DB에도 없음).
+
+    Returns: (df, warning_msg|None, resolved)  — 보충 실패한 진짜 누락이
+             남으면 resolved=False (호출자는 주문 생성/발송 중단).
+    """
+    try:
+        last_d = pd.Timestamp(df.index[-1]).normalize()
+        start_d = last_d - pd.Timedelta(days=window_days)
+        bdays = pd.bdate_range(start_d, last_d)
+        have = set(pd.Timestamp(d).normalize() for d in df.index)
+        candidates = [d for d in bdays if d not in have]
+    except Exception:
+        return df, None, True
+    if not candidates:
+        return df, None, True
+
+    # 후보가 있을 때만 백업 조회 (휴장일이면 백업에도 없어 자연 제외)
+    try:
+        backup = fetch_backup_soxl_closes(gc)
+    except Exception:
+        # 백업 접근 불가 → 후보가 휴장일인지 판별 불가. 차단은 과잉이므로
+        # 경고만 남긴다 (마지막 종가는 확보된 상태).
+        return df, (f"⚠️ 최근 데이터에 빈 날짜 후보 "
+                    f"{[d.strftime('%m/%d') for d in candidates]} — "
+                    f"백업 시트 접근 실패로 검증 불가"), True
+
+    real_missing = [d for d in candidates if d in backup.index]
+    if not real_missing:
+        return df, None, True  # 전부 휴장일 — 정상
+
+    patched = df.copy()
+    added = []
+    for d in real_missing:
+        patched.loc[d, "Close"] = float(backup.loc[d])
+        added.append(f"{d.strftime('%m/%d')}=${float(backup.loc[d]):,.2f}")
+    patched = patched.sort_index()
+    return patched, (f"⚠️ yfinance 중간 누락 감지 → 백업 시트(DB)로 보충: "
+                     f"{', '.join(added)}"), True

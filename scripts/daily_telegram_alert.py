@@ -150,6 +150,24 @@ def fetch_prices(ticker: str, start_date: str) -> pd.DataFrame:
             print(f"    {_warn}")
         if not _resolved:
             raise RuntimeError(_warn or "⛔ 전일 종가 미확보 (yfinance+백업 모두 실패)")
+
+    # ── 중간 구멍 최종 검증 (전 티커 공통) ──
+    # yfinance가 중간 하루를 빼고 반환하면 백테스트가 왜곡되어 잘못된
+    # 주문이 발송됨 (2026-08-06: 8/4 누락 → DSS 매수 400주 vs 정상 404주).
+    # 마지막 날 검사만으론 못 잡으므로 NYSE 달력으로 최근 30일을 대조,
+    # 구멍이 남아 있으면 낡은/불완전 데이터 원칙과 동일하게 발송 차단.
+    try:
+        from dss_engine import _is_us_trading_day
+        _last_d = pd.Timestamp(df.index[-1]).normalize()
+        _chk = [d for d in pd.bdate_range(_last_d - timedelta(days=30), _last_d)
+                if _is_us_trading_day(d)]
+        _have = {pd.Timestamp(d).normalize() for d in df.index}
+        _holes = [d.strftime("%m/%d") for d in _chk if d not in _have]
+    except Exception:
+        _holes = []
+    if _holes:
+        raise RuntimeError(f"⛔ 가격 데이터 중간 누락({ticker}): {', '.join(_holes)} "
+                           f"— 주문 계산 왜곡 방지를 위해 발송 차단 (yfinance 이상)")
     return df
 
 # ══════════════════════════════════════════════════════════════
