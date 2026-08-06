@@ -2332,7 +2332,10 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
         if _os['open_positions']:
             pos_rows = []
-            _trading_days_all = get_soxl_data().index
+            # 잔여일은 미래 거래일까지 세야 함 → 미래 60거래일이 붙은
+            # _trading_days_idx 사용 (과거만 있는 raw index로는 항상 0일)
+            _trading_days_all = (_trading_days_idx if _trading_days_idx is not None
+                                 else get_soxl_data().index)
             for i, pos in enumerate(_os['open_positions']):
                 buy_d = pos['buy_date']
                 buy_d_str = buy_d.strftime('%Y-%m-%d') if hasattr(buy_d, 'strftime') else str(buy_d)
