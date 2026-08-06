@@ -1954,10 +1954,15 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         for _it in _adj_pf:
             try:
                 _adj_pairs.append((str(pd.Timestamp(_it.get("날짜")).date()),
-                                   float(_it.get("조정금액", 0))))
+                                   float(_it.get("조정금액", 0)),
+                                   bool(_it.get("원장반영", False))))
             except Exception:
                 continue
-        _tot_adj_pf = sum(a for _, a in _adj_pairs)
+        _tot_adj_pf = sum(a for _, a, _f in _adj_pairs)
+        # DD 곡선에서 제거할 입출금 = '원장반영' 항목만.
+        # 레거시(플래그 없음) 조정은 원장 일별 숫자에 포함되지 않았으므로
+        # 날짜 기준으로 빼면 가짜 절벽(-50%대 허위 MDD)이 생김.
+        _adj_pairs_dd = [(d, a) for d, a, _f in _adj_pairs if _f]
         _base_pf = float(_os_cap) + _tot_adj_pf     # 시작자본 + 총 입출금
 
         # 기간 실현손익 (원장 실현손익 합) · 미실현 = 평가손익 · 기간손익 = 합
@@ -1975,7 +1980,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _dfp["_ta"] = pd.to_numeric(_dfp["총자산"], errors="coerce")
             _dfp = _dfp[_dfp["_ta"].notna()].sort_values("_d")
             if len(_dfp) >= 2:
-                _eq = np.array([float(_ta) - sum(a for ad, a in _adj_pairs if ad <= _dstr)
+                _eq = np.array([float(_ta) - sum(a for ad, a in _adj_pairs_dd if ad <= _dstr)
                                 for _dstr, _ta in zip(_dfp["_d"], _dfp["_ta"])],
                                dtype=float)
                 _pk = np.maximum.accumulate(_eq)
@@ -2014,8 +2019,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                        vcolor="#C62828" if (_mdd_v is not None and _mdd_v < -0.005) else "#333")
             + _sd_card("운용 기간", _period_txt)
             + "</div>", unsafe_allow_html=True)
-        st.caption("성과는 원장(매매기록) 총자산 기준 · DD/MDD는 자본조정(입출금) 영향을 "
-                   "제거한 수익 곡선으로 계산합니다.")
+        st.caption("성과는 원장(매매기록) 총자산 기준 · DD/MDD는 원장에 반영된 입출금"
+                   "('원장반영' 표시 조정)을 제거한 수익 곡선으로 계산합니다. "
+                   "과거 방식으로 처리된 입출금은 곡선에 계단으로 남을 수 있습니다.")
     except Exception as _perf_err:
         st.caption(f"성과 계산 실패: {_perf_err}")
 
