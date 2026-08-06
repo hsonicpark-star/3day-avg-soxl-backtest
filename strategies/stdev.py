@@ -1907,25 +1907,121 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         except Exception as _e_tng_sd:
             st.error(f"퉁치기 계산 실패: {_e_tng_sd}")
 
-    # -- 현재 보유 현황 ---
+    # -- 현재 보유 현황 (카드 스타일) ---
+    def _sd_card(label, value, sub="", vcolor="#333", scolor="#888"):
+        _sub_html = (f'<div style="font-size:0.68em;color:{scolor};font-weight:600">{sub}</div>'
+                     if sub else "")
+        return (f'<div style="flex:1;background:#FAFAFA;border:1px solid #EEE;'
+                f'border-radius:10px;padding:14px 18px;text-align:center">'
+                f'<div style="font-size:0.72em;color:#888;margin-bottom:2px">{label}</div>'
+                f'<div style="font-size:1.15em;font-weight:700;color:{vcolor}">{value}</div>'
+                f'{_sub_html}</div>')
+
     st.subheader("현재 보유 현황")
+    _eval_amt = _holdings * _lc
+    _eval_pnl2 = (_lc - _avg_c) * _holdings if _holdings > 0 else 0.0
+    _eval_pct2 = (_lc / _avg_c - 1) * 100 if (_holdings > 0 and _avg_c > 0) else 0.0
+    _pnl_c = "#2E7D32" if _eval_pnl2 >= 0 else "#C62828"
     if _holdings > 0:
-        _hcols = st.columns(6)
-        _hcols[0].metric("보유주수",  f"{_holdings:,}주")
-        _hcols[1].metric("평균단가",  f"${_avg_c:.2f}")
-        _hcols[2].metric("현재가",    f"${_lc:.2f}")
-        _hcols[3].metric("평가금액",  f"${_holdings*_lc:,.2f}")
-        _hcols[4].metric("평가손익",  f"${(_lc-_avg_c)*_holdings:,.2f}",
-                          delta=f"{(_lc/_avg_c-1)*100:+.2f}%" if _avg_c > 0 else "")
-        _hcols[5].metric("보유현금",  f"${_cash:,.2f}")
+        st.markdown(
+            '<div style="display:flex;gap:10px;margin-bottom:8px">'
+            + _sd_card("보유주수", f"{_holdings:,}주")
+            + _sd_card("평균단가", f"${_avg_c:,.2f}")
+            + _sd_card("현재가", f"${_lc:,.2f}")
+            + _sd_card("평가금액", f"${_eval_amt:,.2f}")
+            + _sd_card("평가손익", f"${_eval_pnl2:+,.2f}",
+                       sub=f"{_eval_pct2:+.2f}%", vcolor=_pnl_c, scolor=_pnl_c)
+            + _sd_card("보유현금", f"${_cash:,.2f}")
+            + "</div>", unsafe_allow_html=True)
     else:
         st.info("현재 보유 주식 없음 (전량 현금)")
-        st.metric("보유현금", f"${_cash:,.2f}")
+        st.markdown(
+            '<div style="display:flex;gap:10px;margin-bottom:8px">'
+            + _sd_card("보유현금", f"${_cash:,.2f}")
+            + "</div>", unsafe_allow_html=True)
+
+    # -- 성과 (원장 기준) ---
+    st.subheader("성과")
+    _sd_hist_df = _load_sd_daily_history(tk)   # 아래 일별 매매 상세표에서도 재사용
+    try:
+        # 자본조정(입출금) 이력 — DD/MDD 계산 시 수익 곡선에서 제거
+        _adj_raw_pf = tk_cfg.get("capital_adj_history", "[]")
+        _adj_pf = (json.loads(_adj_raw_pf)
+                   if isinstance(_adj_raw_pf, str) else (_adj_raw_pf or []))
+        if not isinstance(_adj_pf, list):
+            _adj_pf = []
+        _adj_pairs = []
+        for _it in _adj_pf:
+            try:
+                _adj_pairs.append((str(pd.Timestamp(_it.get("날짜")).date()),
+                                   float(_it.get("조정금액", 0))))
+            except Exception:
+                continue
+        _tot_adj_pf = sum(a for _, a in _adj_pairs)
+        _base_pf = float(_os_cap) + _tot_adj_pf     # 시작자본 + 총 입출금
+
+        # 기간 실현손익 (원장 실현손익 합) · 미실현 = 평가손익 · 기간손익 = 합
+        _rl_pf = 0.0
+        if not _sd_hist_df.empty and "실현손익" in _sd_hist_df.columns:
+            _rl_pf = float(pd.to_numeric(_sd_hist_df["실현손익"],
+                                          errors="coerce").fillna(0).sum())
+        _period_pnl = _rl_pf + _eval_pnl2
+
+        # 현재 DD / MDD — 원장 총자산에서 입출금 누적을 뺀 수익 곡선 기준
+        _cur_dd = _mdd_v = None
+        if not _sd_hist_df.empty and "총자산" in _sd_hist_df.columns:
+            _dfp = _sd_hist_df.copy()
+            _dfp["_d"] = _dfp["날짜"].astype(str)
+            _dfp["_ta"] = pd.to_numeric(_dfp["총자산"], errors="coerce")
+            _dfp = _dfp[_dfp["_ta"].notna()].sort_values("_d")
+            if len(_dfp) >= 2:
+                _eq = np.array([float(_ta) - sum(a for ad, a in _adj_pairs if ad <= _dstr)
+                                for _dstr, _ta in zip(_dfp["_d"], _dfp["_ta"])],
+                               dtype=float)
+                _pk = np.maximum.accumulate(_eq)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    _ddv = np.where(_pk > 0, (_eq - _pk) / _pk, 0.0)
+                _cur_dd = float(_ddv[-1]) * 100
+                _mdd_v = float(_ddv.min()) * 100
+
+        # 운용 기간
+        try:
+            from dateutil.relativedelta import relativedelta as _rdelta
+            _rd = _rdelta(datetime.today().date(), _os_start)
+            _period_txt = ((f"{_rd.years}년 " if _rd.years else "")
+                           + f"{_rd.months}개월 {_rd.days}일").strip()
+        except Exception:
+            _days_pf = (datetime.today().date() - _os_start).days
+            _period_txt = f"{_days_pf // 30}개월 {_days_pf % 30}일"
+
+        _pp_c = "#2E7D32" if _period_pnl >= 0 else "#C62828"
+        _rl_c = "#2E7D32" if _rl_pf >= 0 else "#C62828"
+        _dd_txt = f"{_cur_dd:.2f}%" if _cur_dd is not None else "-"
+        _mdd_txt = f"{_mdd_v:.2f}%" if _mdd_v is not None else "-"
+        _dd_c = "#C62828" if (_cur_dd is not None and _cur_dd < -0.005) else "#333"
+        st.markdown(
+            '<div style="display:flex;gap:10px;margin-bottom:8px">'
+            + _sd_card("기간 손익", f"${_period_pnl:+,.2f}",
+                       sub=(f"{_period_pnl / _base_pf * 100:+.2f}%" if _base_pf > 0 else ""),
+                       vcolor=_pp_c, scolor=_pp_c)
+            + _sd_card("기간 실현손익", f"${_rl_pf:+,.2f}",
+                       sub=(f"{_rl_pf / _base_pf * 100:+.2f}%" if _base_pf > 0 else ""),
+                       vcolor=_rl_c, scolor=_rl_c)
+            + _sd_card("미실현손익", f"${_eval_pnl2:+,.2f}",
+                       sub=f"{_eval_pct2:+.2f}%", vcolor=_pnl_c, scolor=_pnl_c)
+            + _sd_card("현재 DD", _dd_txt, vcolor=_dd_c)
+            + _sd_card("MDD", _mdd_txt,
+                       vcolor="#C62828" if (_mdd_v is not None and _mdd_v < -0.005) else "#333")
+            + _sd_card("운용 기간", _period_txt)
+            + "</div>", unsafe_allow_html=True)
+        st.caption("성과는 원장(매매기록) 총자산 기준 · DD/MDD는 자본조정(입출금) 영향을 "
+                   "제거한 수익 곡선으로 계산합니다.")
+    except Exception as _perf_err:
+        st.caption(f"성과 계산 실패: {_perf_err}")
 
     # -- 일별 매매 상세표 -----
     st.divider()
     st.subheader("일별 매매 상세표")
-    _sd_hist_df = _load_sd_daily_history(tk)
     # 히스토리 파일 없으면 현재 시뮬 결과 fallback
     if _sd_hist_df.empty and _hdf is not None and not (hasattr(_hdf, "empty") and _hdf.empty):
         _sd_hist_df = _hdf.copy()
