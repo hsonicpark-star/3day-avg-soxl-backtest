@@ -142,17 +142,24 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
             _tail_nan = pd.isna(out['close'].iloc[-1]) and out.index[-1].date() < today_est
             _nd = next_trading_days(out.index[-1], 1)
             _row_missing = len(_nd) > 0 and _nd[0].date() < today_est  # 마감된 세션 행 자체가 없음
-            if _tail_nan or _row_missing:
+            # 중간 구멍 후보: 최근 45일 bdate 중 결과에 없는 날 (휴장일 포함 가능
+            # → DB 거래일과 대조해 진짜 구멍만 보충). 2026-08-06 사고:
+            # yfinance가 8/4 하루만 빼고 반환 → 마지막 행 검사는 통과 →
+            # 백테스트 왜곡·수량 오발송. DSS와 동일한 방어를 DS 로더에도 적용.
+            _win_start = out.index[-1] - pd.Timedelta(days=45)
+            _mid_cand = set(d for d in pd.bdate_range(_win_start, out.index[-1])
+                            if d not in out.index)
+            if _tail_nan or _row_missing or _mid_cand:
                 db = _load_db_closes()
                 if db is not None:
-                    # NaN 채움 + 야후에 없는 마감 거래일 행 추가 (오늘 이전만)
+                    # NaN 채움 + 꼬리/중간 구멍 행 추가 (오늘 이전 확정분만)
                     for d, c in db.items():
                         if d.date() >= today_est:
                             continue
                         if d in out.index:
                             if pd.isna(out.loc[d, 'close']):
                                 out.loc[d, 'close'] = c
-                        elif d > out.index[-1]:
+                        elif d > out.index[-1] or d in _mid_cand:
                             out.loc[d] = c
                     out = out.sort_index()
                 elif _tail_nan:   # DB 불가 시 최후 폴백
