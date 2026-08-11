@@ -1619,7 +1619,11 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             res["ledger_sell_qty"] = _ledger["sell_qty"]
 
         # 4) 오늘 '예정' 행 저장 (주문 있고 + 오늘 행 없을 때만, B방식)
-        if _ledger and _today_row_led is None \
+        # 휴장일(주말 등)엔 저장 금지 — 종가가 없어 영원히 미정산 유령 행이 됨
+        from dss_engine import _is_us_trading_day as _is_td_avg
+        if not _is_td_avg(datetime.today().date()):
+            st.caption("🏖️ 오늘은 미국장 휴장일 — 주문 예정은 다음 거래일 발송 때 기록됩니다.")
+        elif _ledger and _today_row_led is None \
                 and (_ledger["buy_qty"] > 0 or _ledger["sell_qty"] > 0):
             _prow_led = build_avg_pending_row(
                 _today_str_hist,

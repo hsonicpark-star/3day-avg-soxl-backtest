@@ -1714,7 +1714,12 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         _sd_ledger["cash"] + _sd_ledger["holdings"] * _lc_disp, 2)
 
                 # 4) 오늘 '예정' 행 저장 (주문 있고 + 오늘 행 없을 때만, B방식)
-                if _sd_ledger and _today_row_led is None \
+                # 휴장일(주말 등)엔 저장 금지 — 종가가 없어 영원히 미정산 유령 행이
+                # 되고, 티어/renewal 사이클을 한 칸 밀어버림 (2026-08-09 일요일 사고)
+                from dss_engine import _is_us_trading_day as _is_td_sd
+                if not _is_td_sd(datetime.today().date()):
+                    st.caption("🏖️ 오늘은 미국장 휴장일 — 주문 예정은 다음 거래일 발송 때 기록됩니다.")
+                elif _sd_ledger and _today_row_led is None \
                         and (_sd_ledger["buy_qty"] > 0 or _sd_ledger["sell_qty"] > 0):
                     _prow = build_sd_pending_row(
                         _today_sd, int(_sd_r.get("next_tier", 1)),
