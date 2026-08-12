@@ -963,6 +963,11 @@ def render_ordersheet_tab(params: dict):
             if st.form_submit_button("💾 계좌 추가", type="primary", use_container_width=True):
                 if not _form_ticker:
                     st.error("종목코드를 입력해주세요.")
+                elif _form_ticker in _get_sigma_ticker_settings():
+                    # 덮어쓰기 방지 — 동일 티커 재등록 시 기존 설정(시작일/자본 등)이
+                    # 통째로 초기화되는 사고 차단 (표준편차에서 발생했던 사고와 동일 패턴)
+                    st.error(f"⛔ '{_form_ticker}' 계좌가 이미 있습니다 — 기존 설정 보호를 위해 "
+                             f"덮어쓰지 않았습니다. 설정 변경은 해당 계좌 탭에서 하세요.")
                 else:
                     _auto_amt = _form_capital / _form_divisions if _form_divisions > 0 else _form_capital
                     _save_amt = _form_amount if _form_amount > 0 else _auto_amt
