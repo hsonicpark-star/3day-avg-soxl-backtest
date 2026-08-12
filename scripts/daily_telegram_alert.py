@@ -2104,14 +2104,19 @@ def main():
                 _label       = f"표준편차/{tk}"
 
                 try:
+                    # 계좌 키는 '티커@계좌명' 형식 허용 (동일 종목 다중 계좌).
+                    # 시세 조회는 심볼만, 원장 시트명(sd_{tk}_매매기록)은 전체 키 사용.
+                    _sd_sym = str(tk).split("@")[0].strip()
                     r = calc_sd_today_order(
-                        ticker=tk, os_start=os_start,
+                        ticker=_sd_sym, os_start=os_start,
                         k_buy=k_buy, k_sell=k_sell,
                         sigma_period=sigma_period,
                         sell_ratio=sell_ratio,
                         divisions=divisions, renewal=renewal,
                         capital=capital, pcr=pcr, lcr=lcr,
                     )
+                    if r:
+                        r["ticker"] = tk   # 메시지 종목 라벨엔 계좌명 포함 전체 키 표시
                 except Exception as e:
                     print(f"    ❌ [표준편차/{tk}] 계산 오류 → {e}")
                     fail_count += 1

@@ -61,6 +61,13 @@ def _get_avg_close_run_backtest():
 _SD_PFX = "sd_"
 
 
+def _sd_symbol(tk: str) -> str:
+    """계좌 키에서 yfinance 심볼 추출 — 'SOXL@신규' → 'SOXL'.
+    같은 종목 다중 계좌를 위해 계좌 키는 '티커@계좌명' 형식을 허용.
+    원장 시트명(sd_{키}_매매기록)·설정은 전체 키, 시세 조회만 심볼 사용."""
+    return str(tk).split("@")[0].strip().upper()
+
+
 # ══════════════════════════════════════════════
 # 표준편차매매 계좌 설정 CRUD  (common.config 통합 함수 래퍼)
 # ══════════════════════════════════════════════
@@ -347,7 +354,7 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
     try:
         today    = datetime.today().date()
         buf_s    = (pd.to_datetime(str(_os_start)) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
-        pdf_tg   = load_price_data(ticker_name, buf_s, str(today), "야후파이낸스 (yfinance)", None)
+        pdf_tg   = load_price_data(_sd_symbol(ticker_name), buf_s, str(today), "야후파이낸스 (yfinance)", None)
         if pdf_tg is None or pdf_tg.empty:
             return "가격 데이터를 불러오지 못했습니다."
         res = run_stdev_ordersheet(
@@ -1090,7 +1097,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     # -- 파라미터 표시 + 수정 ----
     # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
     _cur_preset_sd = None
-    for _pp0 in _SD_PRESETS_DB.get(tk, []):
+    for _pp0 in _SD_PRESETS_DB.get(_sd_symbol(tk), []):
         if (abs(float(_pp0["k_buy"]) - _kb) < 1e-9
                 and abs(float(_pp0["k_sell"]) - _ks) < 1e-9
                 and abs(float(_pp0["sell_ratio"]) - _sr) < 1e-9
@@ -1123,7 +1130,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _p6.metric("갱신 주기", f"{_rn}주기")
 
         with st.expander("파라미터 수정"):
-            _param_presets = _SD_PRESETS_DB.get(tk, [])
+            _param_presets = _SD_PRESETS_DB.get(_sd_symbol(tk), [])
             if _param_presets:
                 st.caption("추천 프리셋 -- 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
                 # 프리셋 개수에 맞춰 동적으로 컬럼 생성 (3개 또는 4개 등)
@@ -1556,7 +1563,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _save_sd_ticker_setting(tk, {"os_start": str(_os_start), "os_capital": _os_cap})
         with st.spinner("데이터 로드 및 시뮬레이션 중..."):
             _buf_start = (_os_start - timedelta(days=90))
-            _pdf = load_price_data(tk, str(_buf_start), str(datetime.today().date()),
+            _pdf = load_price_data(_sd_symbol(tk), str(_buf_start), str(datetime.today().date()),
                                    "야후 파이낸스 (yfinance)", None)
         # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
         from common.data import halt_if_stale
@@ -2204,18 +2211,29 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
         _sd_add_rn  = _add_c2.number_input("갱신 주기",   value=5, min_value=1, step=1,
                                             key="sd_add_rn_inp")
 
+        _sd_add_name = st.text_input(
+            "계좌명 (선택) — 같은 종목의 추가 계좌를 만들 때 입력 (예: 신규, 아내)",
+            key="sd_add_name",
+            help="입력 시 계좌 키가 '티커@계좌명'으로 저장되어 기존 계좌와 분리 관리됩니다. "
+                 "매매기록 시트도 sd_티커@계좌명_매매기록으로 따로 생성됩니다.").strip()
         if st.button("계좌 등록", type="primary", use_container_width=True, key="sd_add_reg"):
+            _sd_new_key = (f"{_sd_add_tk}@{_sd_add_name}"
+                           if (_sd_add_tk and _sd_add_name) else _sd_add_tk)
             if not _sd_add_tk:
                 st.warning("종목 티커를 입력하세요.")
+            elif _sd_new_key in _sd_all:
+                st.error(f"⛔ '{_sd_new_key}' 계좌가 이미 있습니다 — 기존 설정 보호를 위해 "
+                         f"덮어쓰지 않았습니다. 같은 종목의 추가 계좌를 만들려면 "
+                         f"'계좌명'을 입력해 구분하세요.")
             else:
-                _save_sd_ticker_setting(_sd_add_tk, {
+                _save_sd_ticker_setting(_sd_new_key, {
                     "k_buy": float(_sd_add_kb), "k_sell": float(_sd_add_ks),
                     "sell_ratio": float(_sd_add_sr), "divisions": int(_sd_add_dv),
                     "sigma_period": int(_sd_add_sp), "renewal": int(_sd_add_rn),
                 })
                 for _k in ["sd_add_kb", "sd_add_ks", "sd_add_sr", "sd_add_dv"]:
                     st.session_state.pop(_k, None)
-                st.success(f"{_sd_add_tk} 계좌가 등록되었습니다!")
+                st.success(f"{_sd_new_key} 계좌가 등록되었습니다!")
                 st.rerun()
 
     # -- 등록된 계좌 렌더링 -----
@@ -2275,7 +2293,7 @@ def _sd_compute_recovery_table(assets, dates, threshold=10.0):
 
 def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, e_date4):
     with st.spinner(f"{tk} 데이터 로드 및 분석 중..."):
-        _pdf4 = load_price_data(tk, s_date4, e_date4, "야후파이낸스 (yfinance)", None)
+        _pdf4 = load_price_data(_sd_symbol(tk), s_date4, e_date4, "야후파이낸스 (yfinance)", None)
     if _pdf4 is None or _pdf4.empty:
         st.error(f"{tk}: 가격 데이터를 불러오지 못했습니다.")
         return
@@ -2720,7 +2738,7 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
         if st.button("▶ 무작위 100구간 분석 시작", key=f"sd_mc_run_{tk}"):
             st.session_state[f"sd_mc_res_{tk}"] = None
             with st.spinner("전체 가격 데이터 로드 중..."):
-                _mc_pdf4 = load_price_data(tk, "2014-01-01", str(pd.Timestamp.today().date()),
+                _mc_pdf4 = load_price_data(_sd_symbol(tk), "2014-01-01", str(pd.Timestamp.today().date()),
                                            "야후파이낸스 (yfinance)", None)
             if _mc_pdf4 is None or _mc_pdf4.empty:
                 st.error("가격 데이터를 불러오지 못했습니다.")
