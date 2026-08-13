@@ -793,19 +793,62 @@ def verify_dss_against_board(client, os_result: dict, verify_url: str,
     Returns: 불일치 메시지 리스트 (일치하면 빈 리스트)
     """
     issues = []
-    try:
-        sh = client.open_by_url(verify_url)
+    import time as _time
+    # 구글 시트 일시 장애(503/429/500) 재시도 — 이상치 오탐 방지
+    _last_err = None
+    for _attempt in range(3):
         try:
-            ws = sh.worksheet(verify_sheet)
-        except Exception:
-            return [f"⚠️ 검증시트 탭 '{verify_sheet}' 없음"]
+            sh = client.open_by_url(verify_url)
+            try:
+                ws = sh.worksheet(verify_sheet)
+            except gspread.exceptions.WorksheetNotFound:
+                return [f"⚠️ 검증시트 탭 '{verify_sheet}' 없음"]
 
-        board_mode_raw = str(ws.cell(3, 2).value or "").strip()
-        board_buy_price = _parse_sheet_number(ws.cell(7, 2).value)
-        board_buy_qty = _parse_sheet_number(ws.cell(7, 3).value)
+            board_mode_raw = str(ws.cell(3, 2).value or "").strip()
+            board_buy_price = _parse_sheet_number(ws.cell(7, 2).value)
+            board_buy_qty = _parse_sheet_number(ws.cell(7, 3).value)
 
-        # 시트 모드 → AG/SF 변환
-        board_mode = "AG" if "공세" in board_mode_raw else ("SF" if "안전" in board_mode_raw else "?")
+            # 모드는 RECORD 일별 모드(L열)를 우선 사용 — BOARD B3는 주간
+            # RSI 수동 입력 전까지 지난 주 모드로 남는 lag가 있음
+            # (2026-08-11 오탐: RECORD=AG 정상인데 BOARD=안전모드로 불일치 알림)
+            record_mode = None
+            try:
+                import re as _re
+                ws_rec = sh.worksheet("RECORD")
+                _dates = ws_rec.col_values(9)   # I열 날짜
+                _modes = ws_rec.col_values(12)  # L열 모드
+                # 아래에서 위로: 날짜가 있고 모드(AG/SF)가 채워진 가장 최근 행
+                for _i in range(len(_dates) - 1, -1, -1):
+                    if not _re.match(r"\d{2}\.\d{2}\.\d{2}", str(_dates[_i] or "")):
+                        continue
+                    _m = str(_modes[_i]).strip() if _i < len(_modes) else ""
+                    if _m in ("AG", "SF"):
+                        record_mode = _m
+                        break
+            except Exception:
+                record_mode = None
+            _last_err = None
+            break
+        except Exception as e:
+            _last_err = e
+            _es = str(e)
+            if _attempt < 2 and any(c in _es for c in
+                                    ("503", "429", "500", "unavailable",
+                                     "RATE_LIMIT", "Quota exceeded")):
+                _time.sleep(4 * (_attempt + 1))
+                continue
+            break
+    if _last_err is not None:
+        return [f"검증 실패: {_last_err}"]
+
+    try:
+        # 시트 모드: RECORD 일별 모드 우선, 없으면 BOARD B3
+        if record_mode in ("AG", "SF"):
+            board_mode = record_mode
+            board_mode_raw = f"RECORD:{record_mode}"
+        else:
+            board_mode = ("AG" if "공세" in board_mode_raw
+                          else ("SF" if "안전" in board_mode_raw else "?"))
         app_mode = os_result.get("last_mode", "?")
 
         # 1. 모드 비교
