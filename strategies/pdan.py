@@ -469,22 +469,21 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     seed = float(P["seed"])
     addons = list(P.get("addons", []))
     addon_sum = float(sum(float(a.get("amount", 0)) for a in addons))
-    seed_eff_saved = seed + addon_sum
-    # 패널의 '운용 자금' 입력으로 세션 내 오버라이드 가능 (저장 시 Seed 반영)
+    # 운용 자금(본 시드) 입력 세션값 선반영 — 총 투입금 = 운용 자금 + 애드온
     try:
-        seed_eff = float(st.session_state.get(f"pd_seedin_{keyfx}",
-                                              seed_eff_saved))
+        seed_in = float(st.session_state.get(f"pd_seedin_{keyfx}", seed))
     except (TypeError, ValueError):
-        seed_eff = seed_eff_saved
+        seed_in = seed
+    seed_eff = seed_in + addon_sum
     splits = int(P["splits"])
     gap_param, gap_desc = _gap_of(P)
     sell_mode = P["sell_mode"]
     target_pct = _thr_of(P)
 
     _prx = ladder_prices(100.0, splits, gap_param)
-    _seed_txt = (f"Seed ${seed:,.0f} + 애드온 ${addon_sum:,.0f} = "
-                 f"운용 ${seed_eff:,.0f}" if addon_sum else
-                 f"Seed ${seed:,.0f}")
+    _seed_txt = (f"운용 ${seed_in:,.0f} + 애드온 ${addon_sum:,.0f} = "
+                 f"총 ${seed_eff:,.0f}" if addon_sum else
+                 f"운용 ${seed_in:,.0f}")
     st.caption(f"**{ticker}** · {_seed_txt} · {splits}분할 · "
                f"매수갭 {gap_desc} · {SELL_MODES[sell_mode]} {target_pct}% · "
                f"최대 커버 ≈{(1 - _prx[-1] / _prx[0]) * 100:.1f}%")
@@ -512,17 +511,19 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             format="%.2f", key=f"pd_px_{keyfx}",
             help="기본값 = 저장된 최초매수가 (없으면 최근 확정 종가)")
         st.caption(f"최근 확정 종가 {last_close:,.2f}")
-        seed_eff = st.number_input(
+        seed_in = st.number_input(
             "운용 자금 ($)", min_value=0.0,
-            value=float(seed_eff_saved), step=500.0, format="%.0f",
+            value=float(seed), step=500.0, format="%.0f",
             key=f"pd_seedin_{keyfx}",
-            help="사다리 전체에 배분할 총 자금 (Seed + 애드온). 수정하면 "
-                 "1회금액·티어수량이 즉시 재계산되고, [💾 상태 저장] 시 "
-                 "계좌 Seed에 반영됩니다")
+            help="본 시드(내 자금)만 입력. 총 투입금 = 운용 자금 + 애드온 "
+                 "합계로 사다리가 계산됩니다. [💾 상태 저장] 시 계좌 Seed로 "
+                 "저장")
+        seed_eff = float(seed_in) + addon_sum
         ot = build_order_table(seed_eff, splits, first_price, gap_param,
                                target_pct / 100)
         st.metric("총 투입금", f"${ot['총금액'].iloc[-1]:,.2f}",
-                  delta=f"1회금액 ${seed_eff / splits:,.0f}",
+                  delta=(f"운용 ${float(seed_in):,.0f} + 애드온 "
+                         f"${addon_sum:,.0f} · 1회 ${seed_eff / splits:,.0f}"),
                   delta_color="off")
         st.metric("최종티어 매수가", f"${ot['매수가'].iloc[-1]:,.2f}",
                   delta=f"{(ot['매수가'].iloc[-1] / first_price - 1) * 100:.1f}%")
@@ -568,8 +569,6 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             if _dirty:
                 cfg["accounts"][acct_name]["addons"] = addons
                 _save_cfg(cfg)
-                # 운용 자금 입력을 새 (Seed+애드온) 기본값으로 리셋
-                st.session_state.pop(f"pd_seedin_{keyfx}", None)
                 st.rerun()
             if addons:
                 _sums = {}
@@ -603,7 +602,6 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                                    "amount": float(aamt)})
                     cfg["accounts"][acct_name]["addons"] = addons
                     _save_cfg(cfg)
-                    st.session_state.pop(f"pd_seedin_{keyfx}", None)
                     st.rerun()
 
     with c2:
@@ -664,7 +662,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     ui_nos = (set(checked["회차"].astype(int)) if len(checked) else set())
     if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
                       or ui_nos != saved_filled
-                      or abs(seed_eff - seed_eff_saved) > 0.5):
+                      or abs(float(seed_in) - seed) > 0.5):
         st.warning("⚠️ 최초매수가/운용 자금/매수✓ 변경사항이 저장되지 "
                    "않았습니다 — 새로고침하면 사라집니다 → 아래 "
                    "**[💾 상태 저장]**을 누르세요.")
@@ -748,12 +746,10 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                          use_container_width=True, key=f"pd_wsave_{keyfx}"):
                 cfg["accounts"][acct_name]["first_price"] = float(first_price)
                 cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
-                cfg["accounts"][acct_name]["seed"] = max(
-                    float(seed_eff) - addon_sum, 0.0)
+                cfg["accounts"][acct_name]["seed"] = float(seed_in)
                 _save_cfg(cfg)
-                st.success(f"저장 완료 — 운용 자금 ${seed_eff:,.0f} "
-                           f"(Seed ${max(float(seed_eff) - addon_sum, 0.0):,.0f}"
-                           f" + 애드온 ${addon_sum:,.0f}) · "
+                st.success(f"저장 완료 — 운용 ${float(seed_in):,.0f} + "
+                           f"애드온 ${addon_sum:,.0f} = 총 ${seed_eff:,.0f} · "
                            f"체결 {len(ui_nos)}티어. 새로고침해도 유지됩니다.")
 
     # ASTRA 전송
