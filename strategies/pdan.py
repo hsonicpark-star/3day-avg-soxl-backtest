@@ -956,7 +956,7 @@ def _load_guide(path: str, mtime: float) -> str | None:
 
 
 def render_intro_tab(params: dict):
-    st.subheader("📖 평단법 매매란")
+    st.subheader("📖 평단 트레이딩이란")
     st.markdown("**정해둔 갭으로 지정가 매수를 사다리처럼 깔아 하락할 때마다 "
                 "모으고, 평단 대비 목표수익률 도달 시 전량 매도 후 재시작하는 "
                 "실시간 그리드 전략.**")
@@ -988,7 +988,7 @@ def render_intro_tab(params: dict):
 # 개인 설정 탭
 # ══════════════════════════════════════════════
 def render_settings_tab():
-    st.subheader("⚙️ 평단법 개인 설정")
+    st.subheader("⚙️ 평단 트레이딩 개인 설정")
     cfg = _load_cfg()
     where = ("Google Sheets `users.pdan_config`" if _IS_CLOUD
              else "`~/.pdan/config.json` (11.평단법 독립 앱과 공유)")

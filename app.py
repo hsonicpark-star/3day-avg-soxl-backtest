@@ -63,7 +63,7 @@ except Exception as _import_err:
     st.stop()
 
 # ── 전략 목록 ────────────────────────────────────────────────
-_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🎲 카마릴라 돌파", "🪜 평단법", "🧩 포트폴리오 합산"]
+_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🎲 카마릴라 돌파", "🪜 평단 트레이딩", "🧩 포트폴리오 합산"]
 
 # ── 전략 판별 ────────────────────────────────────────────────
 _strategy_title = st.session_state.get("strategy_radio", "📐 표준편차매매")
@@ -73,7 +73,7 @@ _is_dss = (_strategy_title == "🌊 DSS 동파법")
 _is_iuo = (_strategy_title == "📊 IUO 매매법")
 _is_dual = (_strategy_title == "🎯 듀얼스나이퍼")
 _is_cam = (_strategy_title == "🎲 카마릴라 돌파")
-_is_pdan = (_strategy_title == "🪜 평단법")
+_is_pdan = (_strategy_title == "🪜 평단 트레이딩")
 _is_portfolio = (_strategy_title == "🧩 포트폴리오 합산")
 
 # ── 포트폴리오 합산 lazy import (선택 시에만 로드) ─────────────
@@ -134,7 +134,7 @@ if _is_pdan:
         from strategies import pdan
         importlib.reload(pdan)
     except Exception as _pdan_err:
-        st.error(f"⚠️ 평단법 모듈 로드 실패: {_pdan_err}")
+        st.error(f"⚠️ 평단 트레이딩 모듈 로드 실패: {_pdan_err}")
         import traceback
         st.code(traceback.format_exc())
 
@@ -155,7 +155,7 @@ if _is_dual:
 
 # ── 타이틀 ───────────────────────────────────────────────────
 if _is_pdan:
-    st.title("🪜 평단법 백테스터")
+    st.title("🪜 평단 트레이딩 백테스터")
 elif _is_dual:
     st.title("🎯 Dual Sniper Pro 백테스터")
 elif _is_cam:
@@ -260,7 +260,7 @@ with st.sidebar:
         excel_file = None
 
     elif _is_pdan and not pdan:
-        st.warning("평단법 모듈 로드 실패. 위 에러를 확인하세요.")
+        st.warning("평단 트레이딩 모듈 로드 실패. 위 에러를 확인하세요.")
         params = {}; ticker = "SOXL"
         start_date = datetime(2021, 1, 4).date(); end_date = datetime.today().date()
         initial_capital = 30000.0; data_source = "야후 파이낸스 (yfinance)"; excel_file = None
@@ -397,7 +397,7 @@ if _is_pdan and pdan:
         "📖 전략 소개", "⚙️ 개인 설정",
     ])
 elif _is_pdan and not pdan:
-    st.warning("⚠️ 평단법 모듈을 로드하지 못했습니다.")
+    st.warning("⚠️ 평단 트레이딩 모듈을 로드하지 못했습니다.")
     st.stop()
 elif _is_dual and dual:
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
