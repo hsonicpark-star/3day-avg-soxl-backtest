@@ -513,7 +513,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             help="기본값 = 저장된 최초매수가 (없으면 최근 확정 종가)")
         st.caption(f"최근 확정 종가 {last_close:,.2f}")
         seed_eff = st.number_input(
-            "운용 자금 ($)", min_value=1000.0,
+            "운용 자금 ($)", min_value=0.0,
             value=float(seed_eff_saved), step=500.0, format="%.0f",
             key=f"pd_seedin_{keyfx}",
             help="사다리 전체에 배분할 총 자금 (Seed + 애드온). 수정하면 "
@@ -671,7 +671,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     # 현황판
     st.markdown("**📟 현황판** (매수✓ 기준)")
     sell_qty, tgt = 0, 0.0
-    if checked.empty:
+    if checked.empty or int(checked["회차수량"].sum()) <= 0:
         st.caption("체크된 티어가 없습니다. 위 표에서 체결된 티어를 "
                    "체크하세요.")
     else:
@@ -699,7 +699,8 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             ("매수 체결", f"{len(checked)}티어 · {q}주",
              f"진행률 {len(checked)}/{splits}", "#888"),
             ("투입금", f"${amt:,.0f}",
-             f"총 예정 대비 {amt / total_amt * 100:.0f}%", "#888"),
+             (f"총 예정 대비 {amt / total_amt * 100:.0f}%"
+              if total_amt > 0 else ""), "#888"),
             ("손익 기준 평단가 (본전)", f"${avg:,.2f}",
              f"손익 기준 {be_txt}", "#888"),
             ("매도 목표가", f"${tgt:,.2f}",
@@ -885,9 +886,10 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
         e1, e2, e3 = st.columns(3)
         e_tkr = e1.text_input("티커", value=P["ticker"],
                               key=f"pd_etkr_{name}")
-        e_seed = e2.number_input("Seed ($)", min_value=1000.0, step=1000.0,
+        e_seed = e2.number_input("Seed ($)", min_value=0.0, step=1000.0,
                                  format="%.0f", value=float(P["seed"]),
-                                 key=f"pd_esd_{name}")
+                                 key=f"pd_esd_{name}",
+                                 help="0 가능 — 운용 자금이 전부 애드온일 때")
         e_sp = e3.number_input("분할수", min_value=2, step=1,
                                value=int(P["splits"]), key=f"pd_esp_{name}")
         e_tier = st.checkbox("구간별 매수갭 (3구간)", value=bool(P["tiered"]),
