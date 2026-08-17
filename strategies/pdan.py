@@ -521,8 +521,8 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                  "계좌 Seed에 반영됩니다")
         ot = build_order_table(seed_eff, splits, first_price, gap_param,
                                target_pct / 100)
-        st.caption(f"총 투입금(사다리 합계) **${ot['총금액'].iloc[-1]:,.2f}** "
-                   f"· 1회금액 ${seed_eff / splits:,.0f}")
+        st.caption(f"총 투입금(사다리 합계) **\\${ot['총금액'].iloc[-1]:,.2f}**"
+                   f" · 1회금액 \\${seed_eff / splits:,.0f}")
         st.metric("최종티어 매수가", f"${ot['매수가'].iloc[-1]:,.2f}",
                   delta=f"{(ot['매수가'].iloc[-1] / first_price - 1) * 100:.1f}%")
         st.download_button("⬇️ CSV 다운로드",
@@ -567,6 +567,8 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             if _dirty:
                 cfg["accounts"][acct_name]["addons"] = addons
                 _save_cfg(cfg)
+                # 운용 자금 입력을 새 (Seed+애드온) 기본값으로 리셋
+                st.session_state.pop(f"pd_seedin_{keyfx}", None)
                 st.rerun()
             if addons:
                 _sums = {}
@@ -600,6 +602,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                                    "amount": float(aamt)})
                     cfg["accounts"][acct_name]["addons"] = addons
                     _save_cfg(cfg)
+                    st.session_state.pop(f"pd_seedin_{keyfx}", None)
                     st.rerun()
 
     with c2:
@@ -951,6 +954,7 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
                 "thr_partial": float(e_tp), "thr_close": float(e_tc),
                 "gs_url": e_gs.strip()}
             _save_cfg(cfg)
+            st.session_state.pop(f"pd_seedin_{name}", None)
             st.rerun()
         if b2.button("🗑 계좌 삭제", use_container_width=True,
                      key=f"pd_edel_{name}"):
