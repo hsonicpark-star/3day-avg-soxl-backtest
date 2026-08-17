@@ -521,8 +521,9 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                  "계좌 Seed에 반영됩니다")
         ot = build_order_table(seed_eff, splits, first_price, gap_param,
                                target_pct / 100)
-        st.caption(f"총 투입금(사다리 합계) **\\${ot['총금액'].iloc[-1]:,.2f}**"
-                   f" · 1회금액 \\${seed_eff / splits:,.0f}")
+        st.metric("총 투입금", f"${ot['총금액'].iloc[-1]:,.2f}",
+                  delta=f"1회금액 ${seed_eff / splits:,.0f}",
+                  delta_color="off")
         st.metric("최종티어 매수가", f"${ot['매수가'].iloc[-1]:,.2f}",
                   delta=f"{(ot['매수가'].iloc[-1] / first_price - 1) * 100:.1f}%")
         st.download_button("⬇️ CSV 다운로드",
