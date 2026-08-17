@@ -97,6 +97,7 @@ def render_login_gate():
                             "a_buy", "a_sell", "sell_ratio", "divisions",
                             "ticker_settings", "sd_ticker_settings",
                             "dss_config",                       # DSS 동파법 설정
+                            "pdan_config",                      # 평단법 설정
                         )
                     }
                     st.rerun()
