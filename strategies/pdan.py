@@ -469,7 +469,13 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     seed = float(P["seed"])
     addons = list(P.get("addons", []))
     addon_sum = float(sum(float(a.get("amount", 0)) for a in addons))
-    seed_eff = seed + addon_sum
+    seed_eff_saved = seed + addon_sum
+    # 패널의 '운용 자금' 입력으로 세션 내 오버라이드 가능 (저장 시 Seed 반영)
+    try:
+        seed_eff = float(st.session_state.get(f"pd_seedin_{keyfx}",
+                                              seed_eff_saved))
+    except (TypeError, ValueError):
+        seed_eff = seed_eff_saved
     splits = int(P["splits"])
     gap_param, gap_desc = _gap_of(P)
     sell_mode = P["sell_mode"]
@@ -506,9 +512,17 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             format="%.2f", key=f"pd_px_{keyfx}",
             help="기본값 = 저장된 최초매수가 (없으면 최근 확정 종가)")
         st.caption(f"최근 확정 종가 {last_close:,.2f}")
+        seed_eff = st.number_input(
+            "운용 자금 ($)", min_value=1000.0,
+            value=float(seed_eff_saved), step=500.0, format="%.0f",
+            key=f"pd_seedin_{keyfx}",
+            help="사다리 전체에 배분할 총 자금 (Seed + 애드온). 수정하면 "
+                 "1회금액·티어수량이 즉시 재계산되고, [💾 상태 저장] 시 "
+                 "계좌 Seed에 반영됩니다")
         ot = build_order_table(seed_eff, splits, first_price, gap_param,
                                target_pct / 100)
-        st.metric("총 투입금", f"${ot['총금액'].iloc[-1]:,.2f}")
+        st.caption(f"총 투입금(사다리 합계) **${ot['총금액'].iloc[-1]:,.2f}** "
+                   f"· 1회금액 ${seed_eff / splits:,.0f}")
         st.metric("최종티어 매수가", f"${ot['매수가'].iloc[-1]:,.2f}",
                   delta=f"{(ot['매수가'].iloc[-1] / first_price - 1) * 100:.1f}%")
         st.download_button("⬇️ CSV 다운로드",
@@ -645,10 +659,11 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     # 저장 안 된 변경사항 경고
     ui_nos = (set(checked["회차"].astype(int)) if len(checked) else set())
     if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
-                      or ui_nos != saved_filled):
-        st.warning("⚠️ 최초매수가/매수✓ 변경사항이 저장되지 않았습니다 — "
-                   "새로고침하면 사라집니다 → 아래 **[💾 상태 저장]**을 "
-                   "누르세요.")
+                      or ui_nos != saved_filled
+                      or abs(seed_eff - seed_eff_saved) > 0.5):
+        st.warning("⚠️ 최초매수가/운용 자금/매수✓ 변경사항이 저장되지 "
+                   "않았습니다 — 새로고침하면 사라집니다 → 아래 "
+                   "**[💾 상태 저장]**을 누르세요.")
 
     # 현황판
     st.markdown("**📟 현황판** (매수✓ 기준)")
@@ -724,13 +739,17 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                     st.error(f"기록 실패: {e}")
     with bt2:
         if acct_name:
-            if st.button("💾 상태 저장 (최초매수가 + 매수✓ 체크)",
+            if st.button("💾 상태 저장 (운용 자금 + 최초매수가 + 매수✓)",
                          use_container_width=True, key=f"pd_wsave_{keyfx}"):
                 cfg["accounts"][acct_name]["first_price"] = float(first_price)
                 cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
+                cfg["accounts"][acct_name]["seed"] = max(
+                    float(seed_eff) - addon_sum, 0.0)
                 _save_cfg(cfg)
-                st.success(f"저장 완료 — 체결 {len(ui_nos)}티어. "
-                           "새로고침해도 유지됩니다.")
+                st.success(f"저장 완료 — 운용 자금 ${seed_eff:,.0f} "
+                           f"(Seed ${max(float(seed_eff) - addon_sum, 0.0):,.0f}"
+                           f" + 애드온 ${addon_sum:,.0f}) · "
+                           f"체결 {len(ui_nos)}티어. 새로고침해도 유지됩니다.")
 
     # ASTRA 전송
     st.divider()
