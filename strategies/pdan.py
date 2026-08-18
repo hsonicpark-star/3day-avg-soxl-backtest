@@ -194,10 +194,78 @@ def _stat_cards(items: list, tone: str = "gray") -> str:
 # ══════════════════════════════════════════════
 # 사이드바
 # ══════════════════════════════════════════════
+# 파라미터 프리셋 — 검증된 세팅 후보군 (설계 지표는 균등금액 기준 계산값)
+_PDAN_PRESETS = [
+    {"label": "🎯 표준 50분할 · 1/0.7/0.5 · ①5%",
+     "help": "현재 운용형. 커버 -31.7% · 풀티어 평가손실 -14.7% · 필요반등 +23%",
+     "splits": 50, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
+     "g3": 0.5, "gap": 1.0, "mode": "target", "thr_t": 5.0},
+    {"label": "🪜 90분할 연장 · 1/0.7/0.5 · ①5%",
+     "help": "표준형의 0.5% 구간을 90티어까지 연장. 커버 -44.1% · 평가손실 -20.9% · 필요반등 +33%",
+     "splits": 90, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
+     "g3": 0.5, "gap": 1.0, "mode": "target", "thr_t": 5.0},
+    {"label": "🌊 딥커버 90분할 · 1.6/0.8/0.4 · ①5%",
+     "help": "커버 -50% + 평가손실 -20%를 동시에 맞춘 조합. 필요반등 +31%. 초반 갭이 넓어 얕은 조정 회전은 감소",
+     "splits": 90, "tiered": True, "g1": 1.6, "t1": 20, "g2": 0.8, "t2": 45,
+     "g3": 0.4, "gap": 1.0, "mode": "target", "thr_t": 5.0},
+    {"label": "📏 균일 90분할 · 0.8% · ①10%",
+     "help": "단일 갭으로 세팅 단순. 커버 -51% · 평가손실 -28.5%. 이익률 10%로 깊은 반등 수확형",
+     "splits": 90, "tiered": False, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
+     "g3": 0.5, "gap": 0.8, "mode": "target", "thr_t": 10.0},
+    {"label": "♻️ 회전형 50분할 · 1/0.7/0.5 · ②트리거1%",
+     "help": "평단 도달 부분매도(②) — 싸게 산 티어만 익절하고 재하락 시 재매수. 백테스트(SOXL 5.5년)에서 물림 깊이·수익 균형 최상",
+     "splits": 50, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
+     "g3": 0.5, "gap": 1.0, "mode": "partial", "thr_p": 1.0},
+    {"label": "🌱 입문 10분할 · 1% · ①5%",
+     "help": "무크로 원조 세팅. 커버 -8.6% — 소액 연습·구조 이해용 (하락장 취약)",
+     "splits": 10, "tiered": False, "g1": 1.0, "t1": 5, "g2": 0.7, "t2": 8,
+     "g3": 0.5, "gap": 1.0, "mode": "target", "thr_t": 5.0},
+]
+
+
+def _preset_params(pk: dict) -> dict:
+    """프리셋 정의 → 계좌 파라미터 dict 조각."""
+    return {"splits": int(pk["splits"]), "tiered": bool(pk["tiered"]),
+            "g1": float(pk["g1"]), "t1": int(pk["t1"]),
+            "g2": float(pk["g2"]), "t2": int(pk["t2"]),
+            "g3": float(pk["g3"]), "buy_gap": float(pk["gap"]),
+            "sell_mode": pk["mode"],
+            "thr_target": float(pk.get("thr_t", 5.0)),
+            "thr_partial": float(pk.get("thr_p", 1.0)),
+            "thr_close": float(pk.get("thr_c", 5.0))}
+
+
+def _match_preset(P: dict):
+    """계좌 파라미터가 프리셋과 일치하면 라벨 반환 (배지 표시용)."""
+    for pk in _PDAN_PRESETS:
+        pp = _preset_params(pk)
+        keys = ["splits", "tiered", "thr_target", "thr_partial", "thr_close"]
+        keys += (["g1", "t1", "g2", "t2", "g3"] if pp["tiered"]
+                 else ["buy_gap"])
+        try:
+            if (P.get("sell_mode") == pp["sell_mode"]
+                    and all(abs(float(P.get(k, -1)) - float(pp[k])) < 1e-9
+                            for k in keys)):
+                return pk["label"]
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def render_sidebar() -> dict:
+    # 위젯 session_state 1회 시드 — 위젯은 key만 쓰고 value= 미지정 →
+    # 프리셋 선택이 session_state를 직접 덮어쓰면 즉시 반영됨 (경고 없음)
+    for _k, _v in (("pd_seed", 30000.0), ("pd_splits", 50),
+                   ("pd_tiered", True), ("pd_g1", 1.0), ("pd_t1", 20),
+                   ("pd_g2", 0.7), ("pd_t2", 40), ("pd_g3", 0.5),
+                   ("pd_gap", 1.0), ("pd_mode", "target"),
+                   ("pd_thr_t", 5.0), ("pd_thr_p", 1.0), ("pd_thr_c", 5.0),
+                   ("pd_comp", True), ("pd_re", True), ("pd_fee", 0.0)):
+        st.session_state.setdefault(_k, _v)
+
     st.subheader("📌 종목")
-    _presets = ["SOXL", "TQQQ", "USD", "직접입력"]
-    _sel = st.selectbox("종목코드 (Ticker)", _presets, index=0,
+    _tk_presets = ["SOXL", "TQQQ", "USD", "직접입력"]
+    _sel = st.selectbox("종목코드 (Ticker)", _tk_presets, index=0,
                         key="pd_tk_sel")
     if _sel == "직접입력":
         ticker = st.text_input("티커 직접 입력", key="pd_tk_custom",
@@ -207,50 +275,59 @@ def render_sidebar() -> dict:
 
     st.markdown("---")
     st.subheader("전략 파라미터")
+    st.caption("💡 검증된 프리셋은 주문표 탭의 [계좌 추가]·[파라미터 수정]"
+               "에서 선택할 수 있습니다.")
     seed = st.number_input("Seed / 초기 투자금 ($)", min_value=1000.0,
-                           value=30000.0, step=1000.0, format="%.0f",
-                           key="pd_seed")
-    splits = st.number_input("분할수 (티어)", min_value=2, value=50, step=1,
+                           step=1000.0, format="%.0f", key="pd_seed")
+    splits = st.number_input("분할수 (티어)", min_value=2, step=1,
                              key="pd_splits")
-    tiered = st.checkbox("구간별 매수갭 (3구간)", value=True, key="pd_tiered")
+    # 구간 경계가 분할수/서로를 넘지 않도록 위젯 생성 전에 보정
+    st.session_state["pd_t1"] = max(2, min(int(st.session_state["pd_t1"]),
+                                           max(int(splits) - 1, 2)))
+    st.session_state["pd_t2"] = max(int(st.session_state["pd_t1"]) + 1,
+                                    min(int(st.session_state["pd_t2"]),
+                                        int(splits)))
+    tiered = st.checkbox("구간별 매수갭 (3구간)", key="pd_tiered")
     if tiered:
         c1, c2 = st.columns(2)
-        g1 = c1.number_input("1구간 갭 (%)", min_value=0.1, value=1.0,
-                             step=0.1, format="%.1f", key="pd_g1")
-        t1 = c2.number_input("~티어", min_value=2, value=20, step=1,
+        g1 = c1.number_input("1구간 갭 (%)", min_value=0.1, step=0.1,
+                             format="%.1f", key="pd_g1")
+        t1 = c2.number_input("~티어", min_value=2, step=1,
                              max_value=max(int(splits) - 1, 2), key="pd_t1")
         c3, c4 = st.columns(2)
-        g2 = c3.number_input("2구간 갭 (%)", min_value=0.1, value=0.7,
-                             step=0.1, format="%.1f", key="pd_g2")
-        t2 = c4.number_input("~티어 ", min_value=int(t1) + 1,
-                             value=max(40, int(t1) + 1), step=1,
+        g2 = c3.number_input("2구간 갭 (%)", min_value=0.1, step=0.1,
+                             format="%.1f", key="pd_g2")
+        t2 = c4.number_input("~티어 ", min_value=int(t1) + 1, step=1,
                              max_value=int(splits), key="pd_t2")
         g3 = st.number_input(f"3구간 갭 (%) — {int(t2) + 1}티어부터 끝까지",
-                             min_value=0.1, value=0.5, step=0.1,
-                             format="%.1f", key="pd_g3")
+                             min_value=0.1, step=0.1, format="%.1f",
+                             key="pd_g3")
         gap_param = [(int(t1), g1 / 100), (int(t2), g2 / 100),
                      (int(splits), g3 / 100)]
         gap_desc = f"{g1}%~{int(t1)}T · {g2}%~{int(t2)}T · {g3}%(그 이후)"
-        buy_gap = 1.0
+        buy_gap = float(st.session_state["pd_gap"])
     else:
-        buy_gap = st.number_input("매수갭 (%)", min_value=0.1, value=1.0,
-                                  step=0.1, format="%.1f", key="pd_gap")
+        buy_gap = st.number_input("매수갭 (%)", min_value=0.1, step=0.1,
+                                  format="%.1f", key="pd_gap")
         gap_param, gap_desc = buy_gap / 100, f"{buy_gap:.1f}%"
-        g1, t1, g2, t2, g3 = 1.0, 20, 0.7, 40, 0.5
+        g1 = float(st.session_state["pd_g1"])
+        t1 = int(st.session_state["pd_t1"])
+        g2 = float(st.session_state["pd_g2"])
+        t2 = int(st.session_state["pd_t2"])
+        g3 = float(st.session_state["pd_g3"])
 
     st.markdown("---")
     sell_mode = st.radio("매도 방식", options=list(SELL_MODES),
                          format_func=lambda k: SELL_MODES[k], key="pd_mode")
     if sell_mode == "target":
-        thr = st.number_input("평단이익률 (%)", min_value=0.5, value=5.0,
-                              step=0.5, format="%.1f", key="pd_thr_t")
+        thr = st.number_input("평단이익률 (%)", min_value=0.5, step=0.5,
+                              format="%.1f", key="pd_thr_t")
     elif sell_mode == "partial":
         thr = st.number_input("평단 부근 트리거 (%)", min_value=0.0,
-                              value=1.0, step=0.5, format="%.1f",
-                              key="pd_thr_p")
+                              step=0.5, format="%.1f", key="pd_thr_p")
     else:
-        thr = st.number_input("만족 수익률 (%)", min_value=0.5, value=5.0,
-                              step=0.5, format="%.1f", key="pd_thr_c")
+        thr = st.number_input("만족 수익률 (%)", min_value=0.5, step=0.5,
+                              format="%.1f", key="pd_thr_c")
 
     _pr = ladder_prices(100.0, int(splits), gap_param)
     st.caption(f"1회금액 = {seed / splits:,.2f}$ · "
@@ -843,13 +920,18 @@ def render_ordersheet_tab(params: dict):
     accounts = cfg["accounts"]
 
     with st.expander("➕ 계좌 추가"):
-        nc1, nc2 = st.columns([3, 1])
+        nc1, nc2 = st.columns([2, 2])
         new_name = nc1.text_input("계좌 이름", key="pd_new_acct",
                                   placeholder="예: PJH, 본계좌")
-        nc2.markdown("<div style='height:1.7em'></div>",
-                     unsafe_allow_html=True)
-        if nc2.button("추가", key="pd_add_acct", use_container_width=True,
-                      disabled=not new_name.strip()):
+        _add_opts = (["현재 사이드바 파라미터"]
+                     + [p["label"] for p in _PDAN_PRESETS])
+        _add_sel = nc2.selectbox(
+            "파라미터 프리셋", _add_opts, key="pd_add_preset",
+            help="\n\n".join(f"• {p['label']}:\n{p['help']}"
+                             for p in _PDAN_PRESETS))
+        if st.button("계좌 등록", key="pd_add_acct",
+                     use_container_width=True,
+                     disabled=not new_name.strip()):
             _nm = new_name.strip()
             if _nm in accounts:
                 st.error(f"'{_nm}' 계좌가 이미 있습니다.")
@@ -860,12 +942,16 @@ def render_ordersheet_tab(params: dict):
                 snap["thr_" + ("target" if params["sell_mode"] == "target"
                                else "partial" if params["sell_mode"]
                                == "partial" else "close")] = params["thr"]
+                if _add_sel != "현재 사이드바 파라미터":
+                    _pk = next(p for p in _PDAN_PRESETS
+                               if p["label"] == _add_sel)
+                    snap.update(_preset_params(_pk))
                 accounts[_nm] = snap
                 _save_cfg(cfg)
                 st.rerun()
-        st.caption("현재 사이드바 파라미터를 초기값으로 계좌가 생성됩니다. "
-                   "생성 후에는 계좌 탭 안의 [✏️ 파라미터 수정]에서 "
-                   "관리하세요.")
+        st.caption("프리셋(또는 사이드바 파라미터)을 초기값으로 계좌가 "
+                   "생성됩니다. 생성 후에는 계좌 탭 안의 "
+                   "[✏️ 파라미터 수정]에서 관리하세요.")
 
     names = sorted(accounts)
     if names:
@@ -886,65 +972,111 @@ def render_ordersheet_tab(params: dict):
 
 
 def _render_account_editor(name: str, P: dict, cfg: dict):
+    _badge = _match_preset(P)
     with st.expander("✏️ 파라미터 수정 / 계좌 삭제"):
+        if _badge:
+            st.markdown(
+                f'<div style="margin-bottom:8px"><span style="display:inline-block;'
+                f'background:linear-gradient(90deg,#FFF3E0,#FFE0B2);color:#E65100;'
+                f'border:1px solid #FFB74D;border-radius:14px;padding:3px 14px;'
+                f'font-size:0.9em;font-weight:700">🏷️ {_badge} 프리셋 적용 중'
+                f'</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="margin-bottom:8px"><span style="display:inline-block;'
+                'background:#ECEFF1;color:#546E7A;border:1px solid #B0BEC5;'
+                'border-radius:14px;padding:3px 14px;font-size:0.9em;font-weight:700">'
+                '🛠️ 커스텀 파라미터</span></div>', unsafe_allow_html=True)
+
+        # ── 편집 위젯 session 시드 (key만 사용 — 프리셋 버튼이 직접 덮어씀) ──
+        _edit_defaults = {
+            f"pd_etkr_{name}": str(P["ticker"]),
+            f"pd_esd_{name}": float(P["seed"]),
+            f"pd_esp_{name}": int(P["splits"]),
+            f"pd_eti_{name}": bool(P["tiered"]),
+            f"pd_eg1_{name}": float(P["g1"]), f"pd_et1_{name}": int(P["t1"]),
+            f"pd_eg2_{name}": float(P["g2"]), f"pd_et2_{name}": int(P["t2"]),
+            f"pd_eg3_{name}": float(P["g3"]),
+            f"pd_ebg_{name}": float(P["buy_gap"]),
+            f"pd_emd_{name}": P["sell_mode"],
+            f"pd_ett_{name}": float(P["thr_target"]),
+            f"pd_etp_{name}": float(P["thr_partial"]),
+            f"pd_etc_{name}": float(P["thr_close"]),
+            f"pd_egs_{name}": str(P.get("gs_url", "")),
+        }
+        for _k, _v in _edit_defaults.items():
+            st.session_state.setdefault(_k, _v)
+
+        # ── 추천 프리셋 버튼 (클릭 → 편집값 적용, [💾 저장]으로 확정) ──
+        st.caption("💡 추천 프리셋 — 클릭하면 아래 편집값에 적용됩니다. "
+                   "[💾 저장]을 눌러야 확정돼요.")
+        for _row_start in range(0, len(_PDAN_PRESETS), 3):
+            _pcols = st.columns(3)
+            for _pcol, _pr in zip(_pcols,
+                                  _PDAN_PRESETS[_row_start:_row_start + 3]):
+                if _pcol.button(_pr["label"],
+                                key=f"pd_pre_{name}_{_pr['label']}",
+                                help=_pr["help"], use_container_width=True):
+                    _pp = _preset_params(_pr)
+                    st.session_state[f"pd_esp_{name}"] = _pp["splits"]
+                    st.session_state[f"pd_eti_{name}"] = _pp["tiered"]
+                    st.session_state[f"pd_eg1_{name}"] = _pp["g1"]
+                    st.session_state[f"pd_et1_{name}"] = _pp["t1"]
+                    st.session_state[f"pd_eg2_{name}"] = _pp["g2"]
+                    st.session_state[f"pd_et2_{name}"] = _pp["t2"]
+                    st.session_state[f"pd_eg3_{name}"] = _pp["g3"]
+                    st.session_state[f"pd_ebg_{name}"] = _pp["buy_gap"]
+                    st.session_state[f"pd_emd_{name}"] = _pp["sell_mode"]
+                    st.session_state[f"pd_ett_{name}"] = _pp["thr_target"]
+                    st.session_state[f"pd_etp_{name}"] = _pp["thr_partial"]
+                    st.session_state[f"pd_etc_{name}"] = _pp["thr_close"]
+                    st.rerun()
+        st.divider()
+
         e1, e2, e3 = st.columns(3)
-        e_tkr = e1.text_input("티커", value=P["ticker"],
-                              key=f"pd_etkr_{name}")
+        e_tkr = e1.text_input("티커", key=f"pd_etkr_{name}")
         e_seed = e2.number_input("Seed ($)", min_value=0.0, step=1000.0,
-                                 format="%.0f", value=float(P["seed"]),
-                                 key=f"pd_esd_{name}",
+                                 format="%.0f", key=f"pd_esd_{name}",
                                  help="0 가능 — 운용 자금이 전부 애드온일 때")
         e_sp = e3.number_input("분할수", min_value=2, step=1,
-                               value=int(P["splits"]), key=f"pd_esp_{name}")
-        e_tier = st.checkbox("구간별 매수갭 (3구간)", value=bool(P["tiered"]),
-                             key=f"pd_eti_{name}")
+                               key=f"pd_esp_{name}")
+        e_tier = st.checkbox("구간별 매수갭 (3구간)", key=f"pd_eti_{name}")
         if e_tier:
             r1 = st.columns(5)
             e_g1 = r1[0].number_input("1구간 갭%", min_value=0.1, step=0.1,
-                                      format="%.1f", value=float(P["g1"]),
-                                      key=f"pd_eg1_{name}")
+                                      format="%.1f", key=f"pd_eg1_{name}")
             e_t1 = r1[1].number_input("~티어", min_value=2, step=1,
-                                      value=int(P["t1"]),
                                       key=f"pd_et1_{name}")
             e_g2 = r1[2].number_input("2구간 갭%", min_value=0.1, step=0.1,
-                                      format="%.1f", value=float(P["g2"]),
-                                      key=f"pd_eg2_{name}")
+                                      format="%.1f", key=f"pd_eg2_{name}")
             e_t2 = r1[3].number_input("~티어 ", min_value=3, step=1,
-                                      value=int(P["t2"]),
                                       key=f"pd_et2_{name}")
             e_g3 = r1[4].number_input("3구간 갭% (이후)", min_value=0.1,
                                       step=0.1, format="%.1f",
-                                      value=float(P["g3"]),
                                       key=f"pd_eg3_{name}")
-            e_bg = float(P["buy_gap"])
+            e_bg = float(st.session_state[f"pd_ebg_{name}"])
         else:
             e_bg = st.number_input("매수갭 (%)", min_value=0.1, step=0.1,
-                                   format="%.1f", value=float(P["buy_gap"]),
-                                   key=f"pd_ebg_{name}")
-            e_g1, e_t1 = float(P["g1"]), int(P["t1"])
-            e_g2, e_t2 = float(P["g2"]), int(P["t2"])
-            e_g3 = float(P["g3"])
+                                   format="%.1f", key=f"pd_ebg_{name}")
+            e_g1 = float(st.session_state[f"pd_eg1_{name}"])
+            e_t1 = int(st.session_state[f"pd_et1_{name}"])
+            e_g2 = float(st.session_state[f"pd_eg2_{name}"])
+            e_t2 = int(st.session_state[f"pd_et2_{name}"])
+            e_g3 = float(st.session_state[f"pd_eg3_{name}"])
         m1, m2 = st.columns([1, 2])
         e_md = m1.selectbox("매도 방식", list(SELL_MODES),
-                            index=list(SELL_MODES).index(P["sell_mode"]),
                             format_func=lambda k: SELL_MODES[k],
                             key=f"pd_emd_{name}")
         r2 = m2.columns(3)
         e_tt = r2[0].number_input("①목표%", min_value=0.5, step=0.5,
-                                  format="%.1f",
-                                  value=float(P["thr_target"]),
-                                  key=f"pd_ett_{name}")
+                                  format="%.1f", key=f"pd_ett_{name}")
         e_tp = r2[1].number_input("②트리거%", min_value=0.0, step=0.5,
-                                  format="%.1f",
-                                  value=float(P["thr_partial"]),
-                                  key=f"pd_etp_{name}")
+                                  format="%.1f", key=f"pd_etp_{name}")
         e_tc = r2[2].number_input("③만족%", min_value=0.5, step=0.5,
-                                  format="%.1f",
-                                  value=float(P["thr_close"]),
-                                  key=f"pd_etc_{name}")
+                                  format="%.1f", key=f"pd_etc_{name}")
         e_gs = st.text_input(
             "구글시트 URL (계좌 전용 — 비우면 공통/개인설정 사용)",
-            value=str(P.get("gs_url", "")), key=f"pd_egs_{name}")
+            key=f"pd_egs_{name}")
         b1, b2 = st.columns(2)
         if b1.button("💾 저장", use_container_width=True,
                      key=f"pd_esv_{name}"):
