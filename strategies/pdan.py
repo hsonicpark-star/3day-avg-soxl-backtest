@@ -658,99 +658,106 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             st.dataframe(pd.DataFrame(_rows), hide_index=True,
                          use_container_width=True)
 
-    # 저장 안 된 변경사항 경고
+    # 저장 안 된 변경사항 경고 + 현황판 — 주문테이블 아래(오른쪽 컬럼)에
+    # 배치해 매매 리스트와 현황판을 한 화면에서 함께 보도록
     ui_nos = (set(checked["회차"].astype(int)) if len(checked) else set())
-    if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
-                      or ui_nos != saved_filled
-                      or abs(float(seed_in) - seed) > 0.5):
-        st.warning("⚠️ 최초매수가/운용 자금/매수✓ 변경사항이 저장되지 "
-                   "않았습니다 — 새로고침하면 사라집니다 → 아래 "
-                   "**[💾 상태 저장]**을 누르세요.")
+    with c2:
+        if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
+                          or ui_nos != saved_filled
+                          or abs(float(seed_in) - seed) > 0.5):
+            st.warning("⚠️ 최초매수가/운용 자금/매수✓ 변경사항이 저장되지 "
+                       "않았습니다 — 새로고침하면 사라집니다 → 아래 "
+                       "**[💾 상태 저장]**을 누르세요.")
 
-    # 현황판
-    st.markdown("**📟 현황판** (매수✓ 기준)")
-    sell_qty, tgt = 0, 0.0
-    if checked.empty or int(checked["회차수량"].sum()) <= 0:
-        st.caption("체크된 티어가 없습니다. 위 표에서 체결된 티어를 "
-                   "체크하세요.")
-    else:
-        q = int(checked["회차수량"].sum())
-        amt = float((checked["매수가"] * checked["회차수량"]).sum())
-        avg = amt / q
-        tgt = avg * (1 + target_pct / 100)
-        total_amt = float(ot["총금액"].iloc[-1])
-        if sell_mode == "partial":
-            sell_qty = int(checked.loc[checked["매수가"] <= tgt,
-                                       "회차수량"].sum())
-            qty_note = f"트리거 이하 매수분 (전체 {q}주)"
+        st.markdown("**📟 현황판** (매수✓ 기준)")
+        sell_qty, tgt = 0, 0.0
+        if checked.empty or int(checked["회차수량"].sum()) <= 0:
+            st.caption("체크된 티어가 없습니다. 위 표에서 체결된 티어를 "
+                       "체크하세요.")
         else:
-            sell_qty = q
-            qty_note = "전량"
-        below = ot[ot["매수가"] <= avg]
-        be_txt = (f"{int(below['회차'].iloc[0])}티어 "
-                  f"(${below['매수가'].iloc[0]:,.2f})") if len(below) else "-"
-        unfilled_rows = ot[~ot["회차"].isin(ui_nos)]
-        nxt = unfilled_rows.iloc[0] if len(unfilled_rows) else None
-        pnl = (last_close - avg) * q
-        pnl_pct = (last_close / avg - 1) * 100
-        pnl_color = "#16a34a" if pnl >= 0 else "#dc2626"
-        st.markdown(_stat_cards([
-            ("매수 체결", f"{len(checked)}티어 · {q}주",
-             f"진행률 {len(checked)}/{splits}", "#888"),
-            ("투입금", f"${amt:,.0f}",
-             (f"총 예정 대비 {amt / total_amt * 100:.0f}%"
-              if total_amt > 0 else ""), "#888"),
-            ("손익 기준 평단가 (본전)", f"${avg:,.2f}",
-             f"손익 기준 {be_txt}", "#888"),
-            ("매도 목표가", f"${tgt:,.2f}",
-             f"평단 +{target_pct:.1f}%", "#888"),
-            ("매도할 수량", f"{sell_qty}주", qty_note, "#888"),
-        ]), unsafe_allow_html=True)
-        st.markdown(_stat_cards([
-            ("최근 종가", f"${last_close:,.2f}",
-             f"평단 대비 {pnl_pct:+.2f}%", pnl_color),
-            ("평가손익 (종가 기준)", f"${pnl:,.0f}",
-             f"{pnl_pct:+.2f}%", pnl_color),
-            ("목표까지", f"{(tgt / last_close - 1) * 100:+.2f}%",
-             "종가 → 매도 목표가", "#888"),
-            ("다음 매수 레벨",
-             f"${float(nxt['매수가']):,.2f}" if nxt is not None else "없음",
-             (f"{int(nxt['회차'])}티어 · 종가 대비 "
-              f"{(float(nxt['매수가']) / last_close - 1) * 100:+.2f}%")
-             if nxt is not None else "사다리 소진", "#888"),
-            ("목표 매도 시 실현이익", f"${(tgt - avg) * sell_qty:,.0f}",
-             f"매도 {sell_qty}주 기준", "#16a34a"),
-        ]), unsafe_allow_html=True)
+            q = int(checked["회차수량"].sum())
+            amt = float((checked["매수가"] * checked["회차수량"]).sum())
+            avg = amt / q
+            tgt = avg * (1 + target_pct / 100)
+            total_amt = float(ot["총금액"].iloc[-1])
+            if sell_mode == "partial":
+                sell_qty = int(checked.loc[checked["매수가"] <= tgt,
+                                           "회차수량"].sum())
+                qty_note = f"트리거 이하 매수분 (전체 {q}주)"
+            else:
+                sell_qty = q
+                qty_note = "전량"
+            below = ot[ot["매수가"] <= avg]
+            be_txt = (f"{int(below['회차'].iloc[0])}티어 "
+                      f"(${below['매수가'].iloc[0]:,.2f})") if len(below) \
+                else "-"
+            unfilled_rows = ot[~ot["회차"].isin(ui_nos)]
+            nxt = unfilled_rows.iloc[0] if len(unfilled_rows) else None
+            pnl = (last_close - avg) * q
+            pnl_pct = (last_close / avg - 1) * 100
+            pnl_color = "#16a34a" if pnl >= 0 else "#dc2626"
+            st.markdown(_stat_cards([
+                ("매수 체결", f"{len(checked)}티어 · {q}주",
+                 f"진행률 {len(checked)}/{splits}", "#888"),
+                ("투입금", f"${amt:,.0f}",
+                 (f"총 예정 대비 {amt / total_amt * 100:.0f}%"
+                  if total_amt > 0 else ""), "#888"),
+                ("손익 기준 평단가 (본전)", f"${avg:,.2f}",
+                 f"손익 기준 {be_txt}", "#888"),
+                ("매도 목표가", f"${tgt:,.2f}",
+                 f"평단 +{target_pct:.1f}%", "#888"),
+                ("매도할 수량", f"{sell_qty}주", qty_note, "#888"),
+            ]), unsafe_allow_html=True)
+            st.markdown(_stat_cards([
+                ("최근 종가", f"${last_close:,.2f}",
+                 f"평단 대비 {pnl_pct:+.2f}%", pnl_color),
+                ("평가손익 (종가 기준)", f"${pnl:,.0f}",
+                 f"{pnl_pct:+.2f}%", pnl_color),
+                ("목표까지", f"{(tgt / last_close - 1) * 100:+.2f}%",
+                 "종가 → 매도 목표가", "#888"),
+                ("다음 매수 레벨",
+                 f"${float(nxt['매수가']):,.2f}" if nxt is not None
+                 else "없음",
+                 (f"{int(nxt['회차'])}티어 · 종가 대비 "
+                  f"{(float(nxt['매수가']) / last_close - 1) * 100:+.2f}%")
+                 if nxt is not None else "사다리 소진", "#888"),
+                ("목표 매도 시 실현이익", f"${(tgt - avg) * sell_qty:,.0f}",
+                 f"매도 {sell_qty}주 기준", "#16a34a"),
+            ]), unsafe_allow_html=True)
 
-    bt1, bt2 = st.columns(2)
-    with bt1:
-        if (not checked.empty and eff_gs and sell_mode != "close"
-                and sell_qty > 0):
-            if st.button(f"📤 매도 주문 시트 반영 — 지정가 "
-                         f"{tgt:,.2f} × {sell_qty}주",
-                         use_container_width=True,
-                         key=f"pd_sell_{keyfx}"):
-                try:
-                    row = _replace_sell_order(
-                        eff_gs, tgt, sell_qty,
-                        ws_name=cfg.get("astra_ws", "ASTRA"))
-                    st.success(f"매도 1행만 기록 완료 — L{row} ({gs_src}). "
-                               "매수 행은 제거했습니다 (중복 매수 방지). "
-                               "자동주문 프로그램을 실행하면 매도만 "
-                               "제출됩니다.")
-                except Exception as e:
-                    st.error(f"기록 실패: {e}")
-    with bt2:
-        if acct_name:
-            if st.button("💾 상태 저장 (운용 자금 + 최초매수가 + 매수✓)",
-                         use_container_width=True, key=f"pd_wsave_{keyfx}"):
-                cfg["accounts"][acct_name]["first_price"] = float(first_price)
-                cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
-                cfg["accounts"][acct_name]["seed"] = float(seed_in)
-                _save_cfg(cfg)
-                st.success(f"저장 완료 — 운용 ${float(seed_in):,.0f} + "
-                           f"애드온 ${addon_sum:,.0f} = 총 ${seed_eff:,.0f} · "
-                           f"체결 {len(ui_nos)}티어. 새로고침해도 유지됩니다.")
+        bt1, bt2 = st.columns(2)
+        with bt1:
+            if (not checked.empty and eff_gs and sell_mode != "close"
+                    and sell_qty > 0):
+                if st.button(f"📤 매도 주문 시트 반영 — 지정가 "
+                             f"{tgt:,.2f} × {sell_qty}주",
+                             use_container_width=True,
+                             key=f"pd_sell_{keyfx}"):
+                    try:
+                        row = _replace_sell_order(
+                            eff_gs, tgt, sell_qty,
+                            ws_name=cfg.get("astra_ws", "ASTRA"))
+                        st.success(f"매도 1행만 기록 완료 — L{row} "
+                                   f"({gs_src}). 매수 행은 제거했습니다 "
+                                   "(중복 매수 방지). 자동주문 프로그램을 "
+                                   "실행하면 매도만 제출됩니다.")
+                    except Exception as e:
+                        st.error(f"기록 실패: {e}")
+        with bt2:
+            if acct_name:
+                if st.button("💾 상태 저장 (운용 자금 + 최초매수가 + 매수✓)",
+                             use_container_width=True,
+                             key=f"pd_wsave_{keyfx}"):
+                    cfg["accounts"][acct_name]["first_price"] = \
+                        float(first_price)
+                    cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
+                    cfg["accounts"][acct_name]["seed"] = float(seed_in)
+                    _save_cfg(cfg)
+                    st.success(f"저장 완료 — 운용 ${float(seed_in):,.0f} + "
+                               f"애드온 ${addon_sum:,.0f} = "
+                               f"총 ${seed_eff:,.0f} · "
+                               f"체결 {len(ui_nos)}티어. 새로고침해도 "
+                               "유지됩니다.")
 
     # ASTRA 전송
     st.divider()
