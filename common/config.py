@@ -310,7 +310,13 @@ def _get_gspread_client():
     import gspread
     from google.oauth2.service_account import Credentials
     try:
-        if "gcp_service_account" in st.secrets:
+        # 로컬에 secrets.toml이 아예 없으면 st.secrets 접근 자체가 예외를
+        # 던지므로 (StreamlitSecretNotFoundError), 멤버십 검사를 감싼다.
+        try:
+            _has_secret = "gcp_service_account" in st.secrets
+        except Exception:
+            _has_secret = False
+        if _has_secret:
             creds = Credentials.from_service_account_info(
                 dict(st.secrets["gcp_service_account"]), scopes=_GS_SCOPES)
         else:
