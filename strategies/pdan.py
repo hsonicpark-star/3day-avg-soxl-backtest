@@ -88,7 +88,7 @@ def _gap_of(P: dict):
         t1, t2 = int(P["t1"]), int(P["t2"])
         gp = [(t1, float(P["g1"]) / 100), (t2, float(P["g2"]) / 100),
               (splits, float(P["g3"]) / 100)]
-        gd = (f"{P['g1']}%~{t1}T · {P['g2']}%~{t2}T · {P['g3']}%(그 이후)")
+        gd = (f"{P['g1']}%\\~{t1}T · {P['g2']}%\\~{t2}T · {P['g3']}%(그 이후)")
         return gp, gd
     return float(P["buy_gap"]) / 100, f"{float(P['buy_gap']):.1f}%"
 
@@ -304,7 +304,7 @@ def render_sidebar() -> dict:
                              key="pd_g3")
         gap_param = [(int(t1), g1 / 100), (int(t2), g2 / 100),
                      (int(splits), g3 / 100)]
-        gap_desc = f"{g1}%~{int(t1)}T · {g2}%~{int(t2)}T · {g3}%(그 이후)"
+        gap_desc = f"{g1}%\\~{int(t1)}T · {g2}%\\~{int(t2)}T · {g3}%(그 이후)"
         buy_gap = float(st.session_state["pd_gap"])
     else:
         buy_gap = st.number_input("매수갭 (%)", min_value=0.1, step=0.1,
@@ -883,10 +883,10 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                 st.info("전송할 미체결 티어가 없습니다.")
             else:
                 st.caption(f"전송될 주문: 지정가 매수 {n_orders}건 · "
-                           f"{int(send_df['회차'].min())}~"
+                           f"{int(send_df['회차'].min())}\\~"
                            f"{int(send_df['회차'].max())}티어"
                            + (" + 매도 1건" if include_sell else "")
-                           + f" · {gs_src} · 기존 L4~O 영역은 지워집니다")
+                           + f" · {gs_src} · 기존 L4\\~O 영역은 지워집니다")
                 if st.button("ASTRA 시트로 주문 전송", type="primary",
                              use_container_width=True,
                              key=f"pd_astra_{keyfx}"):
@@ -906,11 +906,45 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                     except Exception as e:
                         st.error(f"전송 실패: {e}")
     with b2:
-        st.markdown("**📡 실시간 모니터 (로컬 전용)**")
-        st.caption("가격 감시·텔레그램 알림·매도 명령·자동 매도행 갱신은 "
-                   "로컬 PC에서 도는 별도 도구(11.평단법 폴더의 "
-                   "monitor.py)로 제공됩니다. 웹 앱에서는 주문표 관리와 "
-                   "ASTRA 전송까지 지원합니다.")
+        st.markdown("**📡 실시간 모니터**")
+        if _IS_CLOUD:
+            st.caption("가격 감시·텔레그램 알림·매도 명령·자동 매도행 갱신은 "
+                       "로컬 PC에서 도는 별도 도구(11.평단법 폴더의 "
+                       "monitor.py)로 제공됩니다. 웹에서 누른 [상태 저장]은 "
+                       "클라우드 계정에 저장되며, 모니터를 쓰려면 로컬 02 "
+                       "앱에서 저장하세요.")
+        else:
+            _mon_dir = os.path.normpath(os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "..", "11.평단법"))
+            _mon_ok = os.path.exists(os.path.join(_mon_dir, "monitor.py"))
+            _ready = float(P.get("first_price", 0) or 0) > 0
+            st.caption("모니터는 이 앱의 **[💾 상태 저장]** 내용"
+                       "(~/.pdan/config.json)을 읽어 감시합니다. "
+                       + ("✅ 이 계좌는 저장돼 있어 바로 감시 가능"
+                          if _ready else
+                          "⚠️ 아직 [💾 상태 저장]을 안 눌러 이 계좌는 "
+                          "감시 대상에서 제외됩니다"))
+            if _mon_ok:
+                if st.button("▶ 모니터 실행 (전체 계좌, 새 콘솔 창)",
+                             use_container_width=True,
+                             key=f"pd_mon_{keyfx}"):
+                    import subprocess
+                    import sys as _sys
+                    subprocess.Popen(
+                        [_sys.executable, "monitor.py", "--interval", "30"],
+                        cwd=_mon_dir,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    st.success("모니터를 새 콘솔 창에서 실행했습니다. "
+                               "텔레그램 🟢 시작 메시지를 확인하세요.")
+                st.caption("⚠️ 모니터 창이 이미 떠 있으면 그 창을 먼저 닫고 "
+                           "실행하세요 (중복 실행 시 텔레그램 수신 충돌). "
+                           "감시(한국시간): 주간거래 09:00\\~16:50 → "
+                           "프리장 17:00 → 정규장 22:30 → 애프터장 "
+                           "\\~익일 09:00. 텔레그램 명령: [계좌] 매도 1 · "
+                           "매도 2 [가격] · 매도 3 가격 · 상태 · 동기화")
+            else:
+                st.caption(f"monitor.py를 찾을 수 없습니다: `{_mon_dir}`")
 
 
 def render_ordersheet_tab(params: dict):
@@ -1168,6 +1202,40 @@ def render_settings_tab():
         cfg["gs_url"] = gs_url.strip()
         _save_cfg(cfg)
         st.success("저장 완료")
+
+    if not _IS_CLOUD:
+        st.divider()
+        st.markdown("**텔레그램 (로컬 모니터용)**")
+        tc1, tc2 = st.columns(2)
+        tg_token = tc1.text_input("Bot Token", value=cfg.get("tg_token", ""),
+                                  type="password", key="pd_set_tgt",
+                                  help="@BotFather 에서 발급")
+        tg_chat = tc2.text_input("Chat ID", value=cfg.get("tg_chat_id", ""),
+                                 key="pd_set_tgc",
+                                 help="@userinfobot 에게 말 걸면 확인 가능")
+        tb1, tb2 = st.columns(2)
+        if tb1.button("💾 텔레그램 저장", key="pd_set_tgsave",
+                      use_container_width=True):
+            cfg["tg_token"] = tg_token.strip()
+            cfg["tg_chat_id"] = tg_chat.strip()
+            _save_cfg(cfg)
+            st.success("저장 완료")
+        if tb2.button("📨 테스트 전송", key="pd_set_tgtest",
+                      use_container_width=True):
+            import requests
+            try:
+                r = requests.post(
+                    f"https://api.telegram.org/bot{tg_token.strip()}"
+                    "/sendMessage",
+                    json={"chat_id": tg_chat.strip(),
+                          "text": "✅ [평단 트레이딩] 텔레그램 연결 테스트"},
+                    timeout=10).json()
+                if r.get("ok"):
+                    st.success("전송 성공 — 텔레그램을 확인하세요")
+                else:
+                    st.error(f"전송 실패: {r.get('description')}")
+            except Exception as e:
+                st.error(f"전송 실패: {e}")
 
     st.divider()
     st.markdown("**등록된 계좌**")
