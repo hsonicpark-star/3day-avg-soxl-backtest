@@ -838,7 +838,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             disabled=[c for c in ot_edit.columns if c != "매수✓"],
             key=f"pd_ed_{keyfx}_{ticker}_{first_price}_{splits}_{gap_desc}_{seed_eff}",
             column_config={"매수✓": st.column_config.CheckboxColumn(
-                "매수✓", help="체결된 티어를 수동으로 체크")})
+                "매수✓", help="체결된 티어를 체크 — 즉시 자동 저장됩니다")})
         checked = edited[edited["매수✓"]]
 
     # 설계 시뮬레이션 전광판
@@ -887,13 +887,19 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     # 저장 안 된 변경사항 경고 + 현황판 — 주문테이블 아래(오른쪽 컬럼)에
     # 배치해 매매 리스트와 현황판을 한 화면에서 함께 보도록
     ui_nos = (set(checked["회차"].astype(int)) if len(checked) else set())
+    # 매수✓ 체크는 즉시 자동 저장 — 앱 재시작/세션 리셋에도 유실 없음
+    if acct_name and ui_nos != saved_filled:
+        cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
+        _save_cfg(cfg)
+        saved_filled = set(ui_nos)
+        st.toast("💾 매수✓ 체크 자동 저장됨")
     with c2:
         if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
-                          or ui_nos != saved_filled
                           or abs(float(seed_in) - seed) > 0.5):
-            st.warning("⚠️ 최초매수가/운용 자금/매수✓ 변경사항이 저장되지 "
+            st.warning("⚠️ 최초매수가/운용 자금 변경사항이 저장되지 "
                        "않았습니다 — 새로고침하면 사라집니다 → 아래 "
-                       "**[💾 상태 저장]**을 누르세요.")
+                       "**[💾 상태 저장]**을 누르세요. "
+                       "(매수✓ 체크는 자동 저장됩니다)")
 
         st.markdown("**📟 현황판** (매수✓ 기준)")
         sell_qty, tgt = 0, 0.0
@@ -971,7 +977,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                         st.error(f"기록 실패: {e}")
         with bt2:
             if acct_name:
-                if st.button("💾 상태 저장 (운용 자금 + 최초매수가 + 매수✓)",
+                if st.button("💾 상태 저장 (운용 자금 + 최초매수가)",
                              use_container_width=True,
                              key=f"pd_wsave_{keyfx}"):
                     cfg["accounts"][acct_name]["first_price"] = \
