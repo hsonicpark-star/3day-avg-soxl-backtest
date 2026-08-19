@@ -428,6 +428,18 @@ def render_sidebar() -> dict:
 # ══════════════════════════════════════════════
 # 백테스트 탭
 # ══════════════════════════════════════════════
+@st.cache_data(show_spinner=False, ttl=3600)
+def _cached_backtest(df, seed, splits, gap_key, thr, compound, fee,
+                     reentry, mode, qw_key):
+    """백테스트 결과 캐시 — 주문표 체크 등 다른 조작 시 재계산 방지."""
+    gap = [list(x) for x in gap_key] if isinstance(gap_key, tuple) else gap_key
+    qw = [list(x) for x in qw_key] if qw_key else None
+    return run_backtest(df, seed=seed, splits=splits, buy_gap=gap,
+                        target_pct=thr / 100, compound=compound,
+                        fee_rate=fee / 100, reentry_same_day=reentry,
+                        sell_mode=mode, qty_weights=qw)
+
+
 def render_backtest_tab(params: dict):
     ticker = params["bt_ticker"]
     if not ticker:
@@ -442,14 +454,14 @@ def render_backtest_tab(params: dict):
                f"({len(df)} 거래일, yfinance 수정주가 OHLC)")
 
     seed = params["seed"]
-    result = run_backtest(df, seed=seed, splits=params["splits"],
-                          buy_gap=params["gap_param"],
-                          target_pct=params["thr"] / 100,
-                          compound=params["compound"],
-                          fee_rate=params["fee"] / 100,
-                          reentry_same_day=params["reentry"],
-                          sell_mode=params["sell_mode"],
-                          qty_weights=params.get("qty_weights"))
+    _gp = params["gap_param"]
+    _gp_key = tuple(map(tuple, _gp)) if isinstance(_gp, list) else _gp
+    _qw = params.get("qty_weights")
+    _qw_key = tuple(map(tuple, _qw)) if _qw else None
+    result = _cached_backtest(df, seed, params["splits"], _gp_key,
+                              params["thr"], params["compound"],
+                              params["fee"], params["reentry"],
+                              params["sell_mode"], _qw_key)
     stats = compute_stats(result, df, seed)
     eq = result["equity"]
 
@@ -833,12 +845,20 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     with c2:
         ot_edit = ot.copy()
         ot_edit.insert(0, "매수✓", ot_edit["회차"].isin(saved_filled))
-        edited = st.data_editor(
-            ot_edit, hide_index=True, use_container_width=True, height=560,
-            disabled=[c for c in ot_edit.columns if c != "매수✓"],
-            key=f"pd_ed_{keyfx}_{ticker}_{first_price}_{splits}_{gap_desc}_{seed_eff}",
-            column_config={"매수✓": st.column_config.CheckboxColumn(
-                "매수✓", help="체결된 티어를 체크 — 즉시 자동 저장됩니다")})
+        # form 안의 에디터: 체크를 여러 개 해도 재실행 없음 →
+        # [체크 적용]을 눌러야 한 번에 반영·저장 (클릭 씹힘/딜레이 방지)
+        with st.form(f"pd_ckform_{keyfx}", border=False):
+            edited = st.data_editor(
+                ot_edit, hide_index=True, use_container_width=True,
+                height=560,
+                disabled=[c for c in ot_edit.columns if c != "매수✓"],
+                key=f"pd_ed_{keyfx}_{ticker}_{first_price}_{splits}_{gap_desc}_{seed_eff}",
+                column_config={"매수✓": st.column_config.CheckboxColumn(
+                    "매수✓",
+                    help="체결된 티어를 체크한 뒤 아래 [체크 적용]을 "
+                         "누르세요 (여러 개 한 번에 가능)")})
+            st.form_submit_button("✅ 체크 적용 (현황판 갱신 + 자동 저장)",
+                                  use_container_width=True)
         checked = edited[edited["매수✓"]]
 
     # 설계 시뮬레이션 전광판
@@ -892,7 +912,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
         cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
         _save_cfg(cfg)
         saved_filled = set(ui_nos)
-        st.toast("💾 매수✓ 체크 자동 저장됨")
+        st.toast("💾 체크 적용·저장 완료")
     with c2:
         if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
                           or abs(float(seed_in) - seed) > 0.5):
