@@ -51,18 +51,39 @@ def ladder_prices(first_price: float, splits: int, buy_gap) -> list[float]:
     return prices
 
 
+def tier_amounts(seed: float, splits: int, qty_weights=None) -> list[float]:
+    """티어별 배분 금액 리스트.
+
+    qty_weights: None이면 균등 (seed/분할수).
+    [(끝회차, 가중치), ...] 지정 시 하락가중 — 깊은 구간에 자금을 더 배분.
+    예) [(20, 1.0), (40, 1.5), (90, 3.0)] → 1~20티어 ×1, 21~40티어 ×1.5,
+    41~90티어 ×3 비중으로 seed를 나눔.
+    """
+    if not qty_weights:
+        return [seed / splits] * splits
+    tiers = sorted((int(t), float(w)) for t, w in qty_weights)
+    ws = []
+    for i in range(1, splits + 1):
+        ws.append(next((w for lim, w in tiers if i <= lim), tiers[-1][1]))
+    total = sum(ws)
+    return [seed * w / total for w in ws]
+
+
 def build_order_table(seed: float, splits: int, first_price: float,
-                      buy_gap, target_pct: float) -> pd.DataFrame:
+                      buy_gap, target_pct: float,
+                      qty_weights=None) -> pd.DataFrame:
     """주문테이블 생성 — 시트의 회차/매수가/수량/평단/매도희망 재현.
 
     buy_gap: 비율 스칼라 또는 구간 리스트 (ladder_prices 참조)
+    qty_weights: 구간별 수량(자금) 가중 (tier_amounts 참조)
     target_pct는 비율 (예: 0.05)
     """
-    per_amt = seed / splits
+    amts = tier_amounts(seed, splits, qty_weights)
     rows = []
     tot_qty, tot_amt = 0, 0.0
     for i, price in enumerate(ladder_prices(first_price, splits, buy_gap),
                               start=1):
+        per_amt = amts[i - 1]
         qty = int(per_amt // price) if price > 0 else 0
         amt = qty * price
         tot_qty += qty
@@ -81,11 +102,12 @@ def run_backtest(df: pd.DataFrame, seed: float, splits: int,
                  buy_gap, target_pct: float,
                  compound: bool = True, fee_rate: float = 0.0,
                  reentry_same_day: bool = True,
-                 sell_mode: str = "target") -> dict:
+                 sell_mode: str = "target", qty_weights=None) -> dict:
     """일봉 OHLC 기반 평단법 백테스트.
 
     df: DatetimeIndex + [Open, High, Low, Close]
     buy_gap: 비율 스칼라 또는 구간 리스트 (ladder_prices 참조)
+    qty_weights: 구간별 수량(자금) 가중 (tier_amounts 참조)
     target_pct, fee_rate는 비율 (0.01 = 1%)
     target_pct: 매도 방식별 임계값 (①목표이익률 ②평단 프리미엄 ③만족 수익률)
     반환: {"equity", "cycles", "fills", "open_position", "skipped_starts"}
@@ -111,12 +133,13 @@ def run_backtest(df: pd.DataFrame, seed: float, splits: int,
     def start_cycle(date, close_px):
         nonlocal cash, levels, cycle, skipped_starts
         capital = cash if compound else min(cash, seed)
-        per_amt = capital / splits
-        qty1 = int(per_amt // close_px)
+        amts = tier_amounts(capital, splits, qty_weights)
+        qty1 = int(amts[0] // close_px)
         if qty1 <= 0 or cash < qty1 * close_px * (1 + fee_rate):
             skipped_starts += 1
             return
-        levels = [{"no": i, "price": price, "qty": int(per_amt // price),
+        levels = [{"no": i, "price": price,
+                   "qty": int(amts[i - 1] // price),
                    "filled": False, "fill_px": 0.0}
                   for i, price in enumerate(
                       ladder_prices(close_px, splits, buy_gap), start=1)]

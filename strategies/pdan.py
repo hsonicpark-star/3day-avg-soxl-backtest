@@ -77,6 +77,7 @@ PARAM_DEFAULTS = {
     "thr_target": 5.0, "thr_partial": 1.0, "thr_close": 5.0,
     "compound": True, "reentry": True, "fee": 0.0,
     "gs_url": "",
+    "weighted": False, "w1": 1.0, "w2": 1.5, "w3": 3.0,  # 하락가중
 }
 _INT_KEYS = {"splits", "t1", "t2"}
 
@@ -91,6 +92,17 @@ def _gap_of(P: dict):
         gd = (f"{P['g1']}%\\~{t1}T · {P['g2']}%\\~{t2}T · {P['g3']}%(그 이후)")
         return gp, gd
     return float(P["buy_gap"]) / 100, f"{float(P['buy_gap']):.1f}%"
+
+
+def _weights_of(P: dict):
+    """하락가중 설정 → qty_weights 파라미터 (미사용 시 None).
+
+    구간 경계는 매수갭 3구간의 t1/t2를 그대로 사용."""
+    if not P.get("weighted"):
+        return None
+    return [(int(P["t1"]), float(P["w1"])),
+            (int(P["t2"]), float(P["w2"])),
+            (int(P["splits"]), float(P["w3"]))]
 
 
 def _thr_of(P: dict) -> float:
@@ -216,6 +228,14 @@ _PDAN_PRESETS = [
      "help": "평단 도달 부분매도(②) — 싸게 산 티어만 익절하고 재하락 시 재매수. 백테스트(SOXL 5.5년)에서 물림 깊이·수익 균형 최상",
      "splits": 50, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
      "g3": 0.5, "gap": 1.0, "mode": "partial", "thr_p": 1.0},
+    {"label": "🏋️ 하락가중 90분할 · 1/0.7/0.5 · 가중 1/1.5/3 · ①5%",
+     "help": "C 구조 + 아래 구간일수록 자금 가중 (배분 10%/15%/75%). "
+             "커버 -44.1% · 풀티어 평가손실 -16% · 필요반등 +25% — "
+             "폭락 방어 최적. 대신 자금 대부분이 깊은 구간에 대기해 "
+             "얕은 조정 수익은 작음",
+     "splits": 90, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
+     "g3": 0.5, "gap": 1.0, "mode": "target", "thr_t": 5.0,
+     "weighted": True, "w1": 1.0, "w2": 1.5, "w3": 3.0},
     {"label": "🌱 입문 10분할 · 1% · ①5%",
      "help": "커버 -8.6% — 소액 연습·구조 이해용 (하락장 취약)",
      "splits": 10, "tiered": False, "g1": 1.0, "t1": 5, "g2": 0.7, "t2": 8,
@@ -232,7 +252,10 @@ def _preset_params(pk: dict) -> dict:
             "sell_mode": pk["mode"],
             "thr_target": float(pk.get("thr_t", 5.0)),
             "thr_partial": float(pk.get("thr_p", 1.0)),
-            "thr_close": float(pk.get("thr_c", 5.0))}
+            "thr_close": float(pk.get("thr_c", 5.0)),
+            "weighted": bool(pk.get("weighted", False)),
+            "w1": float(pk.get("w1", 1.0)), "w2": float(pk.get("w2", 1.5)),
+            "w3": float(pk.get("w3", 3.0))}
 
 
 def _match_preset(P: dict):
@@ -242,8 +265,11 @@ def _match_preset(P: dict):
         keys = ["splits", "tiered", "thr_target", "thr_partial", "thr_close"]
         keys += (["g1", "t1", "g2", "t2", "g3"] if pp["tiered"]
                  else ["buy_gap"])
+        if pp["weighted"]:
+            keys += ["w1", "w2", "w3"]
         try:
             if (P.get("sell_mode") == pp["sell_mode"]
+                    and bool(P.get("weighted", False)) == pp["weighted"]
                     and all(abs(float(P.get(k, -1)) - float(pp[k])) < 1e-9
                             for k in keys)):
                 return pk["label"]
@@ -260,7 +286,9 @@ def render_sidebar() -> dict:
                    ("pd_g2", 0.7), ("pd_t2", 40), ("pd_g3", 0.5),
                    ("pd_gap", 1.0), ("pd_mode", "target"),
                    ("pd_thr_t", 5.0), ("pd_thr_p", 1.0), ("pd_thr_c", 5.0),
-                   ("pd_comp", True), ("pd_re", True), ("pd_fee", 0.0)):
+                   ("pd_comp", True), ("pd_re", True), ("pd_fee", 0.0),
+                   ("pd_wt", False), ("pd_w1", 1.0), ("pd_w2", 1.5),
+                   ("pd_w3", 3.0)):
         st.session_state.setdefault(_k, _v)
 
     st.subheader("📌 종목")
@@ -316,6 +344,23 @@ def render_sidebar() -> dict:
         t2 = int(st.session_state["pd_t2"])
         g3 = float(st.session_state["pd_g3"])
 
+    weighted = st.checkbox("하락가중 (구간별 자금 가중)", key="pd_wt",
+                           help="아래 구간일수록 티어당 자금을 크게 배분 — "
+                                "폭락 시 평단이 빨리 따라 내려옴. "
+                                "구간 경계는 위 3구간(~티어)을 따름")
+    if weighted:
+        wc1, wc2, wc3 = st.columns(3)
+        w1 = wc1.number_input("1구간 가중", min_value=0.1, step=0.1,
+                              format="%.1f", key="pd_w1")
+        w2 = wc2.number_input("2구간 가중", min_value=0.1, step=0.1,
+                              format="%.1f", key="pd_w2")
+        w3 = wc3.number_input("3구간 가중", min_value=0.1, step=0.1,
+                              format="%.1f", key="pd_w3")
+    else:
+        w1 = float(st.session_state["pd_w1"])
+        w2 = float(st.session_state["pd_w2"])
+        w3 = float(st.session_state["pd_w3"])
+
     st.markdown("---")
     sell_mode = st.radio("매도 방식", options=list(SELL_MODES),
                          format_func=lambda k: SELL_MODES[k], key="pd_mode")
@@ -357,6 +402,10 @@ def render_sidebar() -> dict:
         "sell_mode": sell_mode, "thr": float(thr),
         "compound": bool(compound), "reentry": bool(reentry),
         "fee": float(fee),
+        "weighted": bool(weighted), "w1": float(w1), "w2": float(w2),
+        "w3": float(w3),
+        "qty_weights": ([(int(t1), float(w1)), (int(t2), float(w2)),
+                         (int(splits), float(w3))] if weighted else None),
     }
 
 
@@ -383,7 +432,8 @@ def render_backtest_tab(params: dict):
                           compound=params["compound"],
                           fee_rate=params["fee"] / 100,
                           reentry_same_day=params["reentry"],
-                          sell_mode=params["sell_mode"])
+                          sell_mode=params["sell_mode"],
+                          qty_weights=params.get("qty_weights"))
     stats = compute_stats(result, df, seed)
     eq = result["equity"]
 
@@ -479,19 +529,22 @@ def render_optimization_tab(params: dict):
     if st.button("후보군 백테스트 실행", key="pd_opt_presets"):
         presets = [
             ("현재 세팅", params["splits"], params["gap_param"],
-             params["thr"]),
-            ("A. 입문형 10분할·1%", 10, 0.01, 5.0),
-            ("B. 균일 90분할·0.8%", 90, 0.008, params["thr"]),
+             params["thr"], params.get("qty_weights")),
+            ("A. 입문형 10분할·1%", 10, 0.01, 5.0, None),
+            ("B. 균일 90분할·0.8%", 90, 0.008, params["thr"], None),
             ("C. 구간갭 90분할 1/0.7/0.5", 90,
-             [(20, 0.01), (40, 0.007), (90, 0.005)], params["thr"]),
+             [(20, 0.01), (40, 0.007), (90, 0.005)], params["thr"], None),
             ("D. 구간갭 50분할 1/0.7/0.5", 50,
-             [(20, 0.01), (40, 0.007), (50, 0.005)], params["thr"]),
+             [(20, 0.01), (40, 0.007), (50, 0.005)], params["thr"], None),
+            ("E. 하락가중 90분할 1/0.7/0.5 ×1/1.5/3", 90,
+             [(20, 0.01), (40, 0.007), (90, 0.005)], params["thr"],
+             [(20, 1.0), (40, 1.5), (90, 3.0)]),
         ]
         rows = []
         prog = st.progress(0.0)
-        for i, (name, sp, gp, thr) in enumerate(presets):
+        for i, (name, sp, gp, thr, qw) in enumerate(presets):
             r = run_backtest(df, seed=seed, splits=sp, buy_gap=gp,
-                             target_pct=thr / 100, **common)
+                             target_pct=thr / 100, qty_weights=qw, **common)
             s = compute_stats(r, df, seed)
             pr = ladder_prices(100.0, sp, gp)
             rows.append({
@@ -522,6 +575,7 @@ def render_optimization_tab(params: dict):
             for t in thrs:
                 r = run_backtest(df, seed=seed, splits=params["splits"],
                                  buy_gap=g / 100, target_pct=t / 100,
+                                 qty_weights=params.get("qty_weights"),
                                  **common)
                 s = compute_stats(r, df, seed)
                 rows.append({
@@ -554,6 +608,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     seed_eff = seed_in + addon_sum
     splits = int(P["splits"])
     gap_param, gap_desc = _gap_of(P)
+    qw = _weights_of(P)
     sell_mode = P["sell_mode"]
     target_pct = _thr_of(P)
 
@@ -561,8 +616,10 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     _seed_txt = (f"운용 ${seed_in:,.0f} + 애드온 ${addon_sum:,.0f} = "
                  f"총 ${seed_eff:,.0f}" if addon_sum else
                  f"운용 ${seed_in:,.0f}")
+    _wt_txt = (f" · 하락가중 {P['w1']}/{P['w2']}/{P['w3']}" if qw else "")
     st.caption(f"**{ticker}** · {_seed_txt} · {splits}분할 · "
-               f"매수갭 {gap_desc} · {SELL_MODES[sell_mode]} {target_pct}% · "
+               f"매수갭 {gap_desc}{_wt_txt} · "
+               f"{SELL_MODES[sell_mode]} {target_pct}% · "
                f"최대 커버 ≈{(1 - _prx[-1] / _prx[0]) * 100:.1f}%")
 
     eff_gs = _eff_gs_url(P, cfg)
@@ -597,10 +654,10 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                  "저장")
         seed_eff = float(seed_in) + addon_sum
         ot = build_order_table(seed_eff, splits, first_price, gap_param,
-                               target_pct / 100)
+                               target_pct / 100, qty_weights=qw)
         st.metric("총 투입금", f"${ot['총금액'].iloc[-1]:,.2f}",
                   delta=(f"운용 ${float(seed_in):,.0f} + 애드온 "
-                         f"${addon_sum:,.0f} · 1회 ${seed_eff / splits:,.0f}"),
+                         f"${addon_sum:,.0f} · 1회 평균 ${seed_eff / splits:,.0f}"),
                   delta_color="off")
         st.metric("최종티어 매수가", f"${ot['매수가'].iloc[-1]:,.2f}",
                   delta=f"{(ot['매수가'].iloc[-1] / first_price - 1) * 100:.1f}%")
@@ -711,7 +768,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
             ("바닥에서 필요 반등", f"{_tgtf / _bot - 1:+.1%}",
              "도달가 → 목표가", "#d97706"),
             ("총 투입 / 수량", f"${float(_last['총금액']):,.0f}",
-             f"{int(_last['총수량'])}주 · 1회 ${seed_eff / splits:,.0f}",
+             f"{int(_last['총수량'])}주 · 1회 평균 ${seed_eff / splits:,.0f}",
              "#888"),
         ], tone="blue"), unsafe_allow_html=True)
         with st.expander("단계별 상세 — 티어별 도달가·평단·평가손실·필요반등"):
@@ -1037,6 +1094,10 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
             f"pd_etp_{name}": float(P["thr_partial"]),
             f"pd_etc_{name}": float(P["thr_close"]),
             f"pd_egs_{name}": str(P.get("gs_url", "")),
+            f"pd_ewt_{name}": bool(P.get("weighted", False)),
+            f"pd_ew1_{name}": float(P.get("w1", 1.0)),
+            f"pd_ew2_{name}": float(P.get("w2", 1.5)),
+            f"pd_ew3_{name}": float(P.get("w3", 3.0)),
         }
         for _k, _v in _edit_defaults.items():
             st.session_state.setdefault(_k, _v)
@@ -1064,6 +1125,10 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
                     st.session_state[f"pd_ett_{name}"] = _pp["thr_target"]
                     st.session_state[f"pd_etp_{name}"] = _pp["thr_partial"]
                     st.session_state[f"pd_etc_{name}"] = _pp["thr_close"]
+                    st.session_state[f"pd_ewt_{name}"] = _pp["weighted"]
+                    st.session_state[f"pd_ew1_{name}"] = _pp["w1"]
+                    st.session_state[f"pd_ew2_{name}"] = _pp["w2"]
+                    st.session_state[f"pd_ew3_{name}"] = _pp["w3"]
                     st.rerun()
         st.divider()
 
@@ -1108,6 +1173,20 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
                                   format="%.1f", key=f"pd_etp_{name}")
         e_tc = r2[2].number_input("③만족%", min_value=0.5, step=0.5,
                                   format="%.1f", key=f"pd_etc_{name}")
+        e_wt = st.checkbox("하락가중 (구간별 자금 가중 — 경계는 위 3구간 티어)",
+                           key=f"pd_ewt_{name}")
+        if e_wt:
+            w1c, w2c, w3c = st.columns(3)
+            e_w1 = w1c.number_input("1구간 가중", min_value=0.1, step=0.1,
+                                    format="%.1f", key=f"pd_ew1_{name}")
+            e_w2 = w2c.number_input("2구간 가중", min_value=0.1, step=0.1,
+                                    format="%.1f", key=f"pd_ew2_{name}")
+            e_w3 = w3c.number_input("3구간 가중", min_value=0.1, step=0.1,
+                                    format="%.1f", key=f"pd_ew3_{name}")
+        else:
+            e_w1 = float(st.session_state[f"pd_ew1_{name}"])
+            e_w2 = float(st.session_state[f"pd_ew2_{name}"])
+            e_w3 = float(st.session_state[f"pd_ew3_{name}"])
         e_gs = st.text_input(
             "구글시트 URL (계좌 전용 — 비우면 공통/개인설정 사용)",
             key=f"pd_egs_{name}")
@@ -1124,6 +1203,8 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
                 "g2": float(e_g2), "t2": t2_i, "g3": float(e_g3),
                 "sell_mode": e_md, "thr_target": float(e_tt),
                 "thr_partial": float(e_tp), "thr_close": float(e_tc),
+                "weighted": bool(e_wt), "w1": float(e_w1),
+                "w2": float(e_w2), "w3": float(e_w3),
                 "gs_url": e_gs.strip()}
             _save_cfg(cfg)
             st.session_state.pop(f"pd_seedin_{name}", None)
