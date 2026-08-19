@@ -23,7 +23,8 @@ import yfinance as yf
 from common.config import _IS_CLOUD, _get_gspread_client
 from common.data import filter_incomplete_today
 from pdan_engine import (SELL_MODES, build_order_table, compute_stats,
-                         ladder_prices, run_backtest, yearly_returns)
+                         ladder_prices, run_backtest, tier_amounts,
+                         yearly_returns)
 
 # ──────────────────────────────────────────────
 # 설정 저장 (Cloud: users.pdan_config / 로컬: ~/.pdan/config.json)
@@ -751,6 +752,78 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                     cfg["accounts"][acct_name]["addons"] = addons
                     _save_cfg(cfg)
                     st.rerun()
+
+            # ── 사다리 연장: 기존 티어 보존 + 아래로 티어 추가 ──
+            with st.expander("🪜 사다리 연장 (분할수 추가)"):
+                st.caption("기존 티어의 가격·수량은 **그대로 유지**하고, "
+                           "마지막 구간 갭으로 아래에 티어를 이어 붙입니다. "
+                           "필요 자금은 계산되어 애드온으로 등록됩니다 — "
+                           "폭락으로 커버를 늘리고 싶을 때 사용.")
+                n_ext = st.number_input("추가 분할수", min_value=1,
+                                        max_value=200, value=10, step=1,
+                                        key=f"pd_extn_{keyfx}")
+                _amts = tier_amounts(seed_eff, splits, qw)
+                _per_last = float(_amts[-1])
+                _add_amt = _per_last * int(n_ext)
+                _sp_new = splits + int(n_ext)
+                _gp_new = (gap_param[:-1] + [(_sp_new, gap_param[-1][1])]
+                           if isinstance(gap_param, list) else gap_param)
+                _qw_new = ((qw[:-1] + [(_sp_new, qw[-1][1])])
+                           if qw else None)
+                _ot_new = build_order_table(seed_eff + _add_amt, _sp_new,
+                                            first_price, _gp_new,
+                                            target_pct / 100,
+                                            qty_weights=_qw_new)
+                _bot_new = float(_ot_new["매수가"].iloc[-1])
+                st.markdown(_stat_cards([
+                    ("필요 추가 자금", f"${_add_amt:,.0f}",
+                     f"티어당 ${_per_last:,.0f} × {int(n_ext)}개",
+                     "#d97706"),
+                    ("연장 후 분할수", f"{splits} → {_sp_new}",
+                     f"{splits + 1}\\~{_sp_new}티어 신설", "#888"),
+                    ("연장 후 최종 도달가", f"${_bot_new:,.2f}",
+                     f"시작가 대비 {_bot_new / first_price - 1:+.1%}",
+                     "#888"),
+                ], tone="blue"), unsafe_allow_html=True)
+                _new_rows = _ot_new[_ot_new["회차"] > splits][
+                    ["회차", "매수가", "회차수량", "회차금액"]]
+                st.dataframe(_new_rows, hide_index=True,
+                             use_container_width=True,
+                             height=min(38 * (len(_new_rows) + 1), 300))
+                _src = st.selectbox(
+                    "추가 자금 출처", ["DSS", "표준편차", "종가평균",
+                                       "Sigma", "IUO", "듀얼스나이퍼",
+                                       "기타"],
+                    key=f"pd_extsrc_{keyfx}")
+                if st.button(f"🪜 연장 적용 — 분할수 {_sp_new} + "
+                             f"애드온 ${_add_amt:,.0f} 등록",
+                             use_container_width=True,
+                             key=f"pd_extgo_{keyfx}"):
+                    acct = cfg["accounts"][acct_name]
+                    acct["splits"] = int(_sp_new)
+                    if P.get("weighted"):
+                        _t1i, _t2i = int(P["t1"]), int(P["t2"])
+                        z1 = sum(_amts[:_t1i])
+                        z2 = sum(_amts[_t1i:_t2i])
+                        z3 = sum(_amts[_t2i:]) + _add_amt
+                        tot = z1 + z2 + z3
+                        acct["w1"] = round(z1 / tot * 100, 2)
+                        acct["w2"] = round(z2 / tot * 100, 2)
+                        acct["w3"] = round(z3 / tot * 100, 2)
+                    ads = acct.get("addons", [])
+                    nid = max([a.get("id", 0) for a in ads],
+                              default=0) + 1
+                    ads.append({"id": nid,
+                                "date": date.today().isoformat(),
+                                "source": f"{_src}(사다리연장)",
+                                "amount": round(float(_add_amt), 2)})
+                    acct["addons"] = ads
+                    _save_cfg(cfg)
+                    st.rerun()
+                st.caption("적용 후 할 일: ① 실제 자금을 해당 출처에서 "
+                           "이체 ② ASTRA 전송에서 **티어 범위 지정**으로 "
+                           f"신규 티어({splits + 1}번부터)만 전송 "
+                           "③ 모니터 재시작")
 
     with c2:
         ot_edit = ot.copy()
