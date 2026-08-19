@@ -81,6 +81,8 @@ PARAM_DEFAULTS = {
     "weighted": False, "w1": 10.0, "w2": 15.0, "w3": 75.0,  # 하락가중(구간 자금 비중)
 }
 _INT_KEYS = {"splits", "t1", "t2"}
+_ADDON_SRCS = ["DSS", "표준편차", "종가평균", "Sigma", "IUO",
+               "듀얼스나이퍼", "떨사pro"]
 
 
 def _gap_of(P: dict):
@@ -685,8 +687,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
         if acct_name:
             st.divider()
             st.markdown("**💰 끌어온 자금** (타 전략 예수금 애드온)")
-            _srcs = ["DSS", "표준편차", "종가평균", "Sigma", "IUO",
-                     "듀얼스나이퍼"]
+            _srcs = _ADDON_SRCS
             _dirty = False
             for _i, a in enumerate(addons):
                 if "id" not in a:
@@ -790,11 +791,15 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                 st.dataframe(_new_rows, hide_index=True,
                              use_container_width=True,
                              height=min(38 * (len(_new_rows) + 1), 300))
-                _src = st.selectbox(
-                    "추가 자금 출처", ["DSS", "표준편차", "종가평균",
-                                       "Sigma", "IUO", "듀얼스나이퍼",
-                                       "기타"],
+                _src_sel = st.selectbox(
+                    "추가 자금 출처", _ADDON_SRCS + ["기타 (직접 입력)"],
                     key=f"pd_extsrc_{keyfx}")
+                if _src_sel == "기타 (직접 입력)":
+                    _src = st.text_input("출처 직접 입력",
+                                         key=f"pd_extsrctxt_{keyfx}",
+                                         placeholder="예: 예비자금").strip()                         or "기타"
+                else:
+                    _src = _src_sel
                 if st.button(f"🪜 연장 적용 — 분할수 {_sp_new} + "
                              f"애드온 ${_add_amt:,.0f} 등록",
                              use_container_width=True,
