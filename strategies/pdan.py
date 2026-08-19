@@ -77,7 +77,7 @@ PARAM_DEFAULTS = {
     "thr_target": 5.0, "thr_partial": 1.0, "thr_close": 5.0,
     "compound": True, "reentry": True, "fee": 0.0,
     "gs_url": "",
-    "weighted": False, "w1": 1.0, "w2": 1.5, "w3": 3.0,  # 하락가중
+    "weighted": False, "w1": 10.0, "w2": 15.0, "w3": 75.0,  # 하락가중(구간 자금 비중)
 }
 _INT_KEYS = {"splits", "t1", "t2"}
 
@@ -94,10 +94,9 @@ def _gap_of(P: dict):
     return float(P["buy_gap"]) / 100, f"{float(P['buy_gap']):.1f}%"
 
 
-def _zone_pct(splits, t1, t2, w1, w2, w3):
-    """구간별 자금 배분 % (가중치 x 티어수 비례)."""
-    n1, n2, n3 = int(t1), int(t2) - int(t1), int(splits) - int(t2)
-    z = [n1 * float(w1), n2 * float(w2), n3 * float(w3)]
+def _zone_pct(w1, w2, w3):
+    """구간별 자금 배분 % — 입력 비중을 정규화 (총합 100%)."""
+    z = [float(w1), float(w2), float(w3)]
     tot = sum(z) or 1.0
     return [v / tot * 100 for v in z]
 
@@ -108,9 +107,12 @@ def _weights_of(P: dict):
     구간 경계는 매수갭 3구간의 t1/t2를 그대로 사용."""
     if not P.get("weighted"):
         return None
-    return [(int(P["t1"]), float(P["w1"])),
-            (int(P["t2"]), float(P["w2"])),
-            (int(P["splits"]), float(P["w3"]))]
+    sp, t1, t2 = int(P["splits"]), int(P["t1"]), int(P["t2"])
+    n1, n2, n3 = t1, max(t2 - t1, 1), max(sp - t2, 1)
+    # 입력값 = 구간 "전체" 자금 비중 → 엔진(티어당 가중치)으로 변환
+    return [(t1, float(P["w1"]) / n1),
+            (t2, float(P["w2"]) / n2),
+            (sp, float(P["w3"]) / n3)]
 
 
 def _thr_of(P: dict) -> float:
@@ -236,14 +238,14 @@ _PDAN_PRESETS = [
      "help": "평단 도달 부분매도(②) — 싸게 산 티어만 익절하고 재하락 시 재매수. 백테스트(SOXL 5.5년)에서 물림 깊이·수익 균형 최상",
      "splits": 50, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
      "g3": 0.5, "gap": 1.0, "mode": "partial", "thr_p": 1.0},
-    {"label": "🏋️ 하락가중 90분할 · 1/0.7/0.5 · 가중 1/1.5/3 · ①5%",
-     "help": "C 구조 + 아래 구간일수록 자금 가중 (배분 10%/15%/75%). "
+    {"label": "🏋️ 하락가중 90분할 · 1/0.7/0.5 · 배분 10/15/75% · ①5%",
+     "help": "C 구조 + 아래 구간일수록 자금 가중 (구간 자금 비중 10/15/75%). "
              "커버 -44.1% · 풀티어 평가손실 -16% · 필요반등 +25% — "
              "폭락 방어 최적. 대신 자금 대부분이 깊은 구간에 대기해 "
              "얕은 조정 수익은 작음",
      "splits": 90, "tiered": True, "g1": 1.0, "t1": 20, "g2": 0.7, "t2": 40,
      "g3": 0.5, "gap": 1.0, "mode": "target", "thr_t": 5.0,
-     "weighted": True, "w1": 1.0, "w2": 1.5, "w3": 3.0},
+     "weighted": True, "w1": 10.0, "w2": 15.0, "w3": 75.0},
     {"label": "🌱 입문 10분할 · 1% · ①5%",
      "help": "커버 -8.6% — 소액 연습·구조 이해용 (하락장 취약)",
      "splits": 10, "tiered": False, "g1": 1.0, "t1": 5, "g2": 0.7, "t2": 8,
@@ -262,8 +264,8 @@ def _preset_params(pk: dict) -> dict:
             "thr_partial": float(pk.get("thr_p", 1.0)),
             "thr_close": float(pk.get("thr_c", 5.0)),
             "weighted": bool(pk.get("weighted", False)),
-            "w1": float(pk.get("w1", 1.0)), "w2": float(pk.get("w2", 1.5)),
-            "w3": float(pk.get("w3", 3.0))}
+            "w1": float(pk.get("w1", 10.0)), "w2": float(pk.get("w2", 15.0)),
+            "w3": float(pk.get("w3", 75.0))}
 
 
 def _match_preset(P: dict):
@@ -295,8 +297,8 @@ def render_sidebar() -> dict:
                    ("pd_gap", 1.0), ("pd_mode", "target"),
                    ("pd_thr_t", 5.0), ("pd_thr_p", 1.0), ("pd_thr_c", 5.0),
                    ("pd_comp", True), ("pd_re", True), ("pd_fee", 0.0),
-                   ("pd_wt", False), ("pd_w1", 1.0), ("pd_w2", 1.5),
-                   ("pd_w3", 3.0)):
+                   ("pd_wt", False), ("pd_w1", 10.0), ("pd_w2", 15.0),
+                   ("pd_w3", 75.0)):
         st.session_state.setdefault(_k, _v)
 
     st.subheader("📌 종목")
@@ -353,20 +355,20 @@ def render_sidebar() -> dict:
         g3 = float(st.session_state["pd_g3"])
 
     weighted = st.checkbox("하락가중 (구간별 자금 가중)", key="pd_wt",
-                           help="아래 구간일수록 티어당 자금을 크게 배분 — "
-                                "폭락 시 평단이 빨리 따라 내려옴. "
-                                "구간 경계는 위 3구간(~티어)을 따름")
+                           help="구간별 자금 비중을 직접 지정 (예: 10/15/75 → 3구간에 "
+                                "자금의 75% 배치). 폭락 시 평단이 빨리 따라 "
+                                "내려옴. 구간 경계는 위 3구간을 따름")
     if weighted:
         wc1, wc2, wc3 = st.columns(3)
-        w1 = wc1.number_input("1구간 가중", min_value=0.1, step=0.1,
+        w1 = wc1.number_input("1구간 자금 비중", min_value=0.1, step=1.0,
                               format="%.1f", key="pd_w1")
-        w2 = wc2.number_input("2구간 가중", min_value=0.1, step=0.1,
+        w2 = wc2.number_input("2구간 자금 비중", min_value=0.1, step=1.0,
                               format="%.1f", key="pd_w2")
-        w3 = wc3.number_input("3구간 가중", min_value=0.1, step=0.1,
+        w3 = wc3.number_input("3구간 자금 비중", min_value=0.1, step=1.0,
                               format="%.1f", key="pd_w3")
-        _z = _zone_pct(splits, t1, t2, w1, w2, w3)
+        _z = _zone_pct(w1, w2, w3)
         st.caption(f"자금 배분: 1구간 {_z[0]:.0f}% · 2구간 {_z[1]:.0f}% · "
-                   f"3구간 {_z[2]:.0f}% (가중치는 비율 — 총합은 자동 100%)")
+                   f"3구간 {_z[2]:.0f}% (구간 전체 비중 — 총합 자동 100%)")
     else:
         w1 = float(st.session_state["pd_w1"])
         w2 = float(st.session_state["pd_w2"])
@@ -627,7 +629,8 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     _seed_txt = (f"운용 ${seed_in:,.0f} + 애드온 ${addon_sum:,.0f} = "
                  f"총 ${seed_eff:,.0f}" if addon_sum else
                  f"운용 ${seed_in:,.0f}")
-    _wt_txt = (f" · 하락가중 {P['w1']}/{P['w2']}/{P['w3']}" if qw else "")
+    _wt_txt = ((lambda z: f" · 하락가중 {z[0]:.0f}/{z[1]:.0f}/{z[2]:.0f}%")
+               (_zone_pct(P["w1"], P["w2"], P["w3"])) if qw else "")
     st.caption(f"**{ticker}** · {_seed_txt} · {splits}분할 · "
                f"매수갭 {gap_desc}{_wt_txt} · "
                f"{SELL_MODES[sell_mode]} {target_pct}% · "
@@ -1106,9 +1109,9 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
             f"pd_etc_{name}": float(P["thr_close"]),
             f"pd_egs_{name}": str(P.get("gs_url", "")),
             f"pd_ewt_{name}": bool(P.get("weighted", False)),
-            f"pd_ew1_{name}": float(P.get("w1", 1.0)),
-            f"pd_ew2_{name}": float(P.get("w2", 1.5)),
-            f"pd_ew3_{name}": float(P.get("w3", 3.0)),
+            f"pd_ew1_{name}": float(P.get("w1", 10.0)),
+            f"pd_ew2_{name}": float(P.get("w2", 15.0)),
+            f"pd_ew3_{name}": float(P.get("w3", 75.0)),
         }
         for _k, _v in _edit_defaults.items():
             st.session_state.setdefault(_k, _v)
@@ -1188,15 +1191,15 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
                            key=f"pd_ewt_{name}")
         if e_wt:
             w1c, w2c, w3c = st.columns(3)
-            e_w1 = w1c.number_input("1구간 가중", min_value=0.1, step=0.1,
+            e_w1 = w1c.number_input("1구간 자금 비중", min_value=0.1, step=1.0,
                                     format="%.1f", key=f"pd_ew1_{name}")
-            e_w2 = w2c.number_input("2구간 가중", min_value=0.1, step=0.1,
+            e_w2 = w2c.number_input("2구간 자금 비중", min_value=0.1, step=1.0,
                                     format="%.1f", key=f"pd_ew2_{name}")
-            e_w3 = w3c.number_input("3구간 가중", min_value=0.1, step=0.1,
+            e_w3 = w3c.number_input("3구간 자금 비중", min_value=0.1, step=1.0,
                                     format="%.1f", key=f"pd_ew3_{name}")
-            _z = _zone_pct(e_sp, e_t1, e_t2, e_w1, e_w2, e_w3)
+            _z = _zone_pct(e_w1, e_w2, e_w3)
             st.caption(f"자금 배분: 1구간 {_z[0]:.0f}% · 2구간 {_z[1]:.0f}% · "
-                       f"3구간 {_z[2]:.0f}% (가중치는 비율 — 총합은 자동 100%)")
+                       f"3구간 {_z[2]:.0f}% (구간 전체 비중 — 총합 자동 100%)")
         else:
             e_w1 = float(st.session_state[f"pd_ew1_{name}"])
             e_w2 = float(st.session_state[f"pd_ew2_{name}"])
