@@ -94,6 +94,14 @@ def _gap_of(P: dict):
     return float(P["buy_gap"]) / 100, f"{float(P['buy_gap']):.1f}%"
 
 
+def _zone_pct(splits, t1, t2, w1, w2, w3):
+    """구간별 자금 배분 % (가중치 x 티어수 비례)."""
+    n1, n2, n3 = int(t1), int(t2) - int(t1), int(splits) - int(t2)
+    z = [n1 * float(w1), n2 * float(w2), n3 * float(w3)]
+    tot = sum(z) or 1.0
+    return [v / tot * 100 for v in z]
+
+
 def _weights_of(P: dict):
     """하락가중 설정 → qty_weights 파라미터 (미사용 시 None).
 
@@ -356,6 +364,9 @@ def render_sidebar() -> dict:
                               format="%.1f", key="pd_w2")
         w3 = wc3.number_input("3구간 가중", min_value=0.1, step=0.1,
                               format="%.1f", key="pd_w3")
+        _z = _zone_pct(splits, t1, t2, w1, w2, w3)
+        st.caption(f"자금 배분: 1구간 {_z[0]:.0f}% · 2구간 {_z[1]:.0f}% · "
+                   f"3구간 {_z[2]:.0f}% (가중치는 비율 — 총합은 자동 100%)")
     else:
         w1 = float(st.session_state["pd_w1"])
         w2 = float(st.session_state["pd_w2"])
@@ -1183,6 +1194,9 @@ def _render_account_editor(name: str, P: dict, cfg: dict):
                                     format="%.1f", key=f"pd_ew2_{name}")
             e_w3 = w3c.number_input("3구간 가중", min_value=0.1, step=0.1,
                                     format="%.1f", key=f"pd_ew3_{name}")
+            _z = _zone_pct(e_sp, e_t1, e_t2, e_w1, e_w2, e_w3)
+            st.caption(f"자금 배분: 1구간 {_z[0]:.0f}% · 2구간 {_z[1]:.0f}% · "
+                       f"3구간 {_z[2]:.0f}% (가중치는 비율 — 총합은 자동 100%)")
         else:
             e_w1 = float(st.session_state[f"pd_ew1_{name}"])
             e_w2 = float(st.session_state[f"pd_ew2_{name}"])
