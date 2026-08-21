@@ -842,9 +842,20 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                            f"신규 티어({splits + 1}번부터)만 전송 "
                            "③ 모니터 재시작")
 
+    # 저장된 체결은 저장된 최초매수가 사다리에만 유효 — 가격이 다르면
+    # 다른 사다리이므로 체크를 보여주지도, 저장하지도 않는다
+    ladder_live = (saved_px <= 0
+                   or abs(first_price - saved_px) <= 0.005)
     with c2:
+        if acct_name and not ladder_live:
+            st.info(f"🔍 새 최초매수가(${first_price:,.2f}) 기준 "
+                    f"**미리보기**입니다. 저장된 체결 {len(saved_filled)}건은 "
+                    f"${saved_px:,.2f} 사다리 기준이라 표시하지 않으며, "
+                    "이 상태의 체크는 저장되지 않습니다. 이 가격으로 새 "
+                    "사이클을 시작하려면 **[💾 상태 저장]**을 누르세요.")
         ot_edit = ot.copy()
-        ot_edit.insert(0, "매수✓", ot_edit["회차"].isin(saved_filled))
+        _def_checks = saved_filled if ladder_live else set()
+        ot_edit.insert(0, "매수✓", ot_edit["회차"].isin(_def_checks))
         # form 안의 에디터: 체크를 여러 개 해도 재실행 없음 →
         # [체크 적용]을 눌러야 한 번에 반영·저장 (클릭 씹힘/딜레이 방지)
         with st.form(f"pd_ckform_{keyfx}", border=False):
@@ -907,8 +918,8 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     # 저장 안 된 변경사항 경고 + 현황판 — 주문테이블 아래(오른쪽 컬럼)에
     # 배치해 매매 리스트와 현황판을 한 화면에서 함께 보도록
     ui_nos = (set(checked["회차"].astype(int)) if len(checked) else set())
-    # 매수✓ 체크는 즉시 자동 저장 — 앱 재시작/세션 리셋에도 유실 없음
-    if acct_name and ui_nos != saved_filled:
+    # 매수✓ 체크는 적용 시 자동 저장 — 단, 저장된 사다리와 일치할 때만
+    if acct_name and ladder_live and ui_nos != saved_filled:
         cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
         _save_cfg(cfg)
         saved_filled = set(ui_nos)
