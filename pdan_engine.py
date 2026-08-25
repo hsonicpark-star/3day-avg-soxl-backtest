@@ -71,21 +71,45 @@ def tier_amounts(seed: float, splits: int, qty_weights=None) -> list[float]:
 
 def build_order_table(seed: float, splits: int, first_price: float,
                       buy_gap, target_pct: float,
-                      qty_weights=None) -> pd.DataFrame:
+                      qty_weights=None, fills=None) -> pd.DataFrame:
     """주문테이블 생성 — 시트의 회차/매수가/수량/평단/매도희망 재현.
 
     buy_gap: 비율 스칼라 또는 구간 리스트 (ladder_prices 참조)
     qty_weights: 구간별 수량(자금) 가중 (tier_amounts 참조)
+    fills: 체결 스냅샷 [[티어, 수량, 체결가], ...] — 지정된 티어는
+      과거 체결 사실이므로 수량·금액을 고정하고, 잔여 자금
+      (seed − 체결분)만 미체결 티어에 가중 프로필대로 배분한다.
+      자금이 줄어도 체결 티어의 수량이 소급 변경되지 않는다.
     target_pct는 비율 (예: 0.05)
     """
-    amts = tier_amounts(seed, splits, qty_weights)
+    prices = ladder_prices(first_price, splits, buy_gap)
+    base = tier_amounts(seed, splits, qty_weights)
+    fd = {}
+    if fills:
+        for row in fills:
+            no, q, px = int(row[0]), int(row[1]), float(row[2])
+            if 1 <= no <= splits:
+                fd[no] = (q, px)
+    if fd:
+        spent = sum(q * px for q, px in fd.values())
+        remain = max(seed - spent, 0.0)
+        wsum = sum(base[i - 1] for i in range(1, splits + 1)
+                   if i not in fd)
+        amts = [None if i in fd else
+                (remain * base[i - 1] / wsum if wsum > 0 else 0.0)
+                for i in range(1, splits + 1)]
+    else:
+        amts = base
     rows = []
     tot_qty, tot_amt = 0, 0.0
-    for i, price in enumerate(ladder_prices(first_price, splits, buy_gap),
-                              start=1):
-        per_amt = amts[i - 1]
-        qty = int(per_amt // price) if price > 0 else 0
-        amt = qty * price
+    for i, price in enumerate(prices, start=1):
+        if i in fd:
+            qty, px = fd[i]
+            amt = qty * px
+        else:
+            per_amt = amts[i - 1]
+            qty = int(per_amt // price) if price > 0 else 0
+            amt = qty * price
         tot_qty += qty
         tot_amt += amt
         avg = tot_amt / tot_qty if tot_qty else 0.0

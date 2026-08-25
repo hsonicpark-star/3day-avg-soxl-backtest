@@ -682,8 +682,38 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                  "합계로 사다리가 계산됩니다. [💾 상태 저장] 시 계좌 Seed로 "
                  "저장")
         seed_eff = float(seed_in) + addon_sum
+        # 체결 스냅샷: 저장된 사다리와 일치할 때만 적용 (과거 체결 고정)
+        ladder_live = (saved_px <= 0
+                       or abs(first_price - saved_px) <= 0.005)
+        _fills_saved = P.get("fills") or []
+        _fills_use = _fills_saved if (ladder_live and acct_name) else None
         ot = build_order_table(seed_eff, splits, first_price, gap_param,
-                               target_pct / 100, qty_weights=qw)
+                               target_pct / 100, qty_weights=qw,
+                               fills=_fills_use)
+        # 스냅샷 마이그레이션: 체결 체크는 있는데 스냅샷이 없으면
+        # 현재 표 기준으로 1회 생성 (자금 변경 전에 실행돼야 정확)
+        if (acct_name and ladder_live and saved_filled
+                and not _fills_saved):
+            _mig = [[int(r["회차"]), int(r["회차수량"]), float(r["매수가"])]
+                    for _, r in ot.iterrows()
+                    if int(r["회차"]) in saved_filled]
+            cfg["accounts"][acct_name]["fills"] = _mig
+            _save_cfg(cfg)
+            st.toast("📌 체결 스냅샷 생성됨 — 이후 자금을 바꿔도 체결 "
+                     "수량은 고정됩니다")
+        # 잔여 자금 부족 경고: 미체결인데 수량 0인 티어
+        if _fills_use:
+            _fd_nos = {int(r[0]) for r in _fills_use}
+            _zero = ot[(~ot["회차"].isin(_fd_nos)) & (ot["회차수량"] <= 0)]
+            if len(_zero):
+                _fundable = ot[(~ot["회차"].isin(_fd_nos))
+                               & (ot["회차수량"] > 0)]["회차"]
+                _last_ok = int(_fundable.max()) if len(_fundable) else \
+                    int(max(_fd_nos))
+                st.warning(f"⚠️ 잔여 자금 부족 — 현재 자금으로는 "
+                           f"**{_last_ok}티어까지만** 매수 가능합니다. "
+                           f"{int(_zero['회차'].min())}티어부터 수량 0 "
+                           f"(체결분 투입 제외 잔여 자금이 부족)")
         st.metric("총 투입금", f"${ot['총금액'].iloc[-1]:,.2f}",
                   delta=(f"운용 ${float(seed_in):,.0f} + 애드온 "
                          f"${addon_sum:,.0f} · 1회 평균 ${seed_eff / splits:,.0f}"),
@@ -842,10 +872,7 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                            f"신규 티어({splits + 1}번부터)만 전송 "
                            "③ 모니터 재시작")
 
-    # 저장된 체결은 저장된 최초매수가 사다리에만 유효 — 가격이 다르면
-    # 다른 사다리이므로 체크를 보여주지도, 저장하지도 않는다
-    ladder_live = (saved_px <= 0
-                   or abs(first_price - saved_px) <= 0.005)
+    # (ladder_live는 ot 빌드 시 계산됨 — 다른 사다리면 체크 표시/저장 안 함)
     with c2:
         if acct_name and not ladder_live:
             st.info(f"🔍 새 최초매수가(${first_price:,.2f}) 기준 "
@@ -919,11 +946,24 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
     # 배치해 매매 리스트와 현황판을 한 화면에서 함께 보도록
     ui_nos = (set(checked["회차"].astype(int)) if len(checked) else set())
     # 매수✓ 체크는 적용 시 자동 저장 — 단, 저장된 사다리와 일치할 때만
+    # 스냅샷 규칙: 기존 체결 티어는 저장된 수량·가격 유지, 새 체크만
+    # 현재 표(잔여 배분) 기준으로 스냅샷 추가, 해제된 티어는 제거
     if acct_name and ladder_live and ui_nos != saved_filled:
+        _old_fd = {int(r[0]): (int(r[1]), float(r[2]))
+                   for r in (P.get("fills") or [])}
+        _new_fills = []
+        for _no in sorted(ui_nos):
+            if _no in _old_fd:
+                _q, _px = _old_fd[_no]
+            else:
+                _r = ot[ot["회차"] == _no].iloc[0]
+                _q, _px = int(_r["회차수량"]), float(_r["매수가"])
+            _new_fills.append([_no, _q, _px])
         cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
+        cfg["accounts"][acct_name]["fills"] = _new_fills
         _save_cfg(cfg)
         saved_filled = set(ui_nos)
-        st.toast("💾 체크 적용·저장 완료")
+        st.toast("💾 체크 적용·저장 완료 (체결 수량 스냅샷 고정)")
     with c2:
         if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
                           or abs(float(seed_in) - seed) > 0.5):
@@ -1014,6 +1054,11 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                     cfg["accounts"][acct_name]["first_price"] = \
                         float(first_price)
                     cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
+                    cfg["accounts"][acct_name]["fills"] = [
+                        [int(r["회차"]), int(r["회차수량"]),
+                         float(r["매수가"])]
+                        for _, r in ot.iterrows()
+                        if int(r["회차"]) in ui_nos]
                     cfg["accounts"][acct_name]["seed"] = float(seed_in)
                     _save_cfg(cfg)
                     st.success(f"저장 완료 — 운용 ${float(seed_in):,.0f} + "
