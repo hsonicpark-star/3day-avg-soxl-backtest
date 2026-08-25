@@ -651,6 +651,9 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                f"{SELL_MODES[sell_mode]} {target_pct}% · "
                f"최대 커버 ≈{(1 - _prx[-1] / _prx[0]) * 100:.1f}%")
 
+    _toast = st.session_state.pop(f"pd_toast_{keyfx}", None)
+    if _toast:
+        st.toast(_toast)
     eff_gs = _eff_gs_url(P, cfg)
     gs_src = ("계좌 전용 시트" if str(P.get("gs_url", "")).strip()
               else "공통 시트")
@@ -962,8 +965,9 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
         cfg["accounts"][acct_name]["filled"] = sorted(ui_nos)
         cfg["accounts"][acct_name]["fills"] = _new_fills
         _save_cfg(cfg)
-        saved_filled = set(ui_nos)
-        st.toast("💾 체크 적용·저장 완료 (체결 수량 스냅샷 고정)")
+        st.session_state[f"pd_toast_{keyfx}"] = (
+            "💾 체크 적용·저장 완료 — 표를 재계산했습니다")
+        st.rerun()
     with c2:
         if acct_name and (abs(first_price - (saved_px or first_price)) > 0.004
                           or abs(float(seed_in) - seed) > 0.5):
@@ -1061,11 +1065,11 @@ def _render_order_panel(P: dict, keyfx: str, cfg: dict,
                         if int(r["회차"]) in ui_nos]
                     cfg["accounts"][acct_name]["seed"] = float(seed_in)
                     _save_cfg(cfg)
-                    st.success(f"저장 완료 — 운용 ${float(seed_in):,.0f} + "
-                               f"애드온 ${addon_sum:,.0f} = "
-                               f"총 ${seed_eff:,.0f} · "
-                               f"체결 {len(ui_nos)}티어. 새로고침해도 "
-                               "유지됩니다.")
+                    st.session_state[f"pd_toast_{keyfx}"] = (
+                        f"💾 저장 완료 — 운용 ${float(seed_in):,.0f} + "
+                        f"애드온 ${addon_sum:,.0f} = 총 ${seed_eff:,.0f} · "
+                        f"체결 {len(ui_nos)}티어")
+                    st.rerun()
 
     # ASTRA 전송
     st.divider()
