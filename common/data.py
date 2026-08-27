@@ -150,36 +150,45 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
         df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
         return df.dropna()
 
-    # 방법 1: yf.download
-    try:
-        raw = yf.download(
-            ticker,
-            start=start - timedelta(days=15),
-            end=end + timedelta(days=2),
-            progress=False, auto_adjust=True,
-        )
-        df = _to_close_df(raw)
-        if not df.empty:
-            return _maybe_patch_soxl_backup(filter_incomplete_today(df), ticker)
-    except Exception:
-        pass
+    # 야후 순간 장애/레이트리밋(429) 대비 — 지연을 두고 최대 3회 재시도.
+    # (한 번 실패로 바로 "가격 데이터를 불러오지 못했습니다"가 뜨던 문제 완화.
+    #  같은 시각에도 요청별로 성공/실패가 갈리는 야후 CDN 특성 때문에
+    #  재시도만으로 대부분 해결됨)
+    import time as _time
+    for _attempt in range(3):
+        # 방법 1: yf.download
+        try:
+            raw = yf.download(
+                ticker,
+                start=start - timedelta(days=15),
+                end=end + timedelta(days=2),
+                progress=False, auto_adjust=True,
+            )
+            df = _to_close_df(raw)
+            if not df.empty:
+                return _maybe_patch_soxl_backup(filter_incomplete_today(df), ticker)
+        except Exception:
+            pass
 
-    # 방법 2: yf.Ticker.history (fallback)
-    try:
-        t = yf.Ticker(ticker)
-        raw2 = t.history(
-            start=start - timedelta(days=15),
-            end=end + timedelta(days=2),
-            auto_adjust=True,
-        )
-        if not raw2.empty and "Close" in raw2.columns:
-            df2 = raw2[["Close"]].copy()
-            df2.index = pd.to_datetime(df2.index).tz_localize(None)
-            df2["Close"] = pd.to_numeric(df2["Close"], errors="coerce")
-            return _maybe_patch_soxl_backup(
-                filter_incomplete_today(df2.dropna()), ticker)
-    except Exception:
-        pass
+        # 방법 2: yf.Ticker.history (fallback)
+        try:
+            t = yf.Ticker(ticker)
+            raw2 = t.history(
+                start=start - timedelta(days=15),
+                end=end + timedelta(days=2),
+                auto_adjust=True,
+            )
+            if not raw2.empty and "Close" in raw2.columns:
+                df2 = raw2[["Close"]].copy()
+                df2.index = pd.to_datetime(df2.index).tz_localize(None)
+                df2["Close"] = pd.to_numeric(df2["Close"], errors="coerce")
+                return _maybe_patch_soxl_backup(
+                    filter_incomplete_today(df2.dropna()), ticker)
+        except Exception:
+            pass
+
+        if _attempt < 2:
+            _time.sleep(2 + 2 * _attempt)   # 2초 → 4초 백오프
 
     return pd.DataFrame()
 

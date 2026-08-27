@@ -1568,7 +1568,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
         from common.data import halt_if_stale
         if _pdf is None or _pdf.empty:
-            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
         elif halt_if_stale(_pdf):
             pass  # halt_if_stale이 에러 표시 — 주문표 미생성
         else:
@@ -2741,7 +2741,7 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
                 _mc_pdf4 = load_price_data(_sd_symbol(tk), "2014-01-01", str(pd.Timestamp.today().date()),
                                            "야후파이낸스 (yfinance)", None)
             if _mc_pdf4 is None or _mc_pdf4.empty:
-                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
             else:
                 _mc_idx4   = _mc_pdf4["Close"].dropna().index
                 _WINDOW4   = 252

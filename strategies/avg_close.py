@@ -518,7 +518,7 @@ def render_backtest_tab(ticker, params, data_source, excel_file, start_date, end
             price_df = load_price_data(ticker, start_date, end_date, data_source, excel_file)
 
         if price_df.empty:
-            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
             st.stop()
 
         result = run_backtest(
@@ -737,7 +737,7 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
             with st.spinner("가격 데이터 로드 중..."):
                 price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
             if price_df_opt.empty:
-                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
                 st.stop()
 
             progress = st.progress(0.0, text="그리드 탐색 실행 중...")
@@ -763,7 +763,7 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
             with st.spinner("가격 데이터 로드 중..."):
                 price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
             if price_df_opt.empty:
-                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
                 st.stop()
 
             random.seed(42)
@@ -800,7 +800,7 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
             with st.spinner("가격 데이터 로드 중..."):
                 price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
             if price_df_opt.empty:
-                st.error("가격 데이터를 불러오지 못했습니다.")
+                st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
                 st.stop()
 
             dates       = price_df_opt.index
@@ -948,7 +948,7 @@ def render_optimization_tab(ticker, params, start_date, end_date, initial_capita
                 with st.spinner("가격 데이터 로드 중..."):
                     price_df_opt = load_price_data(ticker, start_date, end_date, data_source, excel_file)
                 if price_df_opt.empty:
-                    st.error("가격 데이터를 불러오지 못했습니다.")
+                    st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
                     st.stop()
 
                 _optuna.logging.set_verbosity(_optuna.logging.WARNING)
@@ -1465,7 +1465,7 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
             price_df_os = load_price_data(tk, os_start, today, "야후파이낸스 (yfinance)", None)
         if price_df_os.empty:
-            st.error("가격 데이터를 불러오지 못했습니다.")
+            st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
             return
         # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
         from common.data import halt_if_stale
@@ -2768,7 +2768,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                     _mc_pdf = load_price_data(tk, "2014-01-01", str(pd.Timestamp.today().date()),
                                               "야후파이낸스 (yfinance)", None)
                 if _mc_pdf.empty:
-                    st.error("가격 데이터를 불러오지 못했습니다.")
+                    st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
                 else:
                     _mc_closes = _mc_pdf["Close"].dropna()
                     _mc_idx    = _mc_closes.index
