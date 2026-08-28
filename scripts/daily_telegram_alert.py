@@ -1915,793 +1915,803 @@ def main():
     ok_count = skip_count = fail_count = 0
 
     for user in users:
-        username = user.get("username", "")
-        # 종가평균/표준편차/Sigma 공용 gs_url (사용자 레벨)
-        shared_gs_url = str(user.get("gs_url", "")).strip()
-        # 이상치 알림 수집 버킷 (유저별)
-        user_warnings = []
+        try:
+            username = user.get("username", "")
+            # 종가평균/표준편차/Sigma 공용 gs_url (사용자 레벨)
+            shared_gs_url = str(user.get("gs_url", "")).strip()
+            # 이상치 알림 수집 버킷 (유저별)
+            user_warnings = []
 
-        # ── 1. 종가평균매매 발송 ──────────────────────────────
-        avg_chat_id = str(user.get("tg_chat_id", "")).strip()
-        avg_token   = str(user.get("tg_token",   "")).strip()
-        avg_settings = parse_ticker_settings(user)
+            # ── 1. 종가평균매매 발송 ──────────────────────────────
+            avg_chat_id = str(user.get("tg_chat_id", "")).strip()
+            avg_token   = str(user.get("tg_token",   "")).strip()
+            avg_settings = parse_ticker_settings(user)
 
-        if not ds_only and avg_chat_id and avg_token and avg_settings:
-            print(f"  👤 {username} [종가평균]: {list(avg_settings.keys())} 처리 중...")
-            for tk, cfg in avg_settings.items():
-                a_buy      = float(cfg.get("a_buy",      DEFAULT_A_BUY))
-                a_sell     = float(cfg.get("a_sell",     DEFAULT_A_SELL))
-                sell_ratio = float(cfg.get("sell_ratio", DEFAULT_SELL_RATIO))
-                divisions  = int(float(cfg.get("divisions", DEFAULT_DIVISIONS)))
-                n_days     = int(float(cfg.get("n_days",   2)))   # 사용자 N일 평균 설정
-                capital    = float(cfg.get("os_capital", DEFAULT_CAPITAL))
-                os_start   = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
-                _gs_sheet  = str(cfg.get("gs_sheet", tk)).strip() or tk
-                _label     = f"종가평균/{tk}"
+            if not ds_only and avg_chat_id and avg_token and avg_settings:
+                print(f"  👤 {username} [종가평균]: {list(avg_settings.keys())} 처리 중...")
+                for tk, cfg in avg_settings.items():
+                    a_buy      = float(cfg.get("a_buy",      DEFAULT_A_BUY))
+                    a_sell     = float(cfg.get("a_sell",     DEFAULT_A_SELL))
+                    sell_ratio = float(cfg.get("sell_ratio", DEFAULT_SELL_RATIO))
+                    divisions  = int(float(cfg.get("divisions", DEFAULT_DIVISIONS)))
+                    n_days     = int(float(cfg.get("n_days",   2)))   # 사용자 N일 평균 설정
+                    capital    = float(cfg.get("os_capital", DEFAULT_CAPITAL))
+                    os_start   = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
+                    _gs_sheet  = str(cfg.get("gs_sheet", tk)).strip() or tk
+                    _label     = f"종가평균/{tk}"
 
-                try:
-                    res = calc_today_order(
-                        ticker=tk, os_start=os_start,
-                        a_buy=a_buy, a_sell=a_sell,
-                        sell_ratio=sell_ratio, divisions=divisions,
-                        capital=capital, n_days=n_days,
-                    )
-                except Exception as e:
-                    print(f"    ❌ [{tk}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[종가평균/{tk}] ❌ 주문표 미발송: {e}")
-                    if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
-                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
-                    continue
-
-                if not res:
-                    print(f"    ❌ [{tk}] 데이터 부족")
-                    fail_count += 1
-                    if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
-                                                  _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
-                _apply_capital_adj(res, cfg)
-
-                # 예상수량(buy_qty) 재계산 — total_asset(=current_asset+adj) 기준
-                # 엔진의 buy_qty는 시뮬 값 → 조정 없으면 낮게 계산됨
-                try:
-                    _div_avg = int(divisions) if divisions > 0 else 1
-                    _tb_avg = float(res.get("tb", 0))  # 다음 매수 LOC
-                    if _tb_avg > 0:
-                        _chunk_avg = float(res.get("total_asset", 0)) / _div_avg
-                        _avail_avg = max(0.0, min(_chunk_avg, float(res.get("cash", 0))))
-                        res["buy_qty"] = int(math.floor(_avail_avg / _tb_avg + 1e-9))
-                except Exception:
-                    pass
-
-                # ══ 원장(매매기록) 기반 주문 계산 — 기록이 진실 ══
-                # 1) 어제 '예정' 행을 어제 실제 종가로 체결/미체결 정산 (수량 불변)
-                # 2) 정산된 원장의 보유/현금 + 전일종가 → 엔진 룰 그대로 오늘 수량 계산
-                # 시뮬 재계산 값이 주문 수량에 끼어들 틈이 없음 (look-ahead 차단)
-                _ledger_on = False
-                _ws_hist = None
-                _hist_existing_dates = set()
-                _today_str_avg = datetime.today().strftime("%Y-%m-%d")
-                if shared_gs_url:
                     try:
-                        from avg_close_engine import (
-                            AVG_HIST_COLS, settle_avg_pending_rows,
-                            calc_avg_record_state, calc_avg_order_from_state,
-                            build_avg_pending_row)
-                        _sh_rec = _gs_retry(lambda: client.open_by_url(shared_gs_url))
+                        res = calc_today_order(
+                            ticker=tk, os_start=os_start,
+                            a_buy=a_buy, a_sell=a_sell,
+                            sell_ratio=sell_ratio, divisions=divisions,
+                            capital=capital, n_days=n_days,
+                        )
+                    except Exception as e:
+                        print(f"    ❌ [{tk}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[종가평균/{tk}] ❌ 주문표 미발송: {e}")
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                      _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+
+                    if not res:
+                        print(f"    ❌ [{tk}] 데이터 부족")
+                        fail_count += 1
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                      _label, status="ERROR", error_reason="데이터 부족")
+                        continue
+
+                    # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                    _apply_capital_adj(res, cfg)
+
+                    # 예상수량(buy_qty) 재계산 — total_asset(=current_asset+adj) 기준
+                    # 엔진의 buy_qty는 시뮬 값 → 조정 없으면 낮게 계산됨
+                    try:
+                        _div_avg = int(divisions) if divisions > 0 else 1
+                        _tb_avg = float(res.get("tb", 0))  # 다음 매수 LOC
+                        if _tb_avg > 0:
+                            _chunk_avg = float(res.get("total_asset", 0)) / _div_avg
+                            _avail_avg = max(0.0, min(_chunk_avg, float(res.get("cash", 0))))
+                            res["buy_qty"] = int(math.floor(_avail_avg / _tb_avg + 1e-9))
+                    except Exception:
+                        pass
+
+                    # ══ 원장(매매기록) 기반 주문 계산 — 기록이 진실 ══
+                    # 1) 어제 '예정' 행을 어제 실제 종가로 체결/미체결 정산 (수량 불변)
+                    # 2) 정산된 원장의 보유/현금 + 전일종가 → 엔진 룰 그대로 오늘 수량 계산
+                    # 시뮬 재계산 값이 주문 수량에 끼어들 틈이 없음 (look-ahead 차단)
+                    _ledger_on = False
+                    _ws_hist = None
+                    _hist_existing_dates = set()
+                    _today_str_avg = datetime.today().strftime("%Y-%m-%d")
+                    if shared_gs_url:
                         try:
-                            _ws_hist = _sh_rec.worksheet(f"{tk}_매매기록")
-                        except gspread.exceptions.WorksheetNotFound:
-                            _ws_hist = _sh_rec.add_worksheet(
-                                title=f"{tk}_매매기록", rows=5000, cols=25)
-                            _ws_hist.append_row(AVG_HIST_COLS)
-                        _vals_rec = _gs_retry(_ws_hist.get_all_values)
-                        if len(_vals_rec) > 1:
-                            _hdr_rec = _vals_rec[0]
-                            _rows_rec = [dict(zip(_hdr_rec, rw)) for rw in _vals_rec[1:]]
-                            _hist_existing_dates = {str(r0.get("날짜", "")).strip()
-                                                     for r0 in _rows_rec}
-                            # ── 1) 예정 행 정산 (오늘 이전분만) ──
-                            _closes_conf = {d: c for d, c in
-                                            (res.get("closes") or {}).items()
-                                            if d < _today_str_avg}
-                            _chg = settle_avg_pending_rows(_rows_rec, _closes_conf)
-                            _n_cols = len(_hdr_rec)
-                            _col_end = chr(ord('A') + _n_cols - 1)
-                            for _ci in _chg:
-                                _rw_out = [str(_rows_rec[_ci].get(c, ""))
-                                           for c in _hdr_rec]
-                                _ws_hist.update(
-                                    values=[_rw_out],
-                                    range_name=f"A{_ci + 2}:{_col_end}{_ci + 2}",
-                                    value_input_option="RAW")
-                                print(f"      🧾 [종가평균/{tk}] "
-                                      f"{_rows_rec[_ci].get('날짜')} 예정 정산 → "
-                                      f"{_rows_rec[_ci].get('매매')} "
-                                      f"{_rows_rec[_ci].get('거래주수')}주")
-                            # ── 2) 원장 상태 → 오늘 주문 수량 (엔진 룰) ──
-                            _prev_rows = sorted(
-                                [r0 for r0 in _rows_rec
-                                 if str(r0.get("날짜", "")).strip() < _today_str_avg],
-                                key=lambda r0: str(r0.get("날짜", "")))
-                            _state = calc_avg_record_state(_prev_rows)
-                            if _state:
-                                # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
-                                _extra_adj = _sum_adj_between(
-                                    cfg, _state["last_date"], _today_str_avg)
-                                _cash_led = _state["cash"] + _extra_adj
-                                _ord_led = calc_avg_order_from_state(
-                                    _state["shares"], _cash_led,
-                                    float(res.get("p1", 0)),
-                                    float(res.get("tb", 0)),
-                                    float(res.get("ts", 0)),
-                                    divisions, sell_ratio)
-                                if (_state["shares"] != int(res.get("shares", 0))
-                                        or _ord_led["buy_qty"] != int(res.get("buy_qty", 0))):
-                                    print(f"      📌 [종가평균/{tk}] 원장 기준 적용: "
-                                          f"보유 {res.get('shares')}→{_state['shares']}주 · "
-                                          f"매수 {res.get('buy_qty')}→{_ord_led['buy_qty']}주 · "
-                                          f"매도 {res.get('sell_qty')}→{_ord_led['sell_qty']}주")
-                                res["shares"]   = _state["shares"]
-                                res["cash"]     = round(_cash_led, 2)
-                                res["buy_qty"]  = _ord_led["buy_qty"]
-                                res["sell_qty"] = _ord_led["sell_qty"]
-                                res["total_asset"] = round(_ord_led["prev_asset"], 2)
-                                if _state["avg_cost"] > 0:
-                                    res["avg_cost"] = round(_state["avg_cost"], 4)
+                            from avg_close_engine import (
+                                AVG_HIST_COLS, settle_avg_pending_rows,
+                                calc_avg_record_state, calc_avg_order_from_state,
+                                build_avg_pending_row)
+                            _sh_rec = _gs_retry(lambda: client.open_by_url(shared_gs_url))
+                            try:
+                                _ws_hist = _sh_rec.worksheet(f"{tk}_매매기록")
+                            except gspread.exceptions.WorksheetNotFound:
+                                _ws_hist = _sh_rec.add_worksheet(
+                                    title=f"{tk}_매매기록", rows=5000, cols=25)
+                                _ws_hist.append_row(AVG_HIST_COLS)
+                            _vals_rec = _gs_retry(_ws_hist.get_all_values)
+                            if len(_vals_rec) > 1:
+                                _hdr_rec = _vals_rec[0]
+                                _rows_rec = [dict(zip(_hdr_rec, rw)) for rw in _vals_rec[1:]]
+                                _hist_existing_dates = {str(r0.get("날짜", "")).strip()
+                                                         for r0 in _rows_rec}
+                                # ── 1) 예정 행 정산 (오늘 이전분만) ──
+                                _closes_conf = {d: c for d, c in
+                                                (res.get("closes") or {}).items()
+                                                if d < _today_str_avg}
+                                _chg = settle_avg_pending_rows(_rows_rec, _closes_conf)
+                                _n_cols = len(_hdr_rec)
+                                _col_end = chr(ord('A') + _n_cols - 1)
+                                for _ci in _chg:
+                                    _rw_out = [str(_rows_rec[_ci].get(c, ""))
+                                               for c in _hdr_rec]
+                                    _ws_hist.update(
+                                        values=[_rw_out],
+                                        range_name=f"A{_ci + 2}:{_col_end}{_ci + 2}",
+                                        value_input_option="RAW")
+                                    print(f"      🧾 [종가평균/{tk}] "
+                                          f"{_rows_rec[_ci].get('날짜')} 예정 정산 → "
+                                          f"{_rows_rec[_ci].get('매매')} "
+                                          f"{_rows_rec[_ci].get('거래주수')}주")
+                                # ── 2) 원장 상태 → 오늘 주문 수량 (엔진 룰) ──
+                                _prev_rows = sorted(
+                                    [r0 for r0 in _rows_rec
+                                     if str(r0.get("날짜", "")).strip() < _today_str_avg],
+                                    key=lambda r0: str(r0.get("날짜", "")))
+                                _state = calc_avg_record_state(_prev_rows)
+                                if _state:
+                                    # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
+                                    _extra_adj = _sum_adj_between(
+                                        cfg, _state["last_date"], _today_str_avg)
+                                    _cash_led = _state["cash"] + _extra_adj
+                                    _ord_led = calc_avg_order_from_state(
+                                        _state["shares"], _cash_led,
+                                        float(res.get("p1", 0)),
+                                        float(res.get("tb", 0)),
+                                        float(res.get("ts", 0)),
+                                        divisions, sell_ratio)
+                                    if (_state["shares"] != int(res.get("shares", 0))
+                                            or _ord_led["buy_qty"] != int(res.get("buy_qty", 0))):
+                                        print(f"      📌 [종가평균/{tk}] 원장 기준 적용: "
+                                              f"보유 {res.get('shares')}→{_state['shares']}주 · "
+                                              f"매수 {res.get('buy_qty')}→{_ord_led['buy_qty']}주 · "
+                                              f"매도 {res.get('sell_qty')}→{_ord_led['sell_qty']}주")
+                                    res["shares"]   = _state["shares"]
+                                    res["cash"]     = round(_cash_led, 2)
+                                    res["buy_qty"]  = _ord_led["buy_qty"]
+                                    res["sell_qty"] = _ord_led["sell_qty"]
+                                    res["total_asset"] = round(_ord_led["prev_asset"], 2)
+                                    if _state["avg_cost"] > 0:
+                                        res["avg_cost"] = round(_state["avg_cost"], 4)
+                                    _ledger_on = True
+                            else:
+                                # 원장 비어있음 — 이번 발송분부터 원장 시작 (시뮬 상태 시드)
                                 _ledger_on = True
-                        else:
-                            # 원장 비어있음 — 이번 발송분부터 원장 시작 (시뮬 상태 시드)
-                            _ledger_on = True
-                            print(f"      🆕 [종가평균/{tk}] 원장 신규 시작 (시뮬 상태 시드)")
-                    except Exception as _led_err:
-                        print(f"      ⚠️ [종가평균/{tk}] 원장 처리 실패 "
-                              f"(시뮬 값으로 발송): {_led_err}")
-                        _ledger_on = False
+                                print(f"      🆕 [종가평균/{tk}] 원장 신규 시작 (시뮬 상태 시드)")
+                        except Exception as _led_err:
+                            print(f"      ⚠️ [종가평균/{tk}] 원장 처리 실패 "
+                                  f"(시뮬 값으로 발송): {_led_err}")
+                            _ledger_on = False
 
-                # 이상치 감지
-                _issues = sanity_check_avg(res, tk)
-                user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])
+                    # 이상치 감지
+                    _issues = sanity_check_avg(res, tk)
+                    user_warnings.extend([f"[종가평균/{tk}] {m}" for m in _issues])
 
-                msg = build_avg_message(res, tk)
-                # 원장 사용자인데 원장 처리 실패 → 시뮬 값 발송임을 크게 경고
-                # (실패를 멀쩡한 주문표처럼 보내면 잘못된 수량으로 주문하게 됨)
-                if shared_gs_url and not _ledger_on:
-                    msg = ("🚨 *원장 접근 실패 — 아래는 시뮬 참고값입니다!*\n"
-                           "*이 수량으로 주문하지 마세요.* 웹 주문표를 열어 "
-                           "원장 기준 수량을 확인한 뒤 주문하세요.\n"
-                           "━━━━━━━━━━━━━━━\n" + msg)
-                ok, resp = send_telegram(avg_chat_id, avg_token, msg, parse_mode="Markdown")
-                if ok:
-                    print(f"    ✅ [종가평균/{tk}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [종가평균/{tk}] 발송 실패 → {resp}")
-                    fail_count += 1
+                    msg = build_avg_message(res, tk)
+                    # 원장 사용자인데 원장 처리 실패 → 시뮬 값 발송임을 크게 경고
+                    # (실패를 멀쩡한 주문표처럼 보내면 잘못된 수량으로 주문하게 됨)
+                    if shared_gs_url and not _ledger_on:
+                        msg = ("🚨 *원장 접근 실패 — 아래는 시뮬 참고값입니다!*\n"
+                               "*이 수량으로 주문하지 마세요.* 웹 주문표를 열어 "
+                               "원장 기준 수량을 확인한 뒤 주문하세요.\n"
+                               "━━━━━━━━━━━━━━━\n" + msg)
+                    ok, resp = send_telegram(avg_chat_id, avg_token, msg, parse_mode="Markdown")
+                    if ok:
+                        print(f"    ✅ [종가평균/{tk}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [종가평균/{tk}] 발송 실패 → {resp}")
+                        fail_count += 1
 
-                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # 주문 0건이면 NO_ORDER sentinel 자동 작성
-                if shared_gs_url:
-                    _rows = build_avg_order_rows(res)
-                    if _flag_on(user.get("avg_use_tungchigi")) and _rows:
-                        from dss_engine import rows_to_tungchigi_rows
-                        _rows = rows_to_tungchigi_rows(_rows)
-                        _label = f"{_label}(퉁치기)"
-                    _sheet_ok = write_gsheet_with_status(
-                        client, shared_gs_url, _gs_sheet, _rows, _label, status="OK")
-                    if not _sheet_ok:
-                        # 시트에 어제 주문이 남은 채 방치되면 자동매매 봇이
-                        # 낡은 주문을 읽는 사고 발생 → 유저에게 즉시 경고
-                        user_warnings.append(
-                            f"[종가평균/{tk}] 🚨 구글시트 주문표 기록 실패 — 시트에 "
-                            f"어제 주문이 남아있을 수 있습니다. 자동매매 봇 사용 시 "
-                            f"B11 갱신시각을 확인하세요!")
-
-                # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태) ──
-                # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산.
-                # 수량은 오늘 확정된 그대로 불변 (B방식: 오늘 날짜 있으면 skip).
-                if _ws_hist is not None and ok and _ledger_on \
-                        and (res.get("buy_qty", 0) > 0 or res.get("sell_qty", 0) > 0) \
-                        and _today_str_avg not in _hist_existing_dates:
-                    try:
-                        _prow = build_avg_pending_row(
-                            _today_str_avg,
-                            float(res.get("p1", 0)), float(res.get("p2", 0)),
-                            float(res.get("tb", 0)), float(res.get("ts", 0)),
-                            int(res.get("buy_qty", 0)), int(res.get("sell_qty", 0)),
-                            int(res.get("shares", 0)), float(res.get("cash", 0)))
-                        _ws_hist.append_row(
-                            [str(_prow.get(c, "")) for c in AVG_HIST_COLS],
-                            value_input_option="RAW")
-                        print(f"      💾 [종가평균/{tk}] 원장 예정 저장 "
-                              f"(매수 {res.get('buy_qty', 0)}주 / 매도 {res.get('sell_qty', 0)}주)")
-                    except Exception as _hist_err:
-                        print(f"      ⚠️ [종가평균/{tk}] 원장 예정 저장 실패: {_hist_err}")
-        else:
-            print(f"  ⏭️  {username} [종가평균]: 미설정 → 건너뜀")
-            skip_count += 1
-
-        # ── 2. 표준편차매매 발송 ──────────────────────────────
-        sd_chat_id  = str(user.get("sd_tg_chat_id", "")).strip()
-        sd_token    = str(user.get("sd_tg_token",   "")).strip()
-        sd_settings = parse_sd_ticker_settings(user)
-
-        if not ds_only and sd_chat_id and sd_token and sd_settings:
-            print(f"  👤 {username} [표준편차]: {list(sd_settings.keys())} 처리 중...")
-            for tk, cfg in sd_settings.items():
-                k_buy        = float(cfg.get("k_buy",        SD_DEFAULT_K_BUY))
-                k_sell       = float(cfg.get("k_sell",       SD_DEFAULT_K_SELL))
-                sigma_period = int(float(cfg.get("sigma_period", SD_DEFAULT_SIGMA_PERIOD)))
-                sell_ratio   = float(cfg.get("sell_ratio",   SD_DEFAULT_SELL_RATIO))
-                divisions    = int(float(cfg.get("divisions",    SD_DEFAULT_DIVISIONS)))
-                renewal      = int(float(cfg.get("renewal",      SD_DEFAULT_RENEWAL)))
-                pcr          = float(cfg.get("pcr",          1.0))
-                lcr          = float(cfg.get("lcr",          1.0))
-                capital      = float(cfg.get("os_capital",   SD_DEFAULT_CAPITAL))
-                os_start     = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
-                _gs_sheet    = str(cfg.get("gs_sheet", tk)).strip() or tk
-                _label       = f"표준편차/{tk}"
-
-                try:
-                    # 계좌 키는 '티커@계좌명' 형식 허용 (동일 종목 다중 계좌).
-                    # 시세 조회는 심볼만, 원장 시트명(sd_{tk}_매매기록)은 전체 키 사용.
-                    _sd_sym = str(tk).split("@")[0].strip()
-                    r = calc_sd_today_order(
-                        ticker=_sd_sym, os_start=os_start,
-                        k_buy=k_buy, k_sell=k_sell,
-                        sigma_period=sigma_period,
-                        sell_ratio=sell_ratio,
-                        divisions=divisions, renewal=renewal,
-                        capital=capital, pcr=pcr, lcr=lcr,
-                    )
-                    if r:
-                        r["ticker"] = tk   # 메시지 종목 라벨엔 계좌명 포함 전체 키 표시
-                except Exception as e:
-                    print(f"    ❌ [표준편차/{tk}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[표준편차/{tk}] ❌ 주문표 미발송: {e}")
+                    # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                    # 주문 0건이면 NO_ORDER sentinel 자동 작성
                     if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
-                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
-                    continue
+                        _rows = build_avg_order_rows(res)
+                        if _flag_on(user.get("avg_use_tungchigi")) and _rows:
+                            from dss_engine import rows_to_tungchigi_rows
+                            _rows = rows_to_tungchigi_rows(_rows)
+                            _label = f"{_label}(퉁치기)"
+                        _sheet_ok = write_gsheet_with_status(
+                            client, shared_gs_url, _gs_sheet, _rows, _label, status="OK")
+                        if not _sheet_ok:
+                            # 시트에 어제 주문이 남은 채 방치되면 자동매매 봇이
+                            # 낡은 주문을 읽는 사고 발생 → 유저에게 즉시 경고
+                            user_warnings.append(
+                                f"[종가평균/{tk}] 🚨 구글시트 주문표 기록 실패 — 시트에 "
+                                f"어제 주문이 남아있을 수 있습니다. 자동매매 봇 사용 시 "
+                                f"B11 갱신시각을 확인하세요!")
 
-                if not r:
-                    print(f"    ❌ [표준편차/{tk}] 데이터 부족")
-                    fail_count += 1
-                    if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
-                                                  _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
-                _apply_capital_adj(r, cfg)
-
-                # est_buy_qty 재계산 (조정 반영된 total_invest/cash 기준)
-                # 엔진의 est_buy_qty는 시뮬 값 → 조정 없으면 낮게 계산됨
-                try:
-                    _div_r = int(divisions) if divisions > 0 else 1
-                    _daily_inv_r = float(r.get("total_invest", 0)) / _div_r
-                    _avail_r = max(0.0, min(_daily_inv_r, float(r.get("cash", 0))))
-                    _nbl_r = float(r.get("next_buy_loc", 0))
-                    if _nbl_r > 0:
-                        r["est_buy_qty"] = int(math.floor(_avail_r / _nbl_r))
-                except Exception:
-                    pass
-
-                # ══ 원장(매매기록) 기반 주문 계산 — 기록이 진실 ══
-                # 1) 예정 행(종가 빈칸)을 실제 종가로 체결/미체결 정산 (수량 불변, 동시체결)
-                # 2) 정산된 원장 상태(티어/총투자금/보유/현금/누적실현) + 엔진 룰 →
-                #    오늘 주문 수량 계산 (시뮬 재계산 값이 끼어들 틈 없음)
-                _sd_ledger_on = False
-                _ws_hist_sd = None
-                _sd_hist_dates = set()
-                _today_str_sd = datetime.today().strftime("%Y-%m-%d")
-                if shared_gs_url:
-                    try:
-                        from stdev_engine import (
-                            SD_HIST_COLS, settle_sd_pending_rows,
-                            calc_sd_record_state, calc_sd_order_from_state,
-                            build_sd_pending_row)
-                        _sh_sd = _gs_retry(lambda: client.open_by_url(shared_gs_url))
+                    # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태) ──
+                    # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산.
+                    # 수량은 오늘 확정된 그대로 불변 (B방식: 오늘 날짜 있으면 skip).
+                    if _ws_hist is not None and ok and _ledger_on \
+                            and (res.get("buy_qty", 0) > 0 or res.get("sell_qty", 0) > 0) \
+                            and _today_str_avg not in _hist_existing_dates:
                         try:
-                            _ws_hist_sd = _sh_sd.worksheet(f"sd_{tk}_매매기록")
-                        except gspread.exceptions.WorksheetNotFound:
-                            _ws_hist_sd = _sh_sd.add_worksheet(
-                                title=f"sd_{tk}_매매기록", rows=5000, cols=25)
-                            _ws_hist_sd.append_row(SD_HIST_COLS)
-                        _vals_sd = _gs_retry(_ws_hist_sd.get_all_values)
-                        if len(_vals_sd) > 1:
-                            _hdr_sd = _vals_sd[0]
-                            _rows_sd = [dict(zip(_hdr_sd, rw)) for rw in _vals_sd[1:]]
-                            _sd_hist_dates = {str(r0.get("날짜", "")).strip() for r0 in _rows_sd}
-                            # 1) 예정 정산 (오늘 이전분만)
-                            _closes_conf_sd = {d: c for d, c in (r.get("closes") or {}).items()
-                                               if d < _today_str_sd}
-                            _chg_sd = settle_sd_pending_rows(_rows_sd, _closes_conf_sd)
-                            _cend_sd = chr(ord('A') + len(_hdr_sd) - 1)
-                            for _ci in _chg_sd:
-                                _ws_hist_sd.update(
-                                    values=[[str(_rows_sd[_ci].get(c, "")) for c in _hdr_sd]],
-                                    range_name=f"A{_ci + 2}:{_cend_sd}{_ci + 2}",
-                                    value_input_option="RAW")
-                                print(f"      🧾 [표준편차/{tk}] {_rows_sd[_ci].get('날짜')} 정산 → "
-                                      f"매수 {_rows_sd[_ci].get('매수량')} / 매도 {_rows_sd[_ci].get('매도량')}")
-                            # 2) 원장 상태 → 오늘 주문 (엔진 룰)
-                            _prev_sd = sorted([r0 for r0 in _rows_sd
-                                               if str(r0.get("날짜", "")).strip() < _today_str_sd],
-                                              key=lambda r0: str(r0.get("날짜", "")))
-                            _st_sd = calc_sd_record_state(_prev_sd)
-                            if _st_sd:
-                                # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
-                                _extra_sd = _sum_adj_between(cfg, _st_sd["last_date"], _today_str_sd)
-                                _st_sd["cash"] += _extra_sd
-                                _o_sd = calc_sd_order_from_state(
-                                    _st_sd, float(r.get("next_buy_loc", 0)),
-                                    float(r.get("next_sell_loc", 0)),
-                                    divisions, sell_ratio, renewal, pcr, lcr)
-                                if (_st_sd["holdings"] != int(r.get("holdings", 0))
-                                        or _o_sd["buy_qty"] != int(r.get("est_buy_qty", 0))
-                                        or _o_sd["sell_qty"] != int(r.get("est_sell_qty", 0))):
-                                    print(f"      📌 [표준편차/{tk}] 원장 기준: "
-                                          f"보유 {r.get('holdings')}→{_st_sd['holdings']} · "
-                                          f"매수 {r.get('est_buy_qty')}→{_o_sd['buy_qty']} · "
-                                          f"매도 {r.get('est_sell_qty')}→{_o_sd['sell_qty']}")
-                                r["holdings"]     = _st_sd["holdings"]
-                                r["cash"]         = round(_st_sd["cash"], 2)
-                                r["avg_cost"]     = round(_st_sd["avg_cost"], 4) if _st_sd["avg_cost"] > 0 else r.get("avg_cost", 0)
-                                r["total_invest"] = round(_o_sd["total_invest"], 2)
-                                r["next_tier"]    = _o_sd["next_tier"]
-                                r["est_buy_qty"]  = _o_sd["buy_qty"]
-                                r["est_sell_qty"] = _o_sd["sell_qty"]
-                                r["_ledger_cum"]  = _st_sd["cum_realized"]
-                                # 총자산도 원장 기준 (시뮬 final_asset 아님) — 메시지 표시용
-                                r["total_asset"]  = round(
-                                    _st_sd["cash"] + _st_sd["holdings"]
-                                    * float(r.get("last_close", 0)), 2)
-                                _sd_ledger_on = True
-                        else:
-                            _sd_ledger_on = True
-                            print(f"      🆕 [표준편차/{tk}] 원장 신규 시작 (시뮬 상태 시드)")
-                    except Exception as _led_sd_err:
-                        print(f"      ⚠️ [표준편차/{tk}] 원장 처리 실패 (시뮬 값 발송): {_led_sd_err}")
-                        _sd_ledger_on = False
-
-                # 이상치 감지
-                _issues = sanity_check_sd(r, tk)
-                user_warnings.extend([f"[표준편차/{tk}] {m}" for m in _issues])
-
-                msg = build_sd_message(r)
-                # 원장 사용자인데 원장 처리 실패 → 시뮬 값 발송임을 크게 경고
-                # (실패를 멀쩡한 주문표처럼 보내면 잘못된 수량으로 주문하게 됨)
-                if shared_gs_url and not _sd_ledger_on:
-                    msg = ("🚨 <b>원장 접근 실패 — 아래는 시뮬 참고값입니다!</b>\n"
-                           "<b>이 수량으로 주문하지 마세요.</b> 웹 주문표를 열어 "
-                           "원장 기준 수량을 확인한 뒤 주문하세요.\n"
-                           "━━━━━━━━━━━━━━━\n" + msg)
-                ok, resp = send_telegram(sd_chat_id, sd_token, msg, parse_mode="HTML")
-                if ok:
-                    print(f"    ✅ [표준편차/{tk}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [표준편차/{tk}] 발송 실패 → {resp}")
-                    fail_count += 1
-
-                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # 주문 0건이면 NO_ORDER sentinel 자동 작성
-                if shared_gs_url:
-                    _rows = build_sd_order_rows(r)
-                    if _flag_on(user.get("sd_use_tungchigi")) and _rows:
-                        from dss_engine import rows_to_tungchigi_rows
-                        _rows = rows_to_tungchigi_rows(_rows)
-                        _label = f"{_label}(퉁치기)"
-                    _sheet_ok = write_gsheet_with_status(
-                        client, shared_gs_url, _gs_sheet, _rows, _label, status="OK")
-                    if not _sheet_ok:
-                        # 시트에 어제 주문이 남은 채 방치되면 자동매매 봇이
-                        # 낡은 주문을 읽는 사고 발생 → 유저에게 즉시 경고
-                        user_warnings.append(
-                            f"[표준편차/{tk}] 🚨 구글시트 주문표 기록 실패 — 시트에 "
-                            f"어제 주문이 남아있을 수 있습니다. 자동매매 봇 사용 시 "
-                            f"B11 갱신시각을 확인하세요!")
-
-                # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태, 종가 빈칸) ──
-                # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산. 수량 불변 (B방식).
-                if _ws_hist_sd is not None and ok and _sd_ledger_on \
-                        and (r.get("est_buy_qty", 0) > 0 or r.get("est_sell_qty", 0) > 0) \
-                        and _today_str_sd not in _sd_hist_dates:
-                    try:
-                        from stdev_engine import SD_HIST_COLS, build_sd_pending_row
-                        _prow_sd = build_sd_pending_row(
-                            _today_str_sd, int(r.get("next_tier", 1)),
-                            float(r.get("sigma_next", 0)),
-                            float(r.get("next_buy_loc", 0)), float(r.get("next_sell_loc", 0)),
-                            int(r.get("est_buy_qty", 0)), int(r.get("est_sell_qty", 0)),
-                            float(r.get("total_invest", 0)),
-                            int(r.get("holdings", 0)), float(r.get("cash", 0)),
-                            float(r.get("avg_cost", 0)), float(r.get("_ledger_cum", 0)),
-                            float(r.get("last_close", 0)))
-                        _ws_hist_sd.append_row(
-                            [str(_prow_sd.get(c, "")) for c in SD_HIST_COLS],
-                            value_input_option="RAW")
-                        print(f"      💾 [표준편차/{tk}] 원장 예정 저장 "
-                              f"(매수 {r.get('est_buy_qty', 0)} / 매도 {r.get('est_sell_qty', 0)})")
-                    except Exception as _hist_err_sd:
-                        print(f"      ⚠️ [표준편차/{tk}] 원장 예정 저장 실패: {_hist_err_sd}")
-        else:
-            print(f"  ⏭️  {username} [표준편차]: 미설정 → 건너뜀")
-            skip_count += 1
-
-        # ── 3. DSS 동파법 발송 ──────────────────────────────────
-        dss_cfg = parse_dss_config(user)
-        dss_chat_id = str(dss_cfg.get("tg_chat_id", "")).strip()
-        dss_token   = str(dss_cfg.get("tg_token",   "")).strip()
-        dss_accounts = dss_cfg.get("accounts", {})
-        dss_gs_url  = str(dss_cfg.get("gs_url", "")).strip()
-        # 계좌별 워크시트 매핑 (dss_config["gs_sheets"]) · 없으면 레거시 gs_sheet 필드 fallback
-        dss_gs_sheets = dss_cfg.get("gs_sheets", {}) or {}
-        if not isinstance(dss_gs_sheets, dict):
-            dss_gs_sheets = {}
-        dss_gs_sheet_legacy = str(dss_cfg.get("gs_sheet", "")).strip()
-        # 퉁치기 전송 설정 (개인설정 체크박스 — 자전거래 거부 증권사용)
-        dss_use_tung = bool(dss_cfg.get("use_tungchigi_gsheet", False))
-        # 검증용 알고리C 시트 (verify_url + 계좌별 verify_sheets)
-        dss_verify = parse_dss_verify_sheets(dss_cfg)
-
-        if not ds_only and dss_chat_id and dss_token and dss_accounts:
-            print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
-            for acct_name, acct_data in dss_accounts.items():
-                # 계좌별 gs_sheets 매핑 우선 → 레거시 acct_data.gs_sheet → 레거시 dss_config.gs_sheet
-                _gs_sheet_dss = (
-                    str(dss_gs_sheets.get(acct_name, "")).strip()
-                    or str(acct_data.get("gs_sheet", "")).strip()
-                    or dss_gs_sheet_legacy
-                )
-                _label = f"DSS/{acct_name}"
-
-                try:
-                    os_result = calc_dss_order(acct_data)
-                except Exception as e:
-                    print(f"    ❌ [DSS/{acct_name}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[DSS/{acct_name}] ❌ 주문표 미발송: {e}")
-                    if dss_gs_url and _gs_sheet_dss:
-                        write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
-                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
-                    continue
-
-                if not os_result:
-                    print(f"    ❌ [DSS/{acct_name}] 데이터 부족")
-                    fail_count += 1
-                    if dss_gs_url and _gs_sheet_dss:
-                        write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
-                                                  _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                # 이상치 감지 (DSS는 중점 체크)
-                _issues = sanity_check_dss(os_result, acct_name, acct_data)
-                user_warnings.extend([f"[DSS/{acct_name}] {m}" for m in _issues])
-
-                # yfinance 데이터 이상 → 백업 보충 알림 (유저당 1회만)
-                _dw = os_result.get("data_warning")
-                if _dw:
-                    _dw_msg = f"[DSS] {_dw} (주문표는 백업 데이터 반영)"
-                    if _dw_msg not in user_warnings:
-                        user_warnings.append(_dw_msg)
-
-                # 알고리C 원본 시트(BOARD)와 대조 검증 (계좌별 URL)
-                _vinfo = dss_verify.get(acct_name)
-                if _vinfo:
-                    _vissues = verify_dss_against_board(
-                        client, os_result, _vinfo["url"], _vinfo["sheet"], acct_name)
-                    if _vissues:
-                        user_warnings.extend(
-                            [f"[DSS/{acct_name}📋시트대조] {m}" for m in _vissues])
-                        print(f"    ⚠️ [DSS/{acct_name}] 시트 불일치 {len(_vissues)}건")
-
-                msg = build_dss_message(os_result, acct_name)
-                ok, resp = send_telegram(dss_chat_id, dss_token, msg, parse_mode="HTML")
-                if ok:
-                    print(f"    ✅ [DSS/{acct_name}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [DSS/{acct_name}] 발송 실패 → {resp}")
-                    fail_count += 1
-
-                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # 주문 0건(전 슬롯 보유 + 매도목표 없음)이면 NO_ORDER sentinel 자동 작성
-                # 개인설정 '퉁치기 전송' 체크 시 상계 주문으로 전송 (자전거래 회피)
-                if dss_gs_url and _gs_sheet_dss:
-                    if dss_use_tung:
-                        from dss_engine import build_order_rows_tungchigi
-                        _rows = build_order_rows_tungchigi(os_result)
-                        _label_gs = f"{_label}(퉁치기)"
-                    else:
-                        _rows = build_dss_order_rows(os_result)
-                        _label_gs = _label
-                    write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, _rows,
-                                              _label_gs, status="OK")
-        else:
-            print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
-            skip_count += 1
-
-        # ── 4. Sigma매매법 발송 ──────────────────────────────────
-        sg_chat_id  = str(user.get("sigma_tg_chat_id", "")).strip()
-        sg_token    = str(user.get("sigma_tg_token",   "")).strip()
-        sg_settings = parse_sigma_ticker_settings(user)
-
-        if not ds_only and sg_chat_id and sg_token and sg_settings:
-            print(f"  👤 {username} [Sigma]: {list(sg_settings.keys())} 처리 중...")
-            for tk, cfg in sg_settings.items():
-                sigma_period = int(float(cfg.get("sigma_period", SIGMA_DEFAULT_PERIOD)))
-                capital      = float(cfg.get("os_capital",   SIGMA_DEFAULT_CAPITAL))
-                divisions    = int(float(cfg.get("divisions",    SIGMA_DEFAULT_DIVISIONS)))
-                _gs_sheet_sg = str(cfg.get("gs_sheet", f"sigma_{tk}")).strip() or f"sigma_{tk}"
-                _label       = f"Sigma/{tk}"
-
-                try:
-                    od = calc_sigma_order(tk, sigma_period)
-                except Exception as e:
-                    print(f"    ❌ [Sigma/{tk}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[Sigma/{tk}] ❌ 주문표 미발송: {e}")
-                    if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
-                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
-                    continue
-
-                if not od:
-                    print(f"    ❌ [Sigma/{tk}] 데이터 부족")
-                    fail_count += 1
-                    if shared_gs_url:
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
-                                                  _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
-                _apply_capital_adj(od, cfg)
-
-                # 이상치 감지
-                _issues = sanity_check_sigma(od)
-                user_warnings.extend([f"[Sigma/{tk}] {m}" for m in _issues])
-
-                msg = build_sigma_message(od, capital, divisions)
-                ok, resp = send_telegram(sg_chat_id, sg_token, msg, parse_mode="HTML")
-                if ok:
-                    print(f"    ✅ [Sigma/{tk}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [Sigma/{tk}] 발송 실패 → {resp}")
-                    fail_count += 1
-
-                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # Sigma는 1σ/2σ/3σ 참고 포함 항상 3행 → NO_ORDER 거의 없음
-                if shared_gs_url:
-                    amount_per_trade = capital / max(divisions, 1)
-                    qty1 = math.floor(amount_per_trade / od["buy_loc_1"]) if od["buy_loc_1"] > 0 else 0
-                    _rows = build_sigma_order_rows(od, qty1)
-                    write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, _rows,
-                                              _label, status="OK")
-        else:
-            print(f"  ⏭️  {username} [Sigma]: 미설정 → 건너뜀")
-            skip_count += 1
-
-        # ── 5. IUO 매매법 발송 ──────────────────────────────────
-        iuo_cfg = parse_iuo_config(user)
-        iuo_chat_id  = str(iuo_cfg.get("tg_chat_id", "")).strip()
-        iuo_token    = str(iuo_cfg.get("tg_token",   "")).strip()
-        iuo_accounts = iuo_cfg.get("accounts", {})
-        iuo_gs_url   = str(iuo_cfg.get("gs_url", "")).strip()
-
-        if not ds_only and iuo_chat_id and iuo_token and iuo_accounts:
-            print(f"  👤 {username} [IUO]: {list(iuo_accounts.keys())} 처리 중...")
-            for acct_name, acct_data in iuo_accounts.items():
-                # IUO 시트명: iuo_config["gs_sheet_{ticker}"] 플랫 키 우선 → acct 내 → 기본
-                _iuo_tk_hint = str(acct_data.get("ticker", "")).strip()
-                _gs_sheet_iuo = str(
-                    iuo_cfg.get(f"gs_sheet_{_iuo_tk_hint}", "")
-                    or acct_data.get("gs_sheet", "")
-                    or f"iuo_{acct_name}"
-                ).strip()
-                _label = f"IUO/{acct_name}"
-
-                try:
-                    iuo_result = calc_iuo_order(acct_data)
-                except Exception as e:
-                    print(f"    ❌ [IUO/{acct_name}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[IUO/{acct_name}] ❌ 주문표 미발송: {e}")
-                    if iuo_gs_url and _gs_sheet_iuo:
-                        write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
-                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
-                    continue
-
-                if not iuo_result:
-                    print(f"    ❌ [IUO/{acct_name}] 데이터 부족")
-                    fail_count += 1
-                    if iuo_gs_url and _gs_sheet_iuo:
-                        write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
-                                                  _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
-                _apply_capital_adj(iuo_result, acct_data)
-
-                # 이상치 감지
-                _issues = sanity_check_iuo(iuo_result, acct_name, acct_data)
-                user_warnings.extend([f"[IUO/{acct_name}] {m}" for m in _issues])
-
-                msg = build_iuo_message(iuo_result, acct_name)
-                ok, resp = send_telegram(iuo_chat_id, iuo_token, msg, parse_mode="HTML")
-                if ok:
-                    print(f"    ✅ [IUO/{acct_name}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [IUO/{acct_name}] 발송 실패 → {resp}")
-                    fail_count += 1
-
-                # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
-                # iuo_result가 확정되면 ticker 기반 시트명 재계산 (acct_data보다 우선)
-                _iuo_tk = iuo_result.get("ticker", _iuo_tk_hint)
-                _gs_sheet_iuo_final = str(
-                    iuo_cfg.get(f"gs_sheet_{_iuo_tk}", "")
-                    or _gs_sheet_iuo
-                ).strip()
-                # 주문 0건이면 NO_ORDER sentinel 자동 작성
-                if iuo_gs_url and _gs_sheet_iuo_final:
-                    _rows = build_iuo_order_rows(iuo_result)
-                    write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo_final, _rows,
-                                              _label, status="OK")
-        else:
-            print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
-            skip_count += 1
-
-        # ── 6. 듀얼스나이퍼 발송 ─────────────────────────────────
-        ds_cfg = parse_ds_config(user)
-        ds_chat_id = str(ds_cfg.get("tg_chat_id", "")).strip()
-        ds_token   = str(ds_cfg.get("tg_token",   "")).strip()
-        ds_accounts = ds_cfg.get("accounts", {}) or {}
-        ds_gs_url  = str(ds_cfg.get("gs_url", "")).strip()
-
-        if ds_chat_id and ds_token and ds_accounts:
-            print(f"  👤 {username} [DualSniper]: {list(ds_accounts.keys())} 처리 중...")
-            for acct_name, acct_data in ds_accounts.items():
-                _gs_sheet_ds = str(acct_data.get("gs_sheet", "") or acct_name).strip()
-                _label = f"DualSniper/{acct_name}"
-                try:
-                    r_ds = calc_ds_order(client, acct_data)
-                except Exception as e:
-                    print(f"    ❌ [DualSniper/{acct_name}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[DualSniper/{acct_name}] ❌ 주문표 미발송: {e}")
-                    if ds_gs_url and _gs_sheet_ds:
-                        write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
-                                                  _label, status="ERROR", error_reason=f"계산 오류: {e}")
-                    continue
-                if not r_ds:
-                    print(f"    ❌ [DualSniper/{acct_name}] 데이터 부족")
-                    fail_count += 1
-                    if ds_gs_url and _gs_sheet_ds:
-                        write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
-                                                  _label, status="ERROR", error_reason="데이터 부족")
-                    continue
-
-                # 자본 조정 이력 반영 (웹 ordersheet와 동일)
-                _apply_capital_adj(r_ds, acct_data)
-
-                msg = build_ds_message(r_ds, acct_name)
-                ok, resp = send_telegram(ds_chat_id, ds_token, msg, parse_mode="HTML")
-                if ok:
-                    print(f"    ✅ [DualSniper/{acct_name}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [DualSniper/{acct_name}] 발송 실패 → {resp}")
-                    fail_count += 1
-
-                if ds_gs_url and _gs_sheet_ds:
-                    _rows = build_ds_order_rows(r_ds)
-                    if _flag_on(ds_cfg.get("use_tungchigi_gsheet")) and _rows:
-                        from dss_engine import rows_to_tungchigi_rows
-                        _rows = rows_to_tungchigi_rows(_rows)
-                        _label = f"{_label}(퉁치기)"
-                    write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, _rows,
-                                              _label, status="OK")
-        else:
-            print(f"  ⏭️  {username} [DualSniper]: 미설정 → 건너뜀")
-            skip_count += 1
-
-        # ── 6.5 카마릴라 오버레이 발송 (출처 전략 유휴현금 기반) ──
-        cam_accounts = parse_cam_config(user).get("accounts", {}) or {}
-        if cam_accounts:
-            print(f"  👤 {username} [카마릴라]: {list(cam_accounts.keys())} 처리 중...")
-            for c_name, c_acct in cam_accounts.items():
-                c_src = c_acct.get("source_strategy", "")
-                c_sacct = c_acct.get("source_account", "")
-                if not c_src:   # 레거시 source="dss:NAME"
-                    _old = str(c_acct.get("source", ""))
-                    if _old.startswith("dss:"):
-                        c_src, c_sacct = "DSS", _old[4:]
-                _label = f"카마릴라/{c_name}"
-
-                # 텔레그램: 계좌 전용 → 출처 전략
-                c_tok = str(c_acct.get("tg_token", "")).strip()
-                c_chat = str(c_acct.get("tg_chat_id", "")).strip()
-                if not (c_tok and c_chat):
-                    c_tok, c_chat = _cam_src_telegram(user, c_src)
-                if not (c_tok and c_chat):
-                    print(f"    ⏭️  [{_label}] 텔레그램 미설정 → 스킵")
-                    skip_count += 1
-                    continue
-
-                try:
-                    if c_src == "직접 입력":
-                        _src = {"cash": float(c_acct.get("cash", 0)),
-                                "capital": float(c_acct.get("capital", 0)),
-                                "div": int(c_acct.get("div", 7))}
-                    else:
-                        _src = _cam_source_state(user, client, c_src, c_sacct)
-                    if not _src:
-                        raise RuntimeError(f"출처 {c_src}/{c_sacct} 상태 산출 실패")
-                    _ov = calc_cam_overlay(
-                        (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
-                        float(c_acct.get("coef", 0.70)), int(c_acct.get("vol_period", 20)),
-                        float(c_acct.get("vol_target", 0.70)), int(c_acct.get("reserve_tiers", 1)), _src,
-                        vol_mode=c_acct.get("vol_mode", "vol"),
-                        vol3_period=int(c_acct.get("vol3_period", 4)),
-                        vol3_target=float(c_acct.get("vol3_target", 0.030)))
-                    if not _ov:
-                        raise RuntimeError("오버레이 계산 실패(데이터 부족)")
-                except Exception as e:
-                    print(f"    ❌ [{_label}] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[{_label}] ❌ 오버레이 미발송: {e}")
-                    continue
-
-                msg = build_cam_message(c_name, (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
-                                        _ov, c_src, c_sacct)
-                ok, resp = send_telegram(c_chat, c_tok, msg, parse_mode="HTML")
-                if ok:
-                    print(f"    ✅ [{_label}] 발송 성공")
-                    ok_count += 1
-                else:
-                    print(f"    ❌ [{_label}] 발송 실패 → {resp}")
-                    fail_count += 1
-
-        # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
-        if user_warnings:
-            # 텔레그램 채널: 등록된 전략 중 하나 선택
-            # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO
-            _candidates = [
-                (avg_chat_id, avg_token),
-                (sd_chat_id, sd_token),
-                (dss_chat_id, dss_token),
-                (sg_chat_id, sg_token),
-                (iuo_chat_id, iuo_token),
-                (ds_chat_id, ds_token),
-            ]
-            _alert_chat_id = ""
-            _alert_token = ""
-            for _cid, _tok in _candidates:
-                if _cid and _tok:
-                    _alert_chat_id = _cid
-                    _alert_token = _tok
-                    break
-            if _alert_chat_id and _alert_token:
-                _alert_msg = build_admin_alert(username, user_warnings)
-                ok, resp = send_telegram(_alert_chat_id, _alert_token,
-                                         _alert_msg, parse_mode="HTML")
-                if ok:
-                    print(f"  🚨 {username} 이상치 {len(user_warnings)}건 알림 발송 성공")
-                else:
-                    print(f"  ❌ {username} 이상치 알림 발송 실패 → {resp}")
+                            _prow = build_avg_pending_row(
+                                _today_str_avg,
+                                float(res.get("p1", 0)), float(res.get("p2", 0)),
+                                float(res.get("tb", 0)), float(res.get("ts", 0)),
+                                int(res.get("buy_qty", 0)), int(res.get("sell_qty", 0)),
+                                int(res.get("shares", 0)), float(res.get("cash", 0)))
+                            _ws_hist.append_row(
+                                [str(_prow.get(c, "")) for c in AVG_HIST_COLS],
+                                value_input_option="RAW")
+                            print(f"      💾 [종가평균/{tk}] 원장 예정 저장 "
+                                  f"(매수 {res.get('buy_qty', 0)}주 / 매도 {res.get('sell_qty', 0)}주)")
+                        except Exception as _hist_err:
+                            print(f"      ⚠️ [종가평균/{tk}] 원장 예정 저장 실패: {_hist_err}")
             else:
-                print(f"  ⚠️ {username} 이상치 {len(user_warnings)}건이나 텔레그램 채널 없음:")
-                for w in user_warnings:
-                    print(f"     - {w}")
+                print(f"  ⏭️  {username} [종가평균]: 미설정 → 건너뜀")
+                skip_count += 1
 
+            # ── 2. 표준편차매매 발송 ──────────────────────────────
+            sd_chat_id  = str(user.get("sd_tg_chat_id", "")).strip()
+            sd_token    = str(user.get("sd_tg_token",   "")).strip()
+            sd_settings = parse_sd_ticker_settings(user)
+
+            if not ds_only and sd_chat_id and sd_token and sd_settings:
+                print(f"  👤 {username} [표준편차]: {list(sd_settings.keys())} 처리 중...")
+                for tk, cfg in sd_settings.items():
+                    k_buy        = float(cfg.get("k_buy",        SD_DEFAULT_K_BUY))
+                    k_sell       = float(cfg.get("k_sell",       SD_DEFAULT_K_SELL))
+                    sigma_period = int(float(cfg.get("sigma_period", SD_DEFAULT_SIGMA_PERIOD)))
+                    sell_ratio   = float(cfg.get("sell_ratio",   SD_DEFAULT_SELL_RATIO))
+                    divisions    = int(float(cfg.get("divisions",    SD_DEFAULT_DIVISIONS)))
+                    renewal      = int(float(cfg.get("renewal",      SD_DEFAULT_RENEWAL)))
+                    pcr          = float(cfg.get("pcr",          1.0))
+                    lcr          = float(cfg.get("lcr",          1.0))
+                    capital      = float(cfg.get("os_capital",   SD_DEFAULT_CAPITAL))
+                    os_start     = str(cfg.get("os_start", DEFAULT_OS_START)).strip() or DEFAULT_OS_START
+                    _gs_sheet    = str(cfg.get("gs_sheet", tk)).strip() or tk
+                    _label       = f"표준편차/{tk}"
+
+                    try:
+                        # 계좌 키는 '티커@계좌명' 형식 허용 (동일 종목 다중 계좌).
+                        # 시세 조회는 심볼만, 원장 시트명(sd_{tk}_매매기록)은 전체 키 사용.
+                        _sd_sym = str(tk).split("@")[0].strip()
+                        r = calc_sd_today_order(
+                            ticker=_sd_sym, os_start=os_start,
+                            k_buy=k_buy, k_sell=k_sell,
+                            sigma_period=sigma_period,
+                            sell_ratio=sell_ratio,
+                            divisions=divisions, renewal=renewal,
+                            capital=capital, pcr=pcr, lcr=lcr,
+                        )
+                        if r:
+                            r["ticker"] = tk   # 메시지 종목 라벨엔 계좌명 포함 전체 키 표시
+                    except Exception as e:
+                        print(f"    ❌ [표준편차/{tk}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[표준편차/{tk}] ❌ 주문표 미발송: {e}")
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                      _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+
+                    if not r:
+                        print(f"    ❌ [표준편차/{tk}] 데이터 부족")
+                        fail_count += 1
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet, None,
+                                                      _label, status="ERROR", error_reason="데이터 부족")
+                        continue
+
+                    # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                    _apply_capital_adj(r, cfg)
+
+                    # est_buy_qty 재계산 (조정 반영된 total_invest/cash 기준)
+                    # 엔진의 est_buy_qty는 시뮬 값 → 조정 없으면 낮게 계산됨
+                    try:
+                        _div_r = int(divisions) if divisions > 0 else 1
+                        _daily_inv_r = float(r.get("total_invest", 0)) / _div_r
+                        _avail_r = max(0.0, min(_daily_inv_r, float(r.get("cash", 0))))
+                        _nbl_r = float(r.get("next_buy_loc", 0))
+                        if _nbl_r > 0:
+                            r["est_buy_qty"] = int(math.floor(_avail_r / _nbl_r))
+                    except Exception:
+                        pass
+
+                    # ══ 원장(매매기록) 기반 주문 계산 — 기록이 진실 ══
+                    # 1) 예정 행(종가 빈칸)을 실제 종가로 체결/미체결 정산 (수량 불변, 동시체결)
+                    # 2) 정산된 원장 상태(티어/총투자금/보유/현금/누적실현) + 엔진 룰 →
+                    #    오늘 주문 수량 계산 (시뮬 재계산 값이 끼어들 틈 없음)
+                    _sd_ledger_on = False
+                    _ws_hist_sd = None
+                    _sd_hist_dates = set()
+                    _today_str_sd = datetime.today().strftime("%Y-%m-%d")
+                    if shared_gs_url:
+                        try:
+                            from stdev_engine import (
+                                SD_HIST_COLS, settle_sd_pending_rows,
+                                calc_sd_record_state, calc_sd_order_from_state,
+                                build_sd_pending_row)
+                            _sh_sd = _gs_retry(lambda: client.open_by_url(shared_gs_url))
+                            try:
+                                _ws_hist_sd = _sh_sd.worksheet(f"sd_{tk}_매매기록")
+                            except gspread.exceptions.WorksheetNotFound:
+                                _ws_hist_sd = _sh_sd.add_worksheet(
+                                    title=f"sd_{tk}_매매기록", rows=5000, cols=25)
+                                _ws_hist_sd.append_row(SD_HIST_COLS)
+                            _vals_sd = _gs_retry(_ws_hist_sd.get_all_values)
+                            if len(_vals_sd) > 1:
+                                _hdr_sd = _vals_sd[0]
+                                _rows_sd = [dict(zip(_hdr_sd, rw)) for rw in _vals_sd[1:]]
+                                _sd_hist_dates = {str(r0.get("날짜", "")).strip() for r0 in _rows_sd}
+                                # 1) 예정 정산 (오늘 이전분만)
+                                _closes_conf_sd = {d: c for d, c in (r.get("closes") or {}).items()
+                                                   if d < _today_str_sd}
+                                _chg_sd = settle_sd_pending_rows(_rows_sd, _closes_conf_sd)
+                                _cend_sd = chr(ord('A') + len(_hdr_sd) - 1)
+                                for _ci in _chg_sd:
+                                    _ws_hist_sd.update(
+                                        values=[[str(_rows_sd[_ci].get(c, "")) for c in _hdr_sd]],
+                                        range_name=f"A{_ci + 2}:{_cend_sd}{_ci + 2}",
+                                        value_input_option="RAW")
+                                    print(f"      🧾 [표준편차/{tk}] {_rows_sd[_ci].get('날짜')} 정산 → "
+                                          f"매수 {_rows_sd[_ci].get('매수량')} / 매도 {_rows_sd[_ci].get('매도량')}")
+                                # 2) 원장 상태 → 오늘 주문 (엔진 룰)
+                                _prev_sd = sorted([r0 for r0 in _rows_sd
+                                                   if str(r0.get("날짜", "")).strip() < _today_str_sd],
+                                                  key=lambda r0: str(r0.get("날짜", "")))
+                                _st_sd = calc_sd_record_state(_prev_sd)
+                                if _st_sd:
+                                    # 마지막 기록 이후 입출금(자본 조정)만 현금에 반영
+                                    _extra_sd = _sum_adj_between(cfg, _st_sd["last_date"], _today_str_sd)
+                                    _st_sd["cash"] += _extra_sd
+                                    _o_sd = calc_sd_order_from_state(
+                                        _st_sd, float(r.get("next_buy_loc", 0)),
+                                        float(r.get("next_sell_loc", 0)),
+                                        divisions, sell_ratio, renewal, pcr, lcr)
+                                    if (_st_sd["holdings"] != int(r.get("holdings", 0))
+                                            or _o_sd["buy_qty"] != int(r.get("est_buy_qty", 0))
+                                            or _o_sd["sell_qty"] != int(r.get("est_sell_qty", 0))):
+                                        print(f"      📌 [표준편차/{tk}] 원장 기준: "
+                                              f"보유 {r.get('holdings')}→{_st_sd['holdings']} · "
+                                              f"매수 {r.get('est_buy_qty')}→{_o_sd['buy_qty']} · "
+                                              f"매도 {r.get('est_sell_qty')}→{_o_sd['sell_qty']}")
+                                    r["holdings"]     = _st_sd["holdings"]
+                                    r["cash"]         = round(_st_sd["cash"], 2)
+                                    r["avg_cost"]     = round(_st_sd["avg_cost"], 4) if _st_sd["avg_cost"] > 0 else r.get("avg_cost", 0)
+                                    r["total_invest"] = round(_o_sd["total_invest"], 2)
+                                    r["next_tier"]    = _o_sd["next_tier"]
+                                    r["est_buy_qty"]  = _o_sd["buy_qty"]
+                                    r["est_sell_qty"] = _o_sd["sell_qty"]
+                                    r["_ledger_cum"]  = _st_sd["cum_realized"]
+                                    # 총자산도 원장 기준 (시뮬 final_asset 아님) — 메시지 표시용
+                                    r["total_asset"]  = round(
+                                        _st_sd["cash"] + _st_sd["holdings"]
+                                        * float(r.get("last_close", 0)), 2)
+                                    _sd_ledger_on = True
+                            else:
+                                _sd_ledger_on = True
+                                print(f"      🆕 [표준편차/{tk}] 원장 신규 시작 (시뮬 상태 시드)")
+                        except Exception as _led_sd_err:
+                            print(f"      ⚠️ [표준편차/{tk}] 원장 처리 실패 (시뮬 값 발송): {_led_sd_err}")
+                            _sd_ledger_on = False
+
+                    # 이상치 감지
+                    _issues = sanity_check_sd(r, tk)
+                    user_warnings.extend([f"[표준편차/{tk}] {m}" for m in _issues])
+
+                    msg = build_sd_message(r)
+                    # 원장 사용자인데 원장 처리 실패 → 시뮬 값 발송임을 크게 경고
+                    # (실패를 멀쩡한 주문표처럼 보내면 잘못된 수량으로 주문하게 됨)
+                    if shared_gs_url and not _sd_ledger_on:
+                        msg = ("🚨 <b>원장 접근 실패 — 아래는 시뮬 참고값입니다!</b>\n"
+                               "<b>이 수량으로 주문하지 마세요.</b> 웹 주문표를 열어 "
+                               "원장 기준 수량을 확인한 뒤 주문하세요.\n"
+                               "━━━━━━━━━━━━━━━\n" + msg)
+                    ok, resp = send_telegram(sd_chat_id, sd_token, msg, parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [표준편차/{tk}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [표준편차/{tk}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+                    # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                    # 주문 0건이면 NO_ORDER sentinel 자동 작성
+                    if shared_gs_url:
+                        _rows = build_sd_order_rows(r)
+                        if _flag_on(user.get("sd_use_tungchigi")) and _rows:
+                            from dss_engine import rows_to_tungchigi_rows
+                            _rows = rows_to_tungchigi_rows(_rows)
+                            _label = f"{_label}(퉁치기)"
+                        _sheet_ok = write_gsheet_with_status(
+                            client, shared_gs_url, _gs_sheet, _rows, _label, status="OK")
+                        if not _sheet_ok:
+                            # 시트에 어제 주문이 남은 채 방치되면 자동매매 봇이
+                            # 낡은 주문을 읽는 사고 발생 → 유저에게 즉시 경고
+                            user_warnings.append(
+                                f"[표준편차/{tk}] 🚨 구글시트 주문표 기록 실패 — 시트에 "
+                                f"어제 주문이 남아있을 수 있습니다. 자동매매 봇 사용 시 "
+                                f"B11 갱신시각을 확인하세요!")
+
+                    # ── 오늘 주문을 원장에 '예정' 행으로 저장 (체결 전 상태, 종가 빈칸) ──
+                    # 내일 자동발송이 오늘 실제 종가로 체결/미체결 정산. 수량 불변 (B방식).
+                    if _ws_hist_sd is not None and ok and _sd_ledger_on \
+                            and (r.get("est_buy_qty", 0) > 0 or r.get("est_sell_qty", 0) > 0) \
+                            and _today_str_sd not in _sd_hist_dates:
+                        try:
+                            from stdev_engine import SD_HIST_COLS, build_sd_pending_row
+                            _prow_sd = build_sd_pending_row(
+                                _today_str_sd, int(r.get("next_tier", 1)),
+                                float(r.get("sigma_next", 0)),
+                                float(r.get("next_buy_loc", 0)), float(r.get("next_sell_loc", 0)),
+                                int(r.get("est_buy_qty", 0)), int(r.get("est_sell_qty", 0)),
+                                float(r.get("total_invest", 0)),
+                                int(r.get("holdings", 0)), float(r.get("cash", 0)),
+                                float(r.get("avg_cost", 0)), float(r.get("_ledger_cum", 0)),
+                                float(r.get("last_close", 0)))
+                            _ws_hist_sd.append_row(
+                                [str(_prow_sd.get(c, "")) for c in SD_HIST_COLS],
+                                value_input_option="RAW")
+                            print(f"      💾 [표준편차/{tk}] 원장 예정 저장 "
+                                  f"(매수 {r.get('est_buy_qty', 0)} / 매도 {r.get('est_sell_qty', 0)})")
+                        except Exception as _hist_err_sd:
+                            print(f"      ⚠️ [표준편차/{tk}] 원장 예정 저장 실패: {_hist_err_sd}")
+            else:
+                print(f"  ⏭️  {username} [표준편차]: 미설정 → 건너뜀")
+                skip_count += 1
+
+            # ── 3. DSS 동파법 발송 ──────────────────────────────────
+            dss_cfg = parse_dss_config(user)
+            dss_chat_id = str(dss_cfg.get("tg_chat_id", "")).strip()
+            dss_token   = str(dss_cfg.get("tg_token",   "")).strip()
+            dss_accounts = dss_cfg.get("accounts", {})
+            dss_gs_url  = str(dss_cfg.get("gs_url", "")).strip()
+            # 계좌별 워크시트 매핑 (dss_config["gs_sheets"]) · 없으면 레거시 gs_sheet 필드 fallback
+            dss_gs_sheets = dss_cfg.get("gs_sheets", {}) or {}
+            if not isinstance(dss_gs_sheets, dict):
+                dss_gs_sheets = {}
+            dss_gs_sheet_legacy = str(dss_cfg.get("gs_sheet", "")).strip()
+            # 퉁치기 전송 설정 (개인설정 체크박스 — 자전거래 거부 증권사용)
+            dss_use_tung = bool(dss_cfg.get("use_tungchigi_gsheet", False))
+            # 검증용 알고리C 시트 (verify_url + 계좌별 verify_sheets)
+            dss_verify = parse_dss_verify_sheets(dss_cfg)
+
+            if not ds_only and dss_chat_id and dss_token and dss_accounts:
+                print(f"  👤 {username} [DSS]: {list(dss_accounts.keys())} 처리 중...")
+                for acct_name, acct_data in dss_accounts.items():
+                    # 계좌별 gs_sheets 매핑 우선 → 레거시 acct_data.gs_sheet → 레거시 dss_config.gs_sheet
+                    _gs_sheet_dss = (
+                        str(dss_gs_sheets.get(acct_name, "")).strip()
+                        or str(acct_data.get("gs_sheet", "")).strip()
+                        or dss_gs_sheet_legacy
+                    )
+                    _label = f"DSS/{acct_name}"
+
+                    try:
+                        os_result = calc_dss_order(acct_data)
+                    except Exception as e:
+                        print(f"    ❌ [DSS/{acct_name}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[DSS/{acct_name}] ❌ 주문표 미발송: {e}")
+                        if dss_gs_url and _gs_sheet_dss:
+                            write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
+                                                      _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+
+                    if not os_result:
+                        print(f"    ❌ [DSS/{acct_name}] 데이터 부족")
+                        fail_count += 1
+                        if dss_gs_url and _gs_sheet_dss:
+                            write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, None,
+                                                      _label, status="ERROR", error_reason="데이터 부족")
+                        continue
+
+                    # 이상치 감지 (DSS는 중점 체크)
+                    _issues = sanity_check_dss(os_result, acct_name, acct_data)
+                    user_warnings.extend([f"[DSS/{acct_name}] {m}" for m in _issues])
+
+                    # yfinance 데이터 이상 → 백업 보충 알림 (유저당 1회만)
+                    _dw = os_result.get("data_warning")
+                    if _dw:
+                        _dw_msg = f"[DSS] {_dw} (주문표는 백업 데이터 반영)"
+                        if _dw_msg not in user_warnings:
+                            user_warnings.append(_dw_msg)
+
+                    # 알고리C 원본 시트(BOARD)와 대조 검증 (계좌별 URL)
+                    _vinfo = dss_verify.get(acct_name)
+                    if _vinfo:
+                        _vissues = verify_dss_against_board(
+                            client, os_result, _vinfo["url"], _vinfo["sheet"], acct_name)
+                        if _vissues:
+                            user_warnings.extend(
+                                [f"[DSS/{acct_name}📋시트대조] {m}" for m in _vissues])
+                            print(f"    ⚠️ [DSS/{acct_name}] 시트 불일치 {len(_vissues)}건")
+
+                    msg = build_dss_message(os_result, acct_name)
+                    ok, resp = send_telegram(dss_chat_id, dss_token, msg, parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [DSS/{acct_name}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [DSS/{acct_name}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+                    # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                    # 주문 0건(전 슬롯 보유 + 매도목표 없음)이면 NO_ORDER sentinel 자동 작성
+                    # 개인설정 '퉁치기 전송' 체크 시 상계 주문으로 전송 (자전거래 회피)
+                    if dss_gs_url and _gs_sheet_dss:
+                        if dss_use_tung:
+                            from dss_engine import build_order_rows_tungchigi
+                            _rows = build_order_rows_tungchigi(os_result)
+                            _label_gs = f"{_label}(퉁치기)"
+                        else:
+                            _rows = build_dss_order_rows(os_result)
+                            _label_gs = _label
+                        write_gsheet_with_status(client, dss_gs_url, _gs_sheet_dss, _rows,
+                                                  _label_gs, status="OK")
+            else:
+                print(f"  ⏭️  {username} [DSS]: 미설정 → 건너뜀")
+                skip_count += 1
+
+            # ── 4. Sigma매매법 발송 ──────────────────────────────────
+            sg_chat_id  = str(user.get("sigma_tg_chat_id", "")).strip()
+            sg_token    = str(user.get("sigma_tg_token",   "")).strip()
+            sg_settings = parse_sigma_ticker_settings(user)
+
+            if not ds_only and sg_chat_id and sg_token and sg_settings:
+                print(f"  👤 {username} [Sigma]: {list(sg_settings.keys())} 처리 중...")
+                for tk, cfg in sg_settings.items():
+                    sigma_period = int(float(cfg.get("sigma_period", SIGMA_DEFAULT_PERIOD)))
+                    capital      = float(cfg.get("os_capital",   SIGMA_DEFAULT_CAPITAL))
+                    divisions    = int(float(cfg.get("divisions",    SIGMA_DEFAULT_DIVISIONS)))
+                    _gs_sheet_sg = str(cfg.get("gs_sheet", f"sigma_{tk}")).strip() or f"sigma_{tk}"
+                    _label       = f"Sigma/{tk}"
+
+                    try:
+                        od = calc_sigma_order(tk, sigma_period)
+                    except Exception as e:
+                        print(f"    ❌ [Sigma/{tk}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[Sigma/{tk}] ❌ 주문표 미발송: {e}")
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
+                                                      _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+
+                    if not od:
+                        print(f"    ❌ [Sigma/{tk}] 데이터 부족")
+                        fail_count += 1
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, None,
+                                                      _label, status="ERROR", error_reason="데이터 부족")
+                        continue
+
+                    # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                    _apply_capital_adj(od, cfg)
+
+                    # 이상치 감지
+                    _issues = sanity_check_sigma(od)
+                    user_warnings.extend([f"[Sigma/{tk}] {m}" for m in _issues])
+
+                    msg = build_sigma_message(od, capital, divisions)
+                    ok, resp = send_telegram(sg_chat_id, sg_token, msg, parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [Sigma/{tk}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [Sigma/{tk}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+                    # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                    # Sigma는 1σ/2σ/3σ 참고 포함 항상 3행 → NO_ORDER 거의 없음
+                    if shared_gs_url:
+                        amount_per_trade = capital / max(divisions, 1)
+                        qty1 = math.floor(amount_per_trade / od["buy_loc_1"]) if od["buy_loc_1"] > 0 else 0
+                        _rows = build_sigma_order_rows(od, qty1)
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_sg, _rows,
+                                                  _label, status="OK")
+            else:
+                print(f"  ⏭️  {username} [Sigma]: 미설정 → 건너뜀")
+                skip_count += 1
+
+            # ── 5. IUO 매매법 발송 ──────────────────────────────────
+            iuo_cfg = parse_iuo_config(user)
+            iuo_chat_id  = str(iuo_cfg.get("tg_chat_id", "")).strip()
+            iuo_token    = str(iuo_cfg.get("tg_token",   "")).strip()
+            iuo_accounts = iuo_cfg.get("accounts", {})
+            iuo_gs_url   = str(iuo_cfg.get("gs_url", "")).strip()
+
+            if not ds_only and iuo_chat_id and iuo_token and iuo_accounts:
+                print(f"  👤 {username} [IUO]: {list(iuo_accounts.keys())} 처리 중...")
+                for acct_name, acct_data in iuo_accounts.items():
+                    # IUO 시트명: iuo_config["gs_sheet_{ticker}"] 플랫 키 우선 → acct 내 → 기본
+                    _iuo_tk_hint = str(acct_data.get("ticker", "")).strip()
+                    _gs_sheet_iuo = str(
+                        iuo_cfg.get(f"gs_sheet_{_iuo_tk_hint}", "")
+                        or acct_data.get("gs_sheet", "")
+                        or f"iuo_{acct_name}"
+                    ).strip()
+                    _label = f"IUO/{acct_name}"
+
+                    try:
+                        iuo_result = calc_iuo_order(acct_data)
+                    except Exception as e:
+                        print(f"    ❌ [IUO/{acct_name}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[IUO/{acct_name}] ❌ 주문표 미발송: {e}")
+                        if iuo_gs_url and _gs_sheet_iuo:
+                            write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
+                                                      _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+
+                    if not iuo_result:
+                        print(f"    ❌ [IUO/{acct_name}] 데이터 부족")
+                        fail_count += 1
+                        if iuo_gs_url and _gs_sheet_iuo:
+                            write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo, None,
+                                                      _label, status="ERROR", error_reason="데이터 부족")
+                        continue
+
+                    # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                    _apply_capital_adj(iuo_result, acct_data)
+
+                    # 이상치 감지
+                    _issues = sanity_check_iuo(iuo_result, acct_name, acct_data)
+                    user_warnings.extend([f"[IUO/{acct_name}] {m}" for m in _issues])
+
+                    msg = build_iuo_message(iuo_result, acct_name)
+                    ok, resp = send_telegram(iuo_chat_id, iuo_token, msg, parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [IUO/{acct_name}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [IUO/{acct_name}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+                    # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                    # iuo_result가 확정되면 ticker 기반 시트명 재계산 (acct_data보다 우선)
+                    _iuo_tk = iuo_result.get("ticker", _iuo_tk_hint)
+                    _gs_sheet_iuo_final = str(
+                        iuo_cfg.get(f"gs_sheet_{_iuo_tk}", "")
+                        or _gs_sheet_iuo
+                    ).strip()
+                    # 주문 0건이면 NO_ORDER sentinel 자동 작성
+                    if iuo_gs_url and _gs_sheet_iuo_final:
+                        _rows = build_iuo_order_rows(iuo_result)
+                        write_gsheet_with_status(client, iuo_gs_url, _gs_sheet_iuo_final, _rows,
+                                                  _label, status="OK")
+            else:
+                print(f"  ⏭️  {username} [IUO]: 미설정 → 건너뜀")
+                skip_count += 1
+
+            # ── 6. 듀얼스나이퍼 발송 ─────────────────────────────────
+            ds_cfg = parse_ds_config(user)
+            ds_chat_id = str(ds_cfg.get("tg_chat_id", "")).strip()
+            ds_token   = str(ds_cfg.get("tg_token",   "")).strip()
+            ds_accounts = ds_cfg.get("accounts", {}) or {}
+            ds_gs_url  = str(ds_cfg.get("gs_url", "")).strip()
+
+            if ds_chat_id and ds_token and ds_accounts:
+                print(f"  👤 {username} [DualSniper]: {list(ds_accounts.keys())} 처리 중...")
+                for acct_name, acct_data in ds_accounts.items():
+                    _gs_sheet_ds = str(acct_data.get("gs_sheet", "") or acct_name).strip()
+                    _label = f"DualSniper/{acct_name}"
+                    try:
+                        r_ds = calc_ds_order(client, acct_data)
+                    except Exception as e:
+                        print(f"    ❌ [DualSniper/{acct_name}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[DualSniper/{acct_name}] ❌ 주문표 미발송: {e}")
+                        if ds_gs_url and _gs_sheet_ds:
+                            write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
+                                                      _label, status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+                    if not r_ds:
+                        print(f"    ❌ [DualSniper/{acct_name}] 데이터 부족")
+                        fail_count += 1
+                        if ds_gs_url and _gs_sheet_ds:
+                            write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, None,
+                                                      _label, status="ERROR", error_reason="데이터 부족")
+                        continue
+
+                    # 자본 조정 이력 반영 (웹 ordersheet와 동일)
+                    _apply_capital_adj(r_ds, acct_data)
+
+                    msg = build_ds_message(r_ds, acct_name)
+                    ok, resp = send_telegram(ds_chat_id, ds_token, msg, parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [DualSniper/{acct_name}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [DualSniper/{acct_name}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+                    if ds_gs_url and _gs_sheet_ds:
+                        _rows = build_ds_order_rows(r_ds)
+                        if _flag_on(ds_cfg.get("use_tungchigi_gsheet")) and _rows:
+                            from dss_engine import rows_to_tungchigi_rows
+                            _rows = rows_to_tungchigi_rows(_rows)
+                            _label = f"{_label}(퉁치기)"
+                        write_gsheet_with_status(client, ds_gs_url, _gs_sheet_ds, _rows,
+                                                  _label, status="OK")
+            else:
+                print(f"  ⏭️  {username} [DualSniper]: 미설정 → 건너뜀")
+                skip_count += 1
+
+            # ── 6.5 카마릴라 오버레이 발송 (출처 전략 유휴현금 기반) ──
+            cam_accounts = parse_cam_config(user).get("accounts", {}) or {}
+            if cam_accounts:
+                print(f"  👤 {username} [카마릴라]: {list(cam_accounts.keys())} 처리 중...")
+                for c_name, c_acct in cam_accounts.items():
+                    c_src = c_acct.get("source_strategy", "")
+                    c_sacct = c_acct.get("source_account", "")
+                    if not c_src:   # 레거시 source="dss:NAME"
+                        _old = str(c_acct.get("source", ""))
+                        if _old.startswith("dss:"):
+                            c_src, c_sacct = "DSS", _old[4:]
+                    _label = f"카마릴라/{c_name}"
+
+                    # 텔레그램: 계좌 전용 → 출처 전략
+                    c_tok = str(c_acct.get("tg_token", "")).strip()
+                    c_chat = str(c_acct.get("tg_chat_id", "")).strip()
+                    if not (c_tok and c_chat):
+                        c_tok, c_chat = _cam_src_telegram(user, c_src)
+                    if not (c_tok and c_chat):
+                        print(f"    ⏭️  [{_label}] 텔레그램 미설정 → 스킵")
+                        skip_count += 1
+                        continue
+
+                    try:
+                        if c_src == "직접 입력":
+                            _src = {"cash": float(c_acct.get("cash", 0)),
+                                    "capital": float(c_acct.get("capital", 0)),
+                                    "div": int(c_acct.get("div", 7))}
+                        else:
+                            _src = _cam_source_state(user, client, c_src, c_sacct)
+                        if not _src:
+                            raise RuntimeError(f"출처 {c_src}/{c_sacct} 상태 산출 실패")
+                        _ov = calc_cam_overlay(
+                            (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
+                            float(c_acct.get("coef", 0.70)), int(c_acct.get("vol_period", 20)),
+                            float(c_acct.get("vol_target", 0.70)), int(c_acct.get("reserve_tiers", 1)), _src,
+                            vol_mode=c_acct.get("vol_mode", "vol"),
+                            vol3_period=int(c_acct.get("vol3_period", 4)),
+                            vol3_target=float(c_acct.get("vol3_target", 0.030)))
+                        if not _ov:
+                            raise RuntimeError("오버레이 계산 실패(데이터 부족)")
+                    except Exception as e:
+                        print(f"    ❌ [{_label}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[{_label}] ❌ 오버레이 미발송: {e}")
+                        continue
+
+                    msg = build_cam_message(c_name, (c_acct.get("ov_ticker", "SOXL") or "SOXL").upper(),
+                                            _ov, c_src, c_sacct)
+                    ok, resp = send_telegram(c_chat, c_tok, msg, parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [{_label}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [{_label}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+            # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
+            if user_warnings:
+                # 텔레그램 채널: 등록된 전략 중 하나 선택
+                # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO
+                _candidates = [
+                    (avg_chat_id, avg_token),
+                    (sd_chat_id, sd_token),
+                    (dss_chat_id, dss_token),
+                    (sg_chat_id, sg_token),
+                    (iuo_chat_id, iuo_token),
+                    (ds_chat_id, ds_token),
+                ]
+                _alert_chat_id = ""
+                _alert_token = ""
+                for _cid, _tok in _candidates:
+                    if _cid and _tok:
+                        _alert_chat_id = _cid
+                        _alert_token = _tok
+                        break
+                if _alert_chat_id and _alert_token:
+                    _alert_msg = build_admin_alert(username, user_warnings)
+                    ok, resp = send_telegram(_alert_chat_id, _alert_token,
+                                             _alert_msg, parse_mode="HTML")
+                    if ok:
+                        print(f"  🚨 {username} 이상치 {len(user_warnings)}건 알림 발송 성공")
+                    else:
+                        print(f"  ❌ {username} 이상치 알림 발송 실패 → {resp}")
+                else:
+                    print(f"  ⚠️ {username} 이상치 {len(user_warnings)}건이나 텔레그램 채널 없음:")
+                    for w in user_warnings:
+                        print(f"     - {w}")
+
+        except Exception as _user_err:
+            # 한 사용자 처리 중 예외가 나도 나머지 사용자 발송은 계속한다.
+            # (이전: 루프 전체가 죽어 뒤 순번 사용자 전원이 미발송되는 사고)
+            import traceback
+            fail_count += 1
+            print(f"  💥 사용자 '{user.get('username', '?')}' 처리 중 예외 — "
+                  f"다음 사용자로 계속: {_user_err}")
+            traceback.print_exc()
+            continue
     print(f"\n🏁 완료: 성공 {ok_count}건 / 건너뜀 {skip_count}명 / 실패 {fail_count}건")
 
     # 발송 완료 기록 (중복 실행 방지용). 테스트/강제 모드는 기록 안 함.
