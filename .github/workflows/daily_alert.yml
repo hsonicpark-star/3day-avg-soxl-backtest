@@ -42,7 +42,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance gspread google-auth requests pandas
+        # 버전 고정 — 미고정 시 실행 시점의 최신 버전이 설치되어
+        # 새 릴리스가 발송 스크립트를 런타임에 깨뜨릴 수 있음 (검증 환경과 동일 고정)
+        run: pip install yfinance==0.2.66 gspread==6.2.1 google-auth==2.55.2 requests==2.32.5 pandas==2.3.3 numpy==2.3.5
 
       - name: Run daily alert script
         env:
