@@ -107,7 +107,7 @@ def mark_sent_today(client, sheet_url: str):
     try:
         sh = client.open_by_url(sheet_url)
         ws = sh.worksheet(_SEND_LOG_TAB)
-        ws.update("A2:B2", [[today, f"KST {now_kst}"]])
+        ws.update(values=[[today, f"KST {now_kst}"]], range_name="A2:B2")
     except Exception as _e:
         print(f"  ⚠️ 발송 로그 기록 실패: {_e}")
 
