@@ -35,12 +35,29 @@ def _authenticate(username: str, password: str):
 
 
 def _save_user_settings_to_sheet(username: str, settings: dict):
-    """users 시트에서 해당 유저 행의 설정 컬럼 업데이트. 없는 컬럼은 자동 추가."""
+    """users 시트에서 해당 유저 행의 설정 컬럼 업데이트. 없는 컬럼은 자동 추가.
+
+    ⚠️ 새 시트의 기본 크기는 26열(A~Z)이다. 전략이 늘어 설정 키가 26개를 넘으면
+       27번째 열(AA)에 쓰려다 다음 오류로 실패한다:
+         APIError [400]: Range (users!AA1) exceeds grid limits.
+                         Max rows: 1000, max columns: 26
+       → 새 컬럼을 쓰기 전에 부족한 만큼 시트를 넓힌다.
+    """
     ws = _get_users_ws()
     headers = ws.row_values(1)
-    # 없는 컬럼 자동 추가
-    for key in settings:
-        if key not in ("username", "password_hash") and key not in headers:
+
+    new_keys = [k for k in settings
+                if k not in ("username", "password_hash") and k not in headers]
+    if new_keys:
+        need = len(headers) + len(new_keys)
+        try:
+            cur_cols = int(getattr(ws, "col_count", 0) or 0)
+        except Exception:
+            cur_cols = 0
+        if cur_cols and need > cur_cols:
+            # 여유분을 조금 더 두어 매번 확장하지 않도록 한다
+            ws.add_cols(need - cur_cols + 5)
+        for key in new_keys:
             ws.update_cell(1, len(headers) + 1, key)
             headers.append(key)
     for i, row in enumerate(ws.get_all_records(), start=2):
