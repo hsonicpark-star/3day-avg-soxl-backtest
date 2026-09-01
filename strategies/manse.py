@@ -2386,23 +2386,27 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
                     rows = rows_to_tungchigi_rows(rows)
                 gc = _get_gspread_client()
                 _sh = gc.open_by_url(gs_url)
+                ws = None
                 try:
                     ws = _sh.worksheet(sheet_nm)
                 except Exception:
                     # gspread WorksheetNotFound 는 메시지가 탭 이름뿐이라
-                    # 그대로 보여주면 원인을 알 수 없다
+                    # 그대로 보여주면 원인을 알 수 없다.
+                    # ⚠️ 여기서 st.stop() 을 쓰면 뒤쪽 탭(개인 설정 등)이
+                    #    렌더되지 않아 그 탭 위젯 상태가 날아간다 → 쓰지 않는다.
                     st.error(f"⛔ 구글시트에 **'{sheet_nm}'** 탭이 없습니다. "
                              f"시트에서 해당 이름의 탭을 만들어 주세요 "
                              f"(기존 주문 탭을 복사해 이름만 바꾸면 양식 유지). "
                              f"현재 탭 목록: "
                              f"{', '.join(w.title for w in _sh.worksheets())}")
-                    st.stop()
-                ws.batch_clear(["L4:O13"])
-                if rows:
-                    ws.update(range_name="L4", values=rows)
-                ws.update(range_name="B11", values=[[
-                    pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
-                st.success(f"✅ '{sheet_nm}' L4에 {len(rows)}건 전송 완료")
+                if ws is not None:
+                    ws.batch_clear(["L4:O13"])
+                    if rows:
+                        ws.update(range_name="L4", values=rows)
+                    ws.update(range_name="B11", values=[[
+                        pd.Timestamp.now(tz="Asia/Seoul")
+                        .strftime("%Y-%m-%d %H:%M:%S")]])
+                    st.success(f"✅ '{sheet_nm}' L4에 {len(rows)}건 전송 완료")
             except Exception as e:
                 st.error(f"전송 실패: {type(e).__name__}: {e}")
         if not gs_url:
@@ -3444,7 +3448,12 @@ def render_settings_tab():
                 #    → value= 를 없애고, config 값이 바뀐 순간에만 위젯 상태를 갱신.
                 _k = f"gs_sheet_ms_{_an}"
                 _seen = f"_cfgseen_{_k}"
-                if st.session_state.get(_seen) != _ai["gs_sheet"]:
+                # ⚠️ Streamlit 은 '이번 실행에서 렌더되지 않은 위젯'의
+                #    session_state 키를 정리한다. 반면 _cfgseen_ 은 위젯 키가
+                #    아니라 살아남으므로, 마커만 보고 판단하면 위젯이 빈 칸이
+                #    된다 → 키 존재 여부도 함께 확인한다.
+                if (_k not in st.session_state
+                        or st.session_state.get(_seen) != _ai["gs_sheet"]):
                     st.session_state[_seen] = _ai["gs_sheet"]
                     st.session_state[_k] = _ai["gs_sheet"]
                 _sheet_map[_an] = st.text_input(
