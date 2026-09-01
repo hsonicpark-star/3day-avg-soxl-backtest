@@ -43,6 +43,7 @@ from iuo_engine import (
     calc_qqq_weekly_growth, get_trend_buy_ratio,
 )
 from common.config import _IS_CLOUD, _CONFIG, load_config, save_config
+from common.analysis import monthly_perf_table
 
 # ──────────────────────────────────────────────
 # IUO 설정 경로 (로컬: ~/.iuo/)
@@ -1575,28 +1576,8 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
 
     # ── 월별 히트맵 ──
     st.subheader("🗓️ 월별 수익률 히트맵")
-    df["월"] = df["날짜"].dt.month
-    monthly = []
-    prev_asset = cap
-    for ym, grp in df.groupby(df["날짜"].dt.to_period("M")):
-        end_a = float(grp.iloc[-1]["총자산"])
-        ret = (end_a / prev_asset - 1) * 100
-        monthly.append({"Year": ym.year, "Month": ym.month, "Return": round(ret, 2)})
-        prev_asset = end_a
-    if monthly:
-        m_df = pd.DataFrame(monthly)
-        month_kr = {1:"1월",2:"2월",3:"3월",4:"4월",5:"5월",6:"6월",
-                    7:"7월",8:"8월",9:"9월",10:"10월",11:"11월",12:"12월"}
-        pivot = m_df.pivot(index="Year", columns="Month", values="Return")
-        pivot.columns = [month_kr.get(c, c) for c in pivot.columns]
-        fig_heat = px.imshow(
-            pivot, text_auto=".1f", color_continuous_scale="RdYlGn",
-            color_continuous_midpoint=0, aspect="auto",
-            labels={"x": "월", "y": "연도", "color": "수익률(%)"},
-        )
-        fig_heat.update_layout(height=max(320, len(pivot) * 38 + 120),
-                               coloraxis_colorbar=dict(title="수익률(%)"))
-        st.plotly_chart(fig_heat, use_container_width=True)
+    _eq_i = df.set_index(pd.DatetimeIndex(df["날짜"]))["총자산"].astype(float)
+    st.markdown(monthly_perf_table(_eq_i), unsafe_allow_html=True)
     st.divider()
 
     # ── 종합 성과 요약 ──

@@ -31,6 +31,7 @@ from common.auth import _save_user_settings_to_sheet, _hash_password
 from common.data import _download_price, load_price_data, next_trading_date
 from common.telegram import _send_telegram, render_telegram_help_popover
 from common.analysis import recalc_adj_history as _recalc_adj_history
+from common.analysis import monthly_perf_table
 
 # 엔진 함수는 avg_close_engine.py에 분리 (streamlit 의존성 없는 pure 모듈)
 # 자동발송 스크립트(scripts/daily_telegram_alert.py)와 공유 사용
@@ -2320,13 +2321,10 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         st.divider()
 
         st.subheader("🗓️ 월별 수익률 히트맵")
-        _mp = compute_monthly_pivot(_hist, init_cap)
-        _fig_m = px.imshow(_mp, color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
-                           text_auto=".1f", labels={"x": "월", "y": "연도", "color": "수익률(%)"},
-                           aspect="auto")
-        _fig_m.update_layout(height=max(320, len(_mp) * 38 + 120),
-                              coloraxis_colorbar=dict(title="수익률(%)"))
-        st.plotly_chart(_fig_m, use_container_width=True)
+        _eq = _hist.copy()
+        _eq["날짜"] = pd.to_datetime(_eq["날짜"])
+        _eq = _eq.set_index("날짜")["총자산($)"].astype(float)
+        st.markdown(monthly_perf_table(_eq), unsafe_allow_html=True)
         st.divider()
 
         st.subheader("📋 종합 성과 요약")

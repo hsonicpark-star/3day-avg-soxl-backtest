@@ -17,3 +17,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# 로컬 종가 백업 DB 는 커밋 (야후 장애 대비 — Cloud 배포에도 필요)
+!pricedb/
+!pricedb/*.csv

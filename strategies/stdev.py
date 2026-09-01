@@ -30,6 +30,7 @@ from common.analysis import (
     compute_annual_stats, compute_monthly_pivot,
     compute_sharpe_sortino, compute_rolling_perf, compute_bnh,
     recalc_adj_history as _recalc_adj_history,
+    monthly_perf_table,
 )
 from common.auth import _save_user_settings_to_sheet, _hash_password
 
@@ -2338,14 +2339,11 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
     st.divider()
 
     # -- 월별 히트맵 ---
-    st.subheader("월별 수익률 히트맵")
-    _mp4 = compute_monthly_pivot(_hist4, init_cap4)
-    _fig_m4 = px.imshow(_mp4, color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
-                        text_auto=".1f", labels={"x":"월","y":"연도","color":"수익률(%)"},
-                        aspect="auto")
-    _fig_m4.update_layout(height=max(320, len(_mp4)*38+120),
-                           coloraxis_colorbar=dict(title="수익률(%)"))
-    st.plotly_chart(_fig_m4, use_container_width=True)
+    st.subheader("🗓️ 월별 수익률 히트맵")
+    _eq4 = _hist4.copy()
+    _eq4["날짜"] = pd.to_datetime(_eq4["날짜"])
+    _eq4 = _eq4.set_index("날짜")["총자산($)"].astype(float)
+    st.markdown(monthly_perf_table(_eq4), unsafe_allow_html=True)
     st.divider()
 
     # -- 종합 성과 요약 ---

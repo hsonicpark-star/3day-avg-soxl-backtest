@@ -100,3 +100,131 @@ def recalc_adj_history(adj_history, base_capital):
         cumulative += float(item.get("조정금액", 0))
         item["누적자본금"] = float(cumulative)
     return sorted_history, float(cumulative)
+
+
+# ══════════════════════════════════════════════════════════════
+# 월별 수익률 히트맵 (전 전략 공용)
+# ══════════════════════════════════════════════════════════════
+# 각 셀 = 월수익률 / 월 MDD / (선택) 모드 비율,  우측 끝 = YEAR · MDD
+# plotly imshow 대비 장점: 한 셀에 3개 지표를 담고 연간 요약 열을 붙일 수 있다.
+#
+#   from common.analysis import monthly_perf_table
+#   st.markdown(monthly_perf_table(equity_series, mode_series), unsafe_allow_html=True)
+
+_HEAT_BG   = "#2A2E39"
+_HEAT_HEAD = "#1E2229"
+_HEAT_SIDE = "#171A20"
+_HEAT_LINE = "#3A3F4B"
+
+
+def ret_heat_color(v, vmax: float = 12.0) -> str:
+    """수익률(%) → 히트맵 배경색 (음수 빨강 ↔ 0 중립 ↔ 양수 초록)."""
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return _HEAT_BG
+    t = max(-1.0, min(1.0, float(v) / vmax))
+    if t >= 0:
+        r = int(42 + (16 - 42) * t); g = int(46 + (150 - 46) * t); b = int(57 + (70 - 57) * t)
+    else:
+        u = -t
+        r = int(42 + (150 - 42) * u); g = int(46 + (40 - 46) * u); b = int(57 + (60 - 57) * u)
+    return f"rgb({r},{g},{b})"
+
+
+def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
+                       mode_short=None) -> str:
+    """월별 수익률 히트맵 HTML 테이블.
+
+    Args:
+        equity: 총자산 시계열 (pd.Series, DatetimeIndex). 결측 없이 일별 정렬.
+        mode  : 같은 인덱스의 모드/구간 라벨 Series (선택). 주면 셀에 비율 표시.
+        vmax  : 색상 포화 기준 수익률(%) — ±vmax 에서 최대 채도.
+        mode_short: {라벨: 축약문자} dict (선택). 미지정 시 라벨 첫 글자.
+
+    Returns: HTML 문자열 (st.markdown(..., unsafe_allow_html=True) 로 렌더)
+
+    ※ 월수익률의 기준값은 **전월 말 총자산**(그 달 첫 행 직전 값)이다.
+       그 달 첫날 값을 기준으로 하면 월초 갭이 누락되어 월별 누적이
+       연간 수익률과 어긋난다.
+    """
+    eq = pd.Series(equity).dropna()
+    if eq.empty:
+        return "<div>데이터 없음</div>"
+    eq = eq.sort_index()
+    idx = pd.DatetimeIndex(eq.index)
+    md = pd.Series(mode).reindex(eq.index) if mode is not None else None
+
+    def _base_at(pos, fallback):
+        return float(eq.iloc[pos - 1]) if pos > 0 else float(fallback)
+
+    cells, ydata = {}, {}
+    years = sorted(set(idx.year))
+    for y in years:
+        ymask = idx.year == y
+        for m in sorted(set(idx[ymask].month)):
+            sel = ymask & (idx.month == m)
+            g = eq[sel]
+            pos = eq.index.get_loc(g.index[0])
+            base = _base_at(pos, g.iloc[0])
+            ret = (float(g.iloc[-1]) / base - 1) * 100 if base > 0 else 0.0
+            peak = g.cummax()
+            mdd = float((g / peak - 1).min()) * 100
+            mix = ""
+            if md is not None:
+                vc = md[sel].dropna()
+                vc = vc[vc.astype(str) != ""].value_counts()
+                tot = int(vc.sum())
+                if tot:
+                    mix = " / ".join(
+                        f"{(mode_short or {}).get(k, str(k)[:1])}"
+                        f"{int(v) / tot * 100:.0f}%"
+                        for k, v in vc.items())
+            cells[(y, m)] = (ret, mdd, mix)
+        g = eq[ymask]
+        pos = eq.index.get_loc(g.index[0])
+        base = _base_at(pos, g.iloc[0])
+        peak = g.cummax()
+        ydata[y] = ((float(g.iloc[-1]) / base - 1) * 100 if base > 0 else 0.0,
+                    float((g / peak - 1).min()) * 100)
+
+    th = (f"padding:6px 4px;border:1px solid {_HEAT_LINE};background:{_HEAT_HEAD};"
+          "color:#C8CDD6;font-size:0.72em;font-weight:700;text-align:center")
+    h = ['<div style="overflow-x:auto"><table style="border-collapse:collapse;'
+         'width:100%;min-width:1100px;font-family:inherit">',
+         f'<tr><th style="{th}">연도</th>']
+    for m in range(1, 13):
+        h.append(f'<th style="{th}">{m}월</th>')
+    h.append(f'<th style="{th};background:{_HEAT_SIDE}">YEAR</th>')
+    h.append(f'<th style="{th};background:{_HEAT_SIDE}">MDD</th></tr>')
+
+    for y in years:
+        h.append(f'<tr><td style="{th};background:{_HEAT_SIDE}">{y}</td>')
+        for m in range(1, 13):
+            c = cells.get((y, m))
+            if c is None:
+                h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
+                         f'background:{_HEAT_BG};color:#666;text-align:center">-</td>')
+                continue
+            ret, mdd, mix = c
+            sub = (f'<div style="color:#AEB4BF;font-size:0.60em">{mix}</div>'
+                   if mix else "")
+            h.append(
+                f'<td style="padding:5px 4px;border:1px solid {_HEAT_LINE};'
+                f'background:{ret_heat_color(ret, vmax)};text-align:center;'
+                f'line-height:1.35">'
+                f'<div style="color:#fff;font-weight:700;font-size:0.82em">{ret:+.1f}%</div>'
+                f'<div style="color:#D5D9E0;font-size:0.64em">MDD {mdd:.1f}%</div>'
+                f'{sub}</td>')
+        yret, ymdd = ydata[y]
+        yc = "#4ADE80" if yret >= 0 else "#F87171"
+        h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
+                 f'background:{_HEAT_SIDE};color:{yc};font-weight:700;'
+                 f'text-align:center;font-size:0.85em">{yret:+.1f}%</td>')
+        h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
+                 f'background:{_HEAT_SIDE};color:#F87171;font-weight:700;'
+                 f'text-align:center;font-size:0.85em">{ymdd:.1f}%</td></tr>')
+    h.append("</table></div>")
+    legend = ("셀 = 월수익률 / 월 MDD"
+              + (" / 모드 비율" if md is not None else "")
+              + " · 우측 = 연간 수익률 · 연간 MDD")
+    h.append(f'<div style="margin-top:6px;font-size:0.7em;color:#888">{legend}</div>')
+    return "".join(h)

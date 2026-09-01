@@ -12,6 +12,7 @@ Google Sheets users 탭의 모든 사용자에게
   6. 듀얼스나이퍼 (dual_sniper_config 내 tg_chat_id / tg_token + 계좌별 발송)
   7. 카마릴라 오버레이 (cam_config 계좌별 — 출처 전략 유휴현금 기반,
                        텔레그램: 계좌 전용 → 출처 전략 순)
+  8. 만능 스위치  (ms_tg_chat_id / ms_tg_token + manse_config 종목별)
 """
 
 import os, sys, json, math, time, requests
@@ -1543,6 +1544,296 @@ def build_iuo_order_rows(o: dict) -> list:
     return rows
 
 # ══════════════════════════════════════════════════════════════
+# 만능 스위치 (Manse) 관련
+# ══════════════════════════════════════════════════════════════
+# 설정 위치가 다른 전략과 다르다:
+#   · 텔레그램  : users 시트의 ms_tg_chat_id / ms_tg_token (표준편차와 동일 방식)
+#   · 전략 파라미터 : users 시트의 manse_config JSON — {티커: {params, bt_start,
+#                     data_source, gs_sheet}}
+#   · gs_url    : 사용자 레벨 공용 컬럼
+
+def parse_manse_config(user: dict) -> dict:
+    """users 행에서 manse_config JSON 파싱 → {계좌명: 정규화된 설정}.
+
+    웹앱 v2 는 accounts 구조를 쓰고, 초기 버전은 종목을 최상위 키로 저장했다.
+    둘 다 지원하고 아래 공통 스키마로 정규화한다:
+        ticker / params / bt_start / os_capital / data_source /
+        gs_sheet / capital_adj_history
+    """
+    raw = str(user.get("manse_config", "")).strip()
+    if not raw:
+        return {}
+    try:
+        cfg = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(cfg, dict):
+        return {}
+
+    def _norm(name, v):
+        tk = str(v.get("ticker") or name).strip().upper()
+        return {
+            "ticker": tk,
+            "params": v.get("params") or {},
+            "bt_start": str(v.get("os_start") or v.get("bt_start")
+                            or "2011-01-03"),
+            "os_capital": float(v.get("os_capital", 0) or 0),
+            "data_source": str(v.get("data_source", "")),
+            "gs_sheet": str(v.get("gs_sheet") or tk),
+            "capital_adj_history": v.get("capital_adj_history") or [],
+        }
+
+    accounts = cfg.get("accounts")
+    if isinstance(accounts, dict) and accounts:
+        return {k: _norm(k, v) for k, v in accounts.items()
+                if isinstance(v, dict)}
+    # 레거시: 종목이 최상위 키 ('_' 시작 키는 내부용)
+    return {k: _norm(k, v) for k, v in cfg.items()
+            if not str(k).startswith("_") and isinstance(v, dict)
+            and "params" in v}
+
+
+def manse_load_prices(tickers, data_source: str = "", gs_url: str = "",
+                      gc=None) -> dict:
+    """만능 스위치용 가격 로드 (로컬 DB → 야후 → 구글시트 폴백).
+
+    웹앱과 결과를 맞추기 위해 소스 선택을 그대로 따른다.
+      · 로컬 DB 계열 → pricedb.load_prices_resilient
+                       (무조정 로컬 DB + 야후 최신분, 실패 시 구글시트)
+      · 야후 파이낸스 → fetch_prices(auto_adjust=True)  (common.data 와 동일)
+
+    ⚠️ 원본 시트는 무조정 종가 기준이므로 기본값은 로컬 DB 계열이다.
+       (야후 조정종가로 돌리면 과거 구간이 밀려 웹과 수량이 어긋난다.)
+    ⚠️ Actions 러너의 pricedb 는 리포지토리 커밋 상태(정적)이고 파일 쓰기는
+       휘발된다 → 영구 누적은 구글시트(push_to_gsheet)가 담당한다.
+    """
+    from common.pricedb import load_prices_resilient
+
+    use_yahoo_only = str(data_source).startswith("야후")
+    out = {}
+    for tk in tickers:
+        tk = str(tk).strip().upper()
+        if use_yahoo_only:
+            df = fetch_prices(tk, "2009-01-01", auto_adjust=True)
+        else:
+            df = load_prices_resilient(tk, gs_url=gs_url, gc=gc)
+            if df is None or df.empty:
+                df = fetch_prices(tk, "2009-01-01", auto_adjust=True)
+            elif df.attrs.get("source"):
+                print(f"    📂 {tk} 가격 소스: {df.attrs['source']}")
+        if df is None or df.empty:
+            raise RuntimeError(f"⛔ {tk} 가격 데이터를 불러오지 못했습니다.")
+
+        # 최신성 검증 — 마지막 거래일 종가가 없으면 발송 차단
+        try:
+            from dss_engine import _is_us_trading_day
+            _last = pd.Timestamp(df.index[-1]).normalize()
+            _cands = [d for d in pd.bdate_range(_last, datetime.today())
+                      if _is_us_trading_day(d)]
+            _have = {pd.Timestamp(d).normalize() for d in df.index}
+            _holes = [d.strftime("%m/%d") for d in _cands if d not in _have
+                      and d < pd.Timestamp(datetime.today().date())]
+            if _holes:
+                raise RuntimeError(
+                    f"⛔ {tk} 최신 종가 누락({', '.join(_holes[:5])}) — "
+                    f"낡은 데이터로 주문표를 만들지 않습니다.")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        out[tk] = df
+    return out
+
+
+def calc_manse_order(ticker: str, tk_cfg: dict, gs_url: str = "", gc=None):
+    """만능 스위치 다음 거래일 주문 계산.
+
+    웹앱 '오늘의 주문표 → 백테스트 결과 이어받기' 와 동일한 경로:
+    시작일부터 어제까지 백테스트를 돌려 마지막 상태(투자금·예수금·보유 포지션)를
+    복원한 뒤 다음 거래일 주문을 만든다.
+
+    Returns: (plan dict, ManseParams) 또는 (None, None)
+    """
+    from manse_engine import params_from_dict, run_backtest, build_order_plan
+
+    raw_params = tk_cfg.get("params") or {}
+    if not raw_params:
+        return None, None
+    p = params_from_dict(raw_params)
+    p.ticker = str(tk_cfg.get("ticker") or ticker).strip().upper()
+    if float(tk_cfg.get("os_capital", 0) or 0) > 0:
+        p.principal = float(tk_cfg["os_capital"])
+
+    bt_start = str(tk_cfg.get("bt_start", "2011-01-03")).strip() or "2011-01-03"
+    data_source = str(tk_cfg.get("data_source", "")).strip()
+
+    # 자본 조정 이력 → 입출금 (웹 주문표와 동일하게 반영)
+    cash_flows = {}
+    for h in (tk_cfg.get("capital_adj_history") or []):
+        try:
+            cash_flows[pd.Timestamp(h["날짜"]).normalize()] = {
+                "deposit": float(h.get("조정금액", 0))}
+        except Exception:
+            continue
+
+    prices = manse_load_prices(p.needed_tickers(), data_source,
+                               gs_url=gs_url, gc=gc)
+    res = run_backtest(prices, p, start=bt_start,
+                       end=str(datetime.today().date()),
+                       cash_flows=cash_flows)
+    if "error" in res:
+        raise RuntimeError(res["error"])
+
+    plan = build_order_plan(prices, p, bt_result=res)
+    if "error" in plan:
+        raise RuntimeError(plan["error"])
+    plan["_metrics"] = res["metrics"]
+    plan["_prices"] = prices       # 시트 백업 기록에 재사용
+    return plan, p
+
+
+def record_manse_prices(gs_url: str, prices: dict, gc=None) -> dict:
+    """오늘 받은 종가를 사용자 스프레드시트에 B방식으로 누적 (영구 백업).
+
+    클라우드/Actions 는 pricedb 파일이 휘발되므로, 매일 1회 도는 이 크론이
+    구글시트에 종가를 쌓아 두는 역할을 한다. 야후가 막히는 날에는
+    load_prices_resilient 가 이 시트를 읽어 주문을 계속 만들 수 있다.
+    """
+    out = {}
+    if not gs_url or not prices:
+        return out
+    from common.pricedb import push_to_gsheet
+    for tk, df in prices.items():
+        try:
+            out[tk] = push_to_gsheet(gs_url, tk, df, gc=gc)
+        except Exception as e:
+            out[tk] = f"실패: {e}"
+    return out
+
+
+def build_manse_message(plan: dict, p, ticker: str, acct_name: str = "") -> str:
+    """만능 스위치 주문표 텔레그램 메시지 (HTML)."""
+    _head = f"<b>🎛️ 만능 스위치 — {ticker}</b>"
+    if acct_name:
+        _head += f"  [{acct_name}]"
+    lines = [_head,
+             f"주문일: {pd.Timestamp(plan['주문일']).date()}"
+             f" / 모드: <b>{plan['모드'] or '-'}</b>"
+             f" / 티어: {plan.get('티어', '-')}",
+             f"전일({pd.Timestamp(plan['기준일']).date()}) 종가: "
+             f"${plan['전일종가']:,.2f}",
+             ""]
+    if plan.get("1회시드") is not None:
+        lines.append(f"1회 시드: ${plan['1회시드']:,.0f}")
+    lines += [f"투자금(갱신): ${plan['투자금']:,.0f}",
+              f"예수금: ${plan['예수금']:,.0f}", ""]
+
+    orders = plan.get("orders") or []
+    if orders:
+        lines.append("── 주문 ──")
+        for o in orders:
+            icon = "🔵" if "매수" in str(o.get("구분", "")) else "🔴"
+            qty = o.get("수량")
+            lines.append(f" {icon} {o['구분']}: ${float(o['주문가']):,.2f}"
+                         + (f" × {int(qty):,}주" if qty else ""))
+    else:
+        lines.append("오늘 주문 없음")
+
+    if plan.get("message"):
+        lines += ["", plan["message"]]
+    if plan.get("note"):
+        lines.append(f"※ {plan['note']}")
+
+    m = plan.get("_metrics") or {}
+    if m:
+        lines += ["", f"누적: ${m.get('최종자산', 0):,.0f} "
+                      f"(CAGR {m.get('CAGR', 0)*100:.1f}%, "
+                      f"MDD {m.get('MDD', 0)*100:.1f}%)"]
+    return "\n".join(lines)
+
+
+def build_manse_order_rows(plan: dict) -> list:
+    """만능 스위치 주문 rows (구글시트 4열: 구분 / 거래방법 / 가격 / 수량)."""
+    rows = []
+    for o in (plan.get("orders") or []):
+        px, qty = o.get("주문가"), o.get("수량")
+        if px is None or not qty:
+            continue
+        gubun = "매수" if "매수" in str(o.get("구분", "")) else "매도"
+        method = "MOC" if "MOC" in str(o.get("구분", "")) else "LOC"
+        rows.append([gubun, method, round(float(px), 2), int(qty)])
+    return rows
+
+
+def sanity_check_manse(plan: dict, ticker: str, p) -> list:
+    """만능 스위치 이상치 감지.
+
+    ⚠️ 공용 _check_qty_sanity 의 '1만주 초과' 절대 기준은 쓰지 않는다.
+       만능 스위치는 복리로 계좌가 커지면 수십만 주가 정상이므로,
+       수량 대신 **금액이 감당 가능한 범위인지**를 본다.
+    """
+    if not plan:
+        return []
+    issues = []
+    prev_close = plan.get("전일종가", 0)
+    cash = float(plan.get("예수금", 0) or 0)
+    seed = plan.get("1회시드")
+    held_qty = sum(int(h.get("qty") or 0) for h in (plan.get("보유") or []))
+
+    for o in (plan.get("orders") or []):
+        label = str(o.get("구분", "주문"))
+        tier = o.get("티어")
+        if tier is not None and "티어" not in label:
+            label = f"{label}(T{tier})"
+        issues.extend(_check_price_sanity(o.get("주문가"), prev_close, label))
+
+        qty = o.get("수량")
+        try:
+            qty = int(qty) if qty else 0
+        except Exception:
+            issues.append(f"⚠️ {label} 수량 파싱 실패 ({qty})")
+            continue
+        if qty < 0:
+            issues.append(f"⚠️ {label} 수량 음수({qty})")
+            continue
+        amt = qty * float(o.get("주문가") or 0)
+
+        if "매수" in label:
+            if seed is not None and amt > float(seed) * 1.02 + 1:
+                issues.append(f"⚠️ {label} 주문금액 ${amt:,.0f} 이 "
+                              f"1회 시드 ${float(seed):,.0f} 초과")
+            if cash > 0 and amt > cash * 1.02 + 1:
+                issues.append(f"⚠️ {label} 주문금액 ${amt:,.0f} 이 "
+                              f"예수금 ${cash:,.0f} 초과")
+        else:
+            if held_qty and qty > held_qty:
+                issues.append(f"⚠️ {label} 매도수량 {qty:,}주 > "
+                              f"보유 {held_qty:,}주")
+
+    # 모드 미정 — 지표 부족(이평선 워밍업 등) 또는 데이터 이상
+    if not plan.get("모드"):
+        issues.append("⚠️ 모드 미판정 — 지표 데이터 부족 가능성")
+
+    # 예수금 음수
+    try:
+        if float(plan.get("예수금", 0)) < 0:
+            issues.append(f"⚠️ 예수금 음수(${float(plan['예수금']):,.0f})")
+    except Exception:
+        pass
+
+    # 기준일이 너무 오래됨 (연휴 감안 5영업일)
+    try:
+        gap = (pd.Timestamp(datetime.today().date())
+               - pd.Timestamp(plan["기준일"]).normalize()).days
+        if gap > 7:
+            issues.append(f"⚠️ 기준 종가가 {gap}일 전({pd.Timestamp(plan['기준일']).date()}) "
+                          f"— 가격 데이터 갱신 필요")
+    except Exception:
+        pass
+    return issues
+
+
+# ══════════════════════════════════════════════════════════════
 # 듀얼스나이퍼 (Dual Sniper Pro) — SOXL 2모드 그리드
 # ══════════════════════════════════════════════════════════════
 
@@ -2671,10 +2962,83 @@ def main():
                         print(f"    ❌ [{_label}] 발송 실패 → {resp}")
                         fail_count += 1
 
+            # ── 6.8 만능 스위치 발송 ────────────────────────────────
+            ms_chat_id = str(user.get("ms_tg_chat_id", "")).strip()
+            ms_token   = str(user.get("ms_tg_token",   "")).strip()
+            ms_settings = parse_manse_config(user)
+
+            if not ds_only and ms_chat_id and ms_token and ms_settings:
+                print(f"  👤 {username} [만능스위치]: {list(ms_settings.keys())} 처리 중...")
+                for acct_name, tk_cfg in ms_settings.items():
+                    tk = tk_cfg.get("ticker", acct_name)
+                    _gs_sheet_ms = str(tk_cfg.get("gs_sheet", tk)).strip() or tk
+                    _label = (f"만능스위치/{acct_name}"
+                              if acct_name != tk else f"만능스위치/{tk}")
+
+                    try:
+                        ms_plan, ms_p = calc_manse_order(
+                            tk, tk_cfg, gs_url=shared_gs_url, gc=client)
+                    except Exception as e:
+                        print(f"    ❌ [{_label}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[{_label}] ❌ 주문표 미발송: {e}")
+                        if shared_gs_url:
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet_ms,
+                                                      None, _label, status="ERROR",
+                                                      error_reason=f"계산 오류: {e}")
+                        continue
+
+                    if not ms_plan:
+                        print(f"    ⏭️  [{_label}] 저장된 파라미터 없음 → 건너뜀")
+                        skip_count += 1
+                        continue
+
+                    # 이상치 감지
+                    _issues = sanity_check_manse(ms_plan, tk, ms_p)
+                    user_warnings.extend([f"[{_label}] {m}" for m in _issues])
+
+                    msg = build_manse_message(ms_plan, ms_p, tk,
+                                              acct_name if acct_name != tk else "")
+                    ok, resp = send_telegram(ms_chat_id, ms_token, msg,
+                                             parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [{_label}] 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [{_label}] 발송 실패 → {resp}")
+                        fail_count += 1
+
+                    # ── 종가 영구 백업: 오늘 받은 종가를 시트에 누적 ──
+                    # (클라우드/Actions 는 pricedb 파일이 휘발 → 시트가 저장소)
+                    if shared_gs_url and ms_plan.get("_prices"):
+                        try:
+                            _rec = record_manse_prices(
+                                shared_gs_url, ms_plan["_prices"], gc=client)
+                            _added = {k: v for k, v in _rec.items() if v}
+                            if _added:
+                                print(f"    💾 [{_label}] 종가 시트 백업: {_added}")
+                        except Exception as _re:
+                            print(f"    ⚠️ [{_label}] 종가 시트 백업 실패: {_re}")
+
+                    # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
+                    if shared_gs_url:
+                        _rows = build_manse_order_rows(ms_plan)
+                        if _rows and str(user.get("ms_use_tungchigi", "")).strip().lower()                                 in ("true", "1", "y", "yes", "on"):
+                            try:
+                                from dss_engine import rows_to_tungchigi_rows
+                                _rows = rows_to_tungchigi_rows(_rows)
+                            except Exception as _te:
+                                print(f"    ⚠️ [{_label}] 퉁치기 변환 실패 (원 주문 사용): {_te}")
+                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_ms,
+                                                  _rows, _label, status="OK")
+            else:
+                print(f"  ⏭️  {username} [만능스위치]: 미설정 → 건너뜀")
+                skip_count += 1
+
             # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
             if user_warnings:
                 # 텔레그램 채널: 등록된 전략 중 하나 선택
-                # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO
+                # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO → 듀얼 → 만능
                 _candidates = [
                     (avg_chat_id, avg_token),
                     (sd_chat_id, sd_token),
@@ -2682,6 +3046,7 @@ def main():
                     (sg_chat_id, sg_token),
                     (iuo_chat_id, iuo_token),
                     (ds_chat_id, ds_token),
+                    (ms_chat_id, ms_token),
                 ]
                 _alert_chat_id = ""
                 _alert_token = ""

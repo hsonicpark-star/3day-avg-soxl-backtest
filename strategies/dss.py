@@ -263,6 +263,7 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
 
 # ── 자본 조정 이력 유틸 (common/analysis.py 재export) ──
 from common.analysis import recalc_adj_history as _recalc_adj_history
+from common.analysis import monthly_perf_table
 
 
 # ── 일별 매매 히스토리 (B방식: 과거 불변, 새 날짜만 누적) ──
@@ -3319,26 +3320,17 @@ RSI   = RS / (1 + RS) × 100
         bt_monthly['연도'] = bt_monthly['날짜'].dt.year
         bt_monthly['월'] = bt_monthly['날짜'].dt.month
 
-        monthly_rows = []
-        for (year, month), grp in bt_monthly.groupby(['연도', '월']):
-            sv = float(grp.iloc[0]['총자산'])
-            ev = float(grp.iloc[-1]['총자산'])
-            mr = (ev / sv - 1) * 100 if sv > 0 else 0
-            monthly_rows.append({"연도": int(year), "월": int(month), "수익률(%)": round(mr, 2)})
-        df_mon = pd.DataFrame(monthly_rows)
-        if not df_mon.empty:
-            _mp = df_mon.pivot(index="연도", columns="월", values="수익률(%)")
-            _mp.columns = [f"{m}월" for m in _mp.columns]
-            fig_heatmap = px.imshow(
-                _mp, color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
-                text_auto=".1f", labels={"x": "월", "y": "연도", "color": "수익률(%)"},
-                aspect="auto",
-            )
-            fig_heatmap.update_layout(
-                height=max(320, len(_mp) * 38 + 120),
-                coloraxis_colorbar=dict(title="수익률(%)"),
-            )
-            st.plotly_chart(fig_heatmap, use_container_width=True)
+        _eq_h = bt_monthly.set_index(pd.DatetimeIndex(bt_monthly['날짜']))
+        _mode_h = None
+        for _mc in ('모드', 'mode'):
+            if _mc in _eq_h.columns:
+                _mode_h = _eq_h[_mc].astype(str).replace(
+                    {'SF': '안전', 'AG': '공세'})
+                break
+        st.markdown(
+            monthly_perf_table(_eq_h['총자산'].astype(float), _mode_h,
+                               mode_short={'안전': '방', '공세': '공'}),
+            unsafe_allow_html=True)
         st.divider()
 
         # ── 총자산 추이 & 낙폭 차트 ──

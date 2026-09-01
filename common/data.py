@@ -190,6 +190,22 @@ def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
         if _attempt < 2:
             _time.sleep(2 + 2 * _attempt)   # 2초 → 4초 백오프
 
+    # 방법 3: 로컬 종가 DB (pricedb/{TICKER}.csv) — 야후 완전 장애 시 최후 수단.
+    # 과거 확정 종가만 들어 있으므로 백테스트는 가능하나 최신 며칠이 빌 수 있다.
+    try:
+        from common import pricedb
+        db = pricedb.load_prices(ticker)
+        if not db.empty:
+            db = db.copy()
+            db.attrs['data_warning'] = (
+                f"⚠️ 야후 파이낸스에서 {ticker} 데이터를 받지 못해 "
+                f"로컬 백업 DB를 사용합니다 (최종 {db.index[-1].date()}).")
+            db.attrs['data_stale'] = True
+            db.attrs['from_pricedb'] = True
+            return db
+    except Exception:
+        pass
+
     return pd.DataFrame()
 
 

@@ -33,7 +33,8 @@ else:
 
 _SENSITIVE_KEYS    = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet",
                       "sd_tg_chat_id", "sd_tg_token",
-                      "sigma_tg_chat_id", "sigma_tg_token"}
+                      "sigma_tg_chat_id", "sigma_tg_token",
+                      "ms_tg_chat_id", "ms_tg_token"}
 _GLOBAL_CONFIG_KEYS = _SENSITIVE_KEYS  # ticker 네임스페이스가 아닌 루트 키들
 
 def load_config(ticker: str = None):
