@@ -231,6 +231,28 @@ def sync_from_yfinance(ticker: str, start: str = "2009-01-01",
     return save_prices(ticker, fetch_yfinance(ticker, start, end))
 
 
+def expected_latest_close_date():
+    """현 시각 기준 '종가가 확정됐어야 하는' 최신 미국 거래일. 실패 시 None.
+
+    장 마감(16:30 ET) 전이면 직전 거래일이 기준이다. 이 값보다 데이터가
+    뒤처져 있을 때만 '낡음(stale)'으로 판정해야 한다 —
+    야후가 새 행을 주지 않았다는 사실만으로 낡았다고 보면
+    로컬 DB가 이미 최신인 정상 상태를 오탐한다.
+    """
+    try:
+        from backup_close import expected_latest_trading_date
+        return pd.Timestamp(expected_latest_trading_date()).normalize()
+    except Exception:
+        return None
+
+
+def _is_stale(last_date) -> bool:
+    exp = expected_latest_close_date()
+    if exp is None or last_date is None:
+        return False
+    return pd.Timestamp(last_date).normalize() < exp
+
+
 def load_prices_hybrid(ticker: str, start=None, end=None,
                        allow_remote: bool = True) -> pd.DataFrame:
     """로컬 DB(과거 확정 종가) + 야후 최신분 이어붙이기.
@@ -249,11 +271,12 @@ def load_prices_hybrid(ticker: str, start=None, end=None,
     if db.empty:
         out = fetch_yfinance(ticker) if allow_remote else pd.DataFrame()
         out.attrs.update({"from_pricedb": False, "appended": len(out),
-                          "stale": out.empty})
+                          "stale": out.empty or _is_stale(
+                              out.index[-1] if len(out) else None),
+                          "expected": expected_latest_close_date()})
         return _slice(out, start, end)
 
     appended = 0
-    stale = True
     if allow_remote:
         last = db.index[-1]
         tail = fetch_yfinance(
@@ -263,8 +286,11 @@ def load_prices_hybrid(ticker: str, start=None, end=None,
             if not tail.empty:
                 db = pd.concat([db, tail]).sort_index()
                 appended = len(tail)
-        stale = (appended == 0)
-    db.attrs.update({"from_pricedb": True, "appended": appended, "stale": stale})
+    # 야후가 새 행을 안 줬다 ≠ 낡음. 확정 거래일 기준으로만 판정한다.
+    stale = _is_stale(db.index[-1]) if len(db) else True
+    db.attrs.update({"from_pricedb": True, "appended": appended,
+                     "stale": stale,
+                     "expected": expected_latest_close_date()})
     return _slice(db, start, end)
 
 

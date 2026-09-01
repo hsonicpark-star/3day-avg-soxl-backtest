@@ -192,28 +192,36 @@ def _data_health(prices: dict) -> list:
     for tk, df in prices.items():
         if df is None or df.empty:
             msgs.append(f"⛔ **{tk}** 가격 데이터를 불러오지 못했습니다.")
-        elif df.attrs.get("source"):
-            src = df.attrs["source"]
+        elif df.attrs.get("from_pricedb") or df.attrs.get("source"):
             last = df.index[-1].date()
-            if "시트" in src:
-                msgs.append(f"⚠️ **{tk}** 야후 실패 → {src} (최종 {last})")
-            elif df.attrs.get("stale"):
-                msgs.append(f"⚠️ **{tk}** 야후 최신분을 받지 못해 {src} 만 사용 "
-                            f"(최종 {last}) — 주문표가 낡을 수 있습니다.")
-            else:
-                msgs.append(f"ℹ️ **{tk}** {src} (최종 {last})")
-        elif df.attrs.get("from_pricedb"):
+            src = df.attrs.get("source")
             app = df.attrs.get("appended", 0)
-            if app:
-                msgs.append(f"ℹ️ **{tk}** 로컬 DB + 야후 최신 {app}행 "
-                            f"(최종 {df.index[-1].date()})")
-            elif df.attrs.get("stale"):
-                msgs.append(f"⚠️ **{tk}** 야후 최신분을 받지 못해 로컬 DB만 사용 "
-                            f"(최종 {df.index[-1].date()}) — 주문표가 낡을 수 있습니다.")
+            exp = df.attrs.get("expected")
+            if not src:
+                src = f"로컬DB{f' → 야후+{app}행' if app else ''}"
+            if df.attrs.get("stale"):
+                # 확정 거래일보다 뒤처진 '진짜' 낡음
+                _e = f"확정 거래일 {pd.Timestamp(exp).date()} 대비 " if exp is not None else ""
+                msgs.append(f"⚠️ **{tk}** 최신 종가 미확보 — {_e}최종 {last} "
+                            f"({src}). 주문표가 낡을 수 있습니다.")
+            elif "시트" in src:
+                msgs.append(f"⚠️ **{tk}** 야후 실패 → {src} (최종 {last}, 최신)")
             else:
-                msgs.append(f"⚠️ **{tk}** 야후 실패 → 로컬 DB 백업 사용 "
-                            f"(최종 {df.index[-1].date()})")
+                msgs.append(f"ℹ️ **{tk}** {src} — 최종 {last} (최신)")
     return msgs
+
+
+def _show_health(msgs):
+    """데이터 상태 메시지를 심각도에 맞는 위젯으로 표시.
+
+    ⛔ = error, ⚠️ = warning, 그 외(ℹ️) = info.
+    전부 st.warning 으로 그리면 '최신 확보' 같은 정상 안내까지
+    노란 경고 박스로 보여 사용자가 문제로 오인한다.
+    """
+    for m in msgs or []:
+        (st.error if m.startswith("⛔") else
+         st.warning if m.startswith("⚠️") else st.info)(m)
+
 
 
 # ══════════════════════════════════════════════════════════
@@ -548,8 +556,7 @@ def render_backtest_tab(params: dict):
         st.session_state["ms_warn"] = warn
 
     res = st.session_state.get("ms_result")
-    for w in st.session_state.get("ms_warn", []):
-        st.warning(w)
+    _show_health(st.session_state.get("ms_warn", []))
     if not res:
         st.info("⬆️ 사이드바에서 파라미터를 설정한 뒤 **백테스트 실행** 을 눌러주세요.")
         return
@@ -1419,8 +1426,7 @@ def render_optimization_tab(params: dict):
             need.add({"중심주가": p.center_ticker, "이평선": p.ma_ticker,
                       "RSI": p.rsi_ticker}[b].upper())
         prices = _load_prices(sorted(need), params["data_source"])
-        for w in _data_health(prices):
-            st.warning(w)
+        _show_health(_data_health(prices))
 
         s_date, e_date = params["bt_start_date"], params["bt_end_date"]
         bar, txt = st.progress(0.0), st.empty()
@@ -2123,8 +2129,7 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
     if not store:
         st.info("⬆️ **주문표 생성** 을 눌러주세요.")
         return
-    for w in store["warn"]:
-        st.warning(w)
+    _show_health(store["warn"])
     res, plan = store["res"], store["plan"]
     if "error" in plan:
         st.error(plan["error"])
@@ -2561,8 +2566,7 @@ def render_perf_analysis(params: dict):
                 "💡 사이드바 설정값 또는 프리셋 4종을 선택하여 비교 분석할 수 있습니다.")
         return
 
-    for w in st.session_state.get("ms_perf_warn", []):
-        st.warning(w)
+    _show_health(st.session_state.get("ms_perf_warn", []))
     up = st.session_state.get("ms_perf_p", up)
     st.caption(f"📌 분석 기준: **{st.session_state.get('ms_perf_label', '')}**  ·  "
                f"{up.ticker} · 모드 {up.mode_basis}")
