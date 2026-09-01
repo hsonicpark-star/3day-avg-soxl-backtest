@@ -2385,7 +2385,18 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
                     from dss_engine import rows_to_tungchigi_rows
                     rows = rows_to_tungchigi_rows(rows)
                 gc = _get_gspread_client()
-                ws = gc.open_by_url(gs_url).worksheet(sheet_nm)
+                _sh = gc.open_by_url(gs_url)
+                try:
+                    ws = _sh.worksheet(sheet_nm)
+                except Exception:
+                    # gspread WorksheetNotFound 는 메시지가 탭 이름뿐이라
+                    # 그대로 보여주면 원인을 알 수 없다
+                    st.error(f"⛔ 구글시트에 **'{sheet_nm}'** 탭이 없습니다. "
+                             f"시트에서 해당 이름의 탭을 만들어 주세요 "
+                             f"(기존 주문 탭을 복사해 이름만 바꾸면 양식 유지). "
+                             f"현재 탭 목록: "
+                             f"{', '.join(w.title for w in _sh.worksheets())}")
+                    st.stop()
                 ws.batch_clear(["L4:O13"])
                 if rows:
                     ws.update(range_name="L4", values=rows)
@@ -2393,7 +2404,7 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
                     pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
                 st.success(f"✅ '{sheet_nm}' L4에 {len(rows)}건 전송 완료")
             except Exception as e:
-                st.error(f"전송 실패: {e}")
+                st.error(f"전송 실패: {type(e).__name__}: {e}")
         if not gs_url:
             st.caption("⚙️ 개인 설정 탭에서 스프레드시트 URL을 먼저 저장하세요.")
 
@@ -3465,28 +3476,47 @@ def render_settings_tab():
         with bg2:
             if st.button("주문 시트 전송", use_container_width=True,
                          key="gs_send_ms", type="primary"):
-                _params = st.session_state.get("ms_last_params")
+                # ⚠️ 계좌마다 파라미터·시작일·자본·탭이 다르므로 계좌 단위로 보낸다.
+                #    (사이드바 값 하나로 보내면 어느 계좌 주문인지 알 수 없다)
+                _accs_send = (_mcfg.get("accounts") or {})
                 if not gs_url:
                     st.warning("스프레드시트 URL을 먼저 입력해주세요.")
-                elif not _params:
-                    st.warning("사이드바를 한 번 불러온 뒤 다시 시도해주세요.")
+                elif not _accs_send:
+                    st.warning("등록된 계좌가 없습니다. "
+                               "**오늘의 주문표** 탭에서 계좌를 먼저 추가해주세요.")
                 else:
-                    _p = _params["mp"]
-                    _sheet_nm = _sheet_map.get(_p.ticker, _p.ticker)
-                    with st.spinner(f"{_p.ticker} -> '{_sheet_nm}' 전송 중..."):
-                        try:
-                            _pr = _load_prices(_p.needed_tickers(),
-                                               _params["data_source"])
-                            _bt = st.session_state.get("ms_result")
-                            _plan = build_order_plan(
-                                _pr, _p,
-                                bt_result=(_bt if _bt and "error" not in _bt
-                                           else None),
-                                capital=(None if _bt and "error" not in _bt
-                                         else _p.principal))
-                            if "error" in _plan:
-                                st.error(_plan["error"])
-                            else:
+                    _ok_cnt = 0
+                    for _an, _acct in _accs_send.items():
+                        _ap = _acct_params(_acct)
+                        _nm2 = (_sheet_map.get(_an) or _acct.get("gs_sheet")
+                                or _default_sheet_name(_an, _ap.ticker)).strip()
+                        with st.spinner(f"{_an} -> '{_nm2}' 전송 중..."):
+                            try:
+                                _pr = _load_prices(
+                                    _ap.needed_tickers(),
+                                    _acct.get("data_source", DATA_SOURCES[0]))
+                                _adj, _ = recalc_adj_history(
+                                    _acct.get("capital_adj_history", []) or [],
+                                    float(_acct.get("os_capital", 10000.0)))
+                                _cf = {}
+                                for _h in _adj:
+                                    try:
+                                        _cf[pd.Timestamp(_h["날짜"]).normalize()] = {
+                                            "deposit": float(_h.get("조정금액", 0))}
+                                    except Exception:
+                                        pass
+                                _res2 = run_backtest(
+                                    _pr, _ap, start=_acct.get("os_start"),
+                                    end=str(datetime.today().date()),
+                                    cash_flows=_cf)
+                                if "error" in _res2:
+                                    st.error(f"{_an}: {_res2['error']}")
+                                    continue
+                                _plan = build_order_plan(_pr, _ap,
+                                                         bt_result=_res2)
+                                if "error" in _plan:
+                                    st.error(f"{_an}: {_plan['error']}")
+                                    continue
                                 rows = _order_rows(_plan)
                                 if use_tungchigi and rows:
                                     try:
@@ -3498,17 +3528,31 @@ def render_settings_tab():
                                     rows = _rttr(rows)
                                 gc = _get_gspread_client()
                                 sh = gc.open_by_url(gs_url)
-                                ws = sh.worksheet(_sheet_nm)
+                                try:
+                                    ws = sh.worksheet(_nm2)
+                                except Exception:
+                                    # gspread WorksheetNotFound 는 메시지가 탭 이름뿐이라
+                                    # 그대로 보여주면 원인을 알 수 없다
+                                    st.error(
+                                        f"⛔ {_an}: 구글시트에 **'{_nm2}'** 탭이 "
+                                        f"없습니다. 시트에서 해당 이름의 탭을 만들어 "
+                                        f"주세요 (기존 주문 탭을 복사해 이름만 변경하면 "
+                                        f"양식이 유지됩니다).")
+                                    continue
                                 ws.batch_clear(["L4:O13"])
                                 if rows:
                                     ws.update(range_name="L4", values=rows)
                                 ws.update(range_name="B11", values=[[
                                     pd.Timestamp.now(tz="Asia/Seoul")
                                     .strftime("%Y-%m-%d %H:%M:%S")]])
-                                st.success(f"{_p.ticker} -> '{_sheet_nm}' L4에 "
-                                           f"{len(rows)}건 전송 완료!")
-                        except Exception as e:
-                            st.error(f"{_p.ticker} 전송 실패: {e}")
+                                st.success(f"✅ {_an} -> '{_nm2}' L4에 "
+                                           f"{len(rows)}건 전송 완료")
+                                _ok_cnt += 1
+                            except Exception as e:
+                                st.error(f"{_an} 전송 실패: "
+                                         f"{type(e).__name__}: {e}")
+                    if _ok_cnt:
+                        st.caption(f"총 {_ok_cnt}/{len(_accs_send)} 계좌 전송 완료")
 
         with bg3:
             if st.button("저장하기 ", use_container_width=True, key="gs_save_ms",
