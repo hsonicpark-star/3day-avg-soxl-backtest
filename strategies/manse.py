@@ -3595,15 +3595,18 @@ def render_settings_tab():
 
     # ══ 전략 파라미터 저장 / 백업 ════════════════════════════
     with st.container(border=True):
-        st.markdown("#### 전략 파라미터")
-        st.caption("사이드바의 현재 설정을 종목별로 저장합니다. "
-                   "다음 접속 시 자동으로 불러옵니다.")
+        st.markdown("#### 🧭 사이드바 설정 (백테스트용)")
+        st.info("이 설정은 **사이드바 기본값**입니다 — 백테스트 · 최적화 · 성과 분석에만 "
+                "쓰입니다.\n\n"
+                "실제 주문표와 자동 발송은 **오늘의 주문표 탭의 계좌**가 자기 "
+                "파라미터를 따로 들고 있으므로, 여기 저장해도 주문에는 영향이 없습니다.")
         _params = st.session_state.get("ms_last_params")
-        pc1, pc2, pc3 = st.columns(3)
         if _params:
             _p = _params["mp"]
-            with pc1:
-                if st.button(f"{_p.ticker} 설정 저장", use_container_width=True,
+            _c1, _c2 = st.columns([1, 2])
+            with _c1:
+                if st.button(f"💾 {_p.ticker} 사이드바 설정 저장",
+                             use_container_width=True,
                              key="ms_param_save", type="primary"):
                     _mcfg.setdefault(_p.ticker, {}).update({
                         "params": params_to_dict(_p),
@@ -3611,37 +3614,103 @@ def render_settings_tab():
                         "bt_start": str(_params["bt_start_date"]),
                     })
                     _save_cfg(_mcfg)
-                    st.success(f"{_p.ticker} 설정을 저장했습니다.")
+                    st.success(f"{_p.ticker} 사이드바 설정을 저장했습니다. "
+                               f"다음 접속 시 자동으로 불러옵니다.")
+            _c2.caption(
+                f"현재 사이드바: {_p.mode_basis} 기준 · "
+                f"복리 {_p.profit_comp:.0%}/{_p.loss_comp:.0%} · "
+                f"기간 {_params['bt_start_date']} ~ {_params['bt_end_date']} · "
+                f"원금 ${_p.principal:,.0f}")
+            _saved_tks = [k for k, v in _mcfg.items()
+                          if not str(k).startswith("_") and k != "accounts"
+                          and isinstance(v, dict) and "params" in v]
+            if _saved_tks:
+                st.caption("저장된 종목: " + ", ".join(sorted(_saved_tks)))
         else:
-            pc1.info("사이드바 렌더링 후 저장할 수 있습니다.")
-        with pc2:
+            st.info("사이드바를 한 번 불러온 뒤 저장할 수 있습니다.")
+
+    st.write("")
+
+    # ══ 백업 / 복원 ══════════════════════════════════════════
+    with st.container(border=True):
+        st.markdown("#### 💾 전체 설정 백업 / 복원")
+        st.caption("**계좌 정보(파라미터 · 시작일 · 자본 · 자본조정 이력 · 시트 탭 이름)와 "
+                   "사이드바 설정이 모두 포함**됩니다. "
+                   "클라우드는 파일시스템이 임시라, 내려받은 파일이 확실한 사본입니다.")
+        _n_acc = len(_mcfg.get("accounts") or {})
+        _b1, _b2 = st.columns(2)
+        with _b1:
             st.download_button(
-                "설정 JSON 내보내기",
+                f"⬇️ 설정 JSON 내보내기 (계좌 {_n_acc}개)",
                 json.dumps(_mcfg, ensure_ascii=False, indent=2).encode("utf-8"),
-                file_name="manse_config.json", mime="application/json",
-                use_container_width=True, key="ms_cfg_dl")
-        with pc3:
-            if st.button("가격 캐시 비우기", use_container_width=True,
+                file_name=f"manse_config_{datetime.today().strftime('%Y%m%d')}.json",
+                mime="application/json", use_container_width=True,
+                key="ms_cfg_dl", type="primary")
+        _b2.caption("정기적으로 받아두시면 사고 시 그대로 되살릴 수 있습니다.")
+
+        up = st.file_uploader("설정 JSON 복원", type=["json"], key="ms_cfg_up")
+        if up is not None:
+            try:
+                _incoming = json.loads(up.getvalue().decode("utf-8"))
+                _in_acc = list((_incoming.get("accounts") or {}).keys())
+                st.warning(f"⚠️ 복원하면 **현재 설정 전체를 덮어씁니다.** "
+                           f"(현재 계좌 {_n_acc}개 → 파일의 계좌 {len(_in_acc)}개"
+                           + (f": {', '.join(_in_acc)}" if _in_acc else "") + ")")
+                if st.button("🔁 덮어쓰고 복원", key="ms_cfg_restore"):
+                    _save_cfg(_incoming)
+                    st.success("복원 완료 — 새로고침하세요.")
+            except Exception as e:
+                st.error(f"파일을 읽을 수 없습니다: {e}")
+
+    st.write("")
+
+    # ══ 데이터 캐시 ══════════════════════════════════════════
+    with st.container(border=True):
+        st.markdown("#### 🧹 데이터 캐시")
+        st.caption("가격 데이터는 30분간 캐시됩니다. 최신 종가를 강제로 다시 받거나, "
+                   "백테스트·최적화 결과를 초기화할 때 사용하세요.")
+        _k1, _k2 = st.columns([1, 2])
+        with _k1:
+            if st.button("🧹 가격 캐시 비우기", use_container_width=True,
                          key="ms_clear"):
                 _load_one.clear()
                 for k in ("ms_result", "ms_plan", "ms_opt_res",
-                          "ms_opt_samples", "ms_opt_prices"):
+                          "ms_opt_samples", "ms_opt_prices", "ms_perf_res",
+                          "ms_rs_res"):
                     st.session_state.pop(k, None)
-                st.success("캐시를 비웠습니다.")
+                st.success("캐시를 비웠습니다. 다시 실행하면 새 데이터를 받습니다.")
+        _k2.caption("설정·계좌는 지워지지 않습니다. 캐시된 가격과 실행 결과만 비웁니다.")
 
-        up = st.file_uploader("설정 JSON 복원", type=["json"], key="ms_cfg_up")
-        if up is not None and st.button("복원", key="ms_cfg_restore"):
-            try:
-                _save_cfg(json.loads(up.getvalue().decode("utf-8")))
-                st.success("복원 완료 -- 새로고침하세요.")
-            except Exception as e:
-                st.error(f"복원 실패: {e}")
+    st.write("")
 
-        _acc_now = _ms_accounts()
-        if _acc_now:
-            st.caption("등록된 계좌: " + ", ".join(
-                f"{n}({v['ticker']} → {v['gs_sheet']})"
-                for n, v in _acc_now.items()))
+    # ══ 등록된 계좌 요약 ═════════════════════════════════════
+    with st.container(border=True):
+        st.markdown("#### 📊 등록된 계좌")
+        st.caption("계좌 추가·수정·삭제는 **오늘의 주문표** 탭에서 합니다.")
+        _accs_full = _mcfg.get("accounts") or {}
+        if _accs_full:
+            _rows = []
+            for _n, _a in _accs_full.items():
+                _ap = _acct_params(_a)
+                _rows.append({
+                    "계좌": _n, "종목": _ap.ticker, "모드": _ap.mode_basis,
+                    "프리셋": _match_preset(_ap) or "커스텀",
+                    "시작일": str(_a.get("os_start", "")),
+                    "시작자본": float(_a.get("os_capital", 0) or 0),
+                    "시트 탭": (_a.get("gs_sheet")
+                              or _default_sheet_name(_n, _ap.ticker)),
+                })
+            _adf = pd.DataFrame(_rows)
+            st.dataframe(_adf.style.format({"시작자본": "${:,.0f}"}),
+                         use_container_width=True, hide_index=True)
+            _tabs = [r["시트 탭"] for _rr, r in enumerate(_rows)]
+            _dupt = {t for t in _tabs if _tabs.count(t) > 1}
+            if _dupt:
+                st.error(f"⛔ 시트 탭 중복: **{', '.join(sorted(_dupt))}** — "
+                         f"해당 계좌의 주문이 서로 덮어써집니다.")
+        else:
+            st.info("등록된 계좌가 없습니다. "
+                    "**오늘의 주문표** 탭에서 계좌를 추가해주세요.")
 
     st.write("")
 
