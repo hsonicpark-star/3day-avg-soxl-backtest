@@ -3428,9 +3428,16 @@ def render_settings_tab():
             st.caption("계좌마다 주문을 기록할 구글시트 탭(시트) 이름입니다. "
                        "**계좌끼리 겹치면 안 됩니다.**")
             for _an, _ai in _accts.items():
+                # ⚠️ value= 와 key= 를 함께 쓰면 session_state 가 우선이라
+                #    계좌 설정에서 바꾼 값이 여기 반영되지 않을 수 있다.
+                #    → value= 를 없애고, config 값이 바뀐 순간에만 위젯 상태를 갱신.
+                _k = f"gs_sheet_ms_{_an}"
+                _seen = f"_cfgseen_{_k}"
+                if st.session_state.get(_seen) != _ai["gs_sheet"]:
+                    st.session_state[_seen] = _ai["gs_sheet"]
+                    st.session_state[_k] = _ai["gs_sheet"]
                 _sheet_map[_an] = st.text_input(
-                    f"{_an} ({_ai['ticker']}) 탭 이름", value=_ai["gs_sheet"],
-                    key=f"gs_sheet_ms_{_an}")
+                    f"{_an} ({_ai['ticker']}) 탭 이름", key=_k)
             _vals = [v.strip() for v in _sheet_map.values() if v.strip()]
             _dup = {v for v in _vals if _vals.count(v) > 1}
             if _dup:
