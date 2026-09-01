@@ -53,6 +53,24 @@ from common.auth import render_login_gate, _cookie_mgr
 if _IS_CLOUD:
     render_login_gate()
 
+# ── common 모듈 최신화 (배포 직후 ImportError 방지) ──────────
+# Streamlit Cloud 는 새 커밋을 받아도 프로세스를 유지한 채 스크립트만 다시
+# 실행하는 경우가 있다. 이때 아래의 importlib.reload(strategy) 는 전략 모듈만
+# 새로 읽고 common/* 은 sys.modules 에 남아 있던 '옛 모듈 객체'를 그대로 쓴다.
+#   → 전략이 common 에 새로 추가된 심볼을 import 하면
+#     ImportError: cannot import name ... from 'common.analysis' 로 죽는다.
+#     (2026-09-01 monthly_perf_table 추가 시 실제 발생)
+# 부작용 없는 순수 함수 모듈만 먼저 reload 해 둔다.
+#   · analysis/pricedb : 모듈 레벨 상태·캐시 데코레이터 없음 → 안전
+#   · config/auth      : _IS_CLOUD·세션 의존 → reload 하지 않는다
+import importlib as _importlib
+
+for _cm in ("common.analysis", "common.pricedb", "common.telegram"):
+    try:
+        _importlib.reload(__import__(_cm, fromlist=["*"]))
+    except Exception:
+        pass   # 최초 실행(아직 import 전)이면 그냥 통과
+
 # ── 전략 모듈 import ─────────────────────────────────────────
 try:
     from strategies import avg_close, stdev, sigma
