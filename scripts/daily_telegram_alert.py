@@ -1734,8 +1734,16 @@ def build_manse_message(plan: dict, p, ticker: str, acct_name: str = "") -> str:
         for o in orders:
             icon = "🔵" if "매수" in str(o.get("구분", "")) else "🔴"
             qty = o.get("수량")
-            lines.append(f" {icon} {o['구분']}: ${float(o['주문가']):,.2f}"
-                         + (f" × {int(qty):,}주" if qty else ""))
+            px = o.get("주문가")
+            # MOC 는 지정가가 없다 → 시장가 표기 + 목표가는 참고로
+            if px is None:
+                _tgt = o.get("매도목표가")
+                lines.append(f" {icon} {o['구분']}: 시장가(MOC)"
+                             + (f" × {int(qty):,}주" if qty else "")
+                             + (f"  [목표가 ${float(_tgt):,.2f}]" if _tgt else ""))
+            else:
+                lines.append(f" {icon} {o['구분']}: ${float(px):,.2f}"
+                             + (f" × {int(qty):,}주" if qty else ""))
     else:
         lines.append("오늘 주문 없음")
 
@@ -1757,11 +1765,15 @@ def build_manse_order_rows(plan: dict) -> list:
     rows = []
     for o in (plan.get("orders") or []):
         px, qty = o.get("주문가"), o.get("수량")
-        if px is None or not qty:
+        if not qty:
             continue
         gubun = "매수" if "매수" in str(o.get("구분", "")) else "매도"
         method = "MOC" if "MOC" in str(o.get("구분", "")) else "LOC"
-        rows.append([gubun, method, round(float(px), 2), int(qty)])
+        # MOC 는 가격 칸을 비운다 (자동매매 프로그램이 시장가로 인식)
+        if method == "MOC":
+            rows.append([gubun, "MOC", "", int(qty)])
+        elif px is not None:
+            rows.append([gubun, "LOC", round(float(px), 2), int(qty)])
     return rows
 
 
@@ -1785,7 +1797,8 @@ def sanity_check_manse(plan: dict, ticker: str, p) -> list:
         tier = o.get("티어")
         if tier is not None and "티어" not in label:
             label = f"{label}(T{tier})"
-        issues.extend(_check_price_sanity(o.get("주문가"), prev_close, label))
+        if o.get("주문가") is not None:      # MOC 는 지정가가 없다
+            issues.extend(_check_price_sanity(o.get("주문가"), prev_close, label))
 
         qty = o.get("수량")
         try:
@@ -1796,7 +1809,11 @@ def sanity_check_manse(plan: dict, ticker: str, p) -> list:
         if qty < 0:
             issues.append(f"⚠️ {label} 수량 음수({qty})")
             continue
-        amt = qty * float(o.get("주문가") or 0)
+        # MOC 는 체결가를 알 수 없으므로 매도목표가(없으면 전일종가)로 근사
+        _px = o.get("주문가")
+        if _px is None:
+            _px = o.get("매도목표가") or prev_close
+        amt = qty * float(_px or 0)
 
         if "매수" in label:
             if seed is not None and amt > float(seed) * 1.02 + 1:

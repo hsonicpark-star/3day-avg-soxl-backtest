@@ -1759,6 +1759,20 @@ def _acct_params(acct: dict) -> ManseParams:
     return p
 
 
+def _sell_card_sub(sells: list) -> str:
+    """매도 주문 카드 부제 — MOC 건수와 LOC 최저가를 함께 표기."""
+    if not sells:
+        return ""
+    moc = [o for o in sells if o.get("주문가") is None]
+    loc = [o for o in sells if o.get("주문가") is not None]
+    parts = []
+    if moc:
+        parts.append(f"MOC {len(moc)}건")
+    if loc:
+        parts.append(f"LOC 최저 ${min(o['주문가'] for o in loc):,.2f}")
+    return " · ".join(parts)
+
+
 def _order_text(plan: dict, p: ManseParams, acct_name: str = "") -> str:
     head = f"<b>🎛️ 만능 스위치 — {p.ticker}</b>"
     if acct_name:
@@ -1777,8 +1791,16 @@ def _order_text(plan: dict, p: ManseParams, acct_name: str = "") -> str:
         for o in plan["orders"]:
             icon = "🔵" if "매수" in str(o.get("구분", "")) else "🔴"
             q = o.get("수량")
-            lines.append(f" {icon} {o['구분']}: ${float(o['주문가']):,.2f}"
-                         + (f" × {int(q):,}주" if q else ""))
+            px = o.get("주문가")
+            # MOC 는 지정가가 없다 → 시장가로 표기하고 목표가는 참고로 덧붙임
+            if px is None:
+                _tgt = o.get("매도목표가")
+                lines.append(f" {icon} {o['구분']}: 시장가(MOC)"
+                             + (f" × {int(q):,}주" if q else "")
+                             + (f"  [목표가 ${float(_tgt):,.2f}]" if _tgt else ""))
+            else:
+                lines.append(f" {icon} {o['구분']}: ${float(px):,.2f}"
+                             + (f" × {int(q):,}주" if q else ""))
     else:
         lines.append("오늘 주문 없음")
     if plan.get("message"):
@@ -1793,11 +1815,15 @@ def _order_rows(plan: dict) -> list:
     rows = []
     for o in plan.get("orders", []):
         px, qty = o.get("주문가"), o.get("수량")
-        if px is None or not qty:
+        if not qty:
             continue
         gubun = "매수" if "매수" in str(o.get("구분", "")) else "매도"
         method = "MOC" if "MOC" in str(o.get("구분", "")) else "LOC"
-        rows.append([gubun, method, round(float(px), 2), int(qty)])
+        # MOC 는 가격 칸을 비운다 (자동매매 프로그램이 시장가로 인식)
+        if method == "MOC":
+            rows.append([gubun, "MOC", "", int(qty)])
+        elif px is not None:
+            rows.append([gubun, "LOC", round(float(px), 2), int(qty)])
     return rows
 
 
@@ -2262,8 +2288,7 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
                  if _buy else "")},
         {"label": "매도 주문", "value": f"{len(_sell)}건",
          "fg": (_NEG if _sell else _DIM),
-         "sub": (f"최저 ${min(o['주문가'] for o in _sell):,.2f}"
-                 if _sell else "")},
+         "sub": _sell_card_sub(_sell)},
     ])
     if plan.get("message"):
         st.info(plan["message"])
@@ -2271,8 +2296,11 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
         st.caption(f"※ {plan['note']}")
     if plan.get("orders"):
         odf = pd.DataFrame(plan["orders"])
-        st.dataframe(odf.style.format({"주문가": "${:,.2f}", "금액": "${:,.0f}"},
-                                      na_rep="-"),
+        if "주문가" in odf.columns:
+            odf["주문가"] = odf["주문가"].map(
+                lambda v: "시장가(MOC)" if pd.isna(v) else f"${float(v):,.2f}")
+        st.dataframe(odf.style.format({"금액": "${:,.0f}",
+                                       "매도목표가": "${:,.2f}"}, na_rep="-"),
                      use_container_width=True, hide_index=True)
     else:
         st.warning("다음 거래일 주문 없음")

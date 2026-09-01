@@ -533,7 +533,12 @@ def run_backtest(prices: dict, p: ManseParams, start=None, end=None,
                 "buy_amt": buy_amt, "buy_fee": buy_fee,
                 "sell_target": sell_target,
                 "stop_i": stop_i,
-                "stop_date": dates[stop_i] if stop_i < n else None,
+                # 손절일이 데이터 끝을 넘어가도 날짜를 계산해 둔다.
+                # None 으로 두면 주문표에서 MOC 청산 판정이 실패한다
+                # (마지막 날 매수 + 손절일수 1 → 다음 거래일이 곧 손절일).
+                "stop_date": (dates[stop_i] if stop_i < n
+                              else _extend_trading_day(dates[-1],
+                                                       stop_i - (n - 1))),
                 "sell_i": sell_i,
                 "sell_date": dates[sell_i] if sell_i is not None else None,
                 "sell_px": float(closes[sell_i]) if sell_i is not None else None,
@@ -741,6 +746,14 @@ def _calc_breakdown(trades: pd.DataFrame):
 # ══════════════════════════════════════════════════════════
 # 오늘의 주문표
 # ══════════════════════════════════════════════════════════
+def _extend_trading_day(last_date, steps: int) -> pd.Timestamp:
+    """마지막 거래일에서 steps 거래일 뒤 날짜 (데이터 밖 구간 연장용)."""
+    d = pd.Timestamp(last_date)
+    for _ in range(max(int(steps), 0)):
+        d = _next_trading_day(d)
+    return d
+
+
 def _next_trading_day(last_date) -> pd.Timestamp:
     """마지막 거래일 다음 미국 영업일(공휴일 제외).
 
@@ -836,17 +849,32 @@ def build_order_plan(prices: dict, p: ManseParams, bt_result: dict = None,
 
     # ── 보유 포지션 매도 주문 (모드와 무관하게 항상 유지) ──
     def _add_sell_orders():
+        """보유 포지션의 다음 거래일 매도 주문.
+
+        시트의 매도일 탐색 구간은 `매수일 < S < 손절예정일` 이다.
+          · 손절예정일이 곧 다음 거래일  → 탐색 구간이 비어 있음
+            → 목표가 도달 여부와 무관하게 **그날 종가로 청산(MOC)**
+          · 손절예정일이 더 뒤          → 목표가 도달 시 청산이므로
+            **LOC 매도**(종가가 매도목표가 이상이면 체결)
+        특히 손절일수 = 1 인 티어는 항상 다음날 MOC 다.
+        """
+        nd = nxt.normalize()
         for h in held:
             stop = _stop_ts(h)
-            moc_today = stop is not None and stop <= nxt.normalize()
+            is_moc = stop is not None and stop <= nd
+            tier = h.get("tier")
+            qty = h.get("qty")
             out["orders"].append({
-                "구분": "MOC 청산" if moc_today else "매도(지정가)",
-                "티어": h.get("tier"),
-                "주문가": h["sell_target"],
-                "수량": h.get("qty"),
-                "금액": (round(h["sell_target"] * h["qty"], 2)
-                        if h.get("qty") else None),
+                "구분": (f"매도 MOC (티어{tier})" if is_moc
+                        else f"매도 LOC (티어{tier})"),
+                "티어": tier,
+                # MOC 는 시장가 청산이라 지정가가 없다 (참고용 목표가는 별도 표기)
+                "주문가": None if is_moc else h["sell_target"],
+                "수량": qty,
+                "금액": (None if is_moc or not qty
+                        else round(h["sell_target"] * qty, 2)),
                 "손절예정": stop,
+                "매도목표가": h["sell_target"],
             })
 
     if lp is None:
