@@ -95,22 +95,27 @@ def _get_tg_creds() -> tuple:
             str(c.get("ms_tg_chat_id", "")).strip())
 
 
-def _ms_tickers() -> list:
-    """만능 스위치 설정이 저장된 종목 목록 (계좌 구조 + 레거시 종목별 키)."""
+def _default_sheet_name(acct_name: str, ticker: str) -> str:
+    """계좌별 기본 구글시트 탭 이름.
+
+    ⚠️ 티커만 쓰면 같은 종목 계좌 2개가 **같은 탭에 서로 덮어쓴다**.
+       계좌명을 붙여 고유하게 만든다.
+    """
+    return f"manse_{str(acct_name).strip()}" if acct_name else str(ticker).upper()
+
+
+def _ms_accounts() -> dict:
+    """만능 스위치 계좌 목록 → {계좌명: {ticker, gs_sheet}}."""
     cfg = _load_cfg()
-    tks = set()
-    for a in (cfg.get("accounts") or {}).values():
-        if isinstance(a, dict) and a.get("ticker"):
-            tks.add(str(a["ticker"]).upper())
-    for k, v in cfg.items():
-        if k.startswith("_") or k == "accounts":
+    out = {}
+    for name, a in (cfg.get("accounts") or {}).items():
+        if not isinstance(a, dict):
             continue
-        if isinstance(v, dict) and "params" in v:
-            tks.add(str(k).upper())
-    cur = (st.session_state.get("ms_last_params") or {}).get("bt_ticker")
-    if cur:
-        tks.add(str(cur).upper())
-    return sorted(tks)
+        tk = str(a.get("ticker", "")).upper()
+        out[name] = {"ticker": tk,
+                     "gs_sheet": str(a.get("gs_sheet")
+                                     or _default_sheet_name(name, tk))}
+    return out
 
 
 def _save_cfg(cfg: dict):
@@ -1888,7 +1893,7 @@ def render_ordersheet_tab(params: dict):
                     "os_capital": float(new_cap),
                     "capital_adj_history": [],
                     "data_source": DATA_SOURCES[0],
-                    "gs_sheet": new_tk or "SOXL",
+                    "gs_sheet": _default_sheet_name(nm, new_tk or "SOXL"),
                     "params": params_to_dict(
                         preset_to_params(pre, new_tk or "SOXL", new_cap)),
                 }
@@ -2056,9 +2061,17 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
                                index=src_list.index(cur_src)
                                if cur_src in src_list else 0,
                                key=f"ms_{sfx}_src")
-        new_sheet = st.text_input("구글시트 탭 이름",
-                                  value=acct.get("gs_sheet", p.ticker),
-                                  key=f"ms_{sfx}_sheet")
+        new_sheet = st.text_input(
+            "구글시트 탭 이름",
+            value=acct.get("gs_sheet") or _default_sheet_name(name, p.ticker),
+            key=f"ms_{sfx}_sheet",
+            help="계좌마다 달라야 합니다. 같으면 나중에 보낸 주문이 앞의 것을 덮어씁니다.")
+        _dups = [n for n, a in (cfg.get("accounts") or {}).items()
+                 if n != name and str(a.get("gs_sheet", "")).strip()
+                 == new_sheet.strip()]
+        if _dups:
+            st.warning(f"⚠️ 탭 이름 '{new_sheet}' 이 계좌 **{', '.join(_dups)}** "
+                       f"와 겹칩니다 — 주문이 서로 덮어써집니다.")
         if st.button("💾 계좌 설정 저장", key=f"ms_{sfx}_savea",
                      use_container_width=True):
             acct.update({"os_start": str(new_start), "os_capital": float(new_cap),
@@ -2358,7 +2371,7 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
         if not (token and chat_id):
             st.caption("⚙️ 개인 설정 탭에서 텔레그램을 먼저 설정하세요.")
     with t2:
-        sheet_nm = acct.get("gs_sheet", p.ticker)
+        sheet_nm = acct.get("gs_sheet") or _default_sheet_name(name, p.ticker)
         if st.button(f"📤 구글시트 전송 ('{sheet_nm}')", key=f"ms_{sfx}_gs",
                      use_container_width=True, disabled=not gs_url):
             try:
@@ -3405,19 +3418,27 @@ def render_settings_tab():
                  "순 체결 결과는 원 주문과 동일하며, LOC매도가 < LOC매수가 교차를 "
                  "거부하는 증권사에서 사용하세요.")
 
-        # ── 종목별 시트 이름 매핑 ──
-        _tks = _ms_tickers()
+        # ── 계좌별 시트 이름 매핑 ──
+        # ⚠️ 종목이 아니라 **계좌** 기준이어야 한다.
+        #    같은 종목 계좌가 둘이면 탭이 겹쳐 서로 덮어쓴다.
+        _accts = _ms_accounts()
         _sheet_map = {}
-        if _tks:
-            st.markdown("##### 종목별 시트 이름 매핑")
-            st.caption("각 종목 데이터를 기록할 구글시트의 탭(시트) 이름을 입력하세요.")
-            for _tk in _tks:
-                _default = (_mcfg.get(_tk, {}) or {}).get("gs_sheet", _tk)
-                _sheet_map[_tk] = st.text_input(f"{_tk} 시트 이름", value=_default,
-                                                key=f"gs_sheet_ms_{_tk}")
+        if _accts:
+            st.markdown("##### 계좌별 시트 이름 매핑")
+            st.caption("계좌마다 주문을 기록할 구글시트 탭(시트) 이름입니다. "
+                       "**계좌끼리 겹치면 안 됩니다.**")
+            for _an, _ai in _accts.items():
+                _sheet_map[_an] = st.text_input(
+                    f"{_an} ({_ai['ticker']}) 탭 이름", value=_ai["gs_sheet"],
+                    key=f"gs_sheet_ms_{_an}")
+            _vals = [v.strip() for v in _sheet_map.values() if v.strip()]
+            _dup = {v for v in _vals if _vals.count(v) > 1}
+            if _dup:
+                st.error(f"⛔ 탭 이름 중복: **{', '.join(sorted(_dup))}** — "
+                         f"해당 계좌들의 주문이 서로 덮어써집니다. 다르게 지정하세요.")
         else:
-            st.info("등록된 만능 스위치 종목이 없습니다. "
-                    "아래 '전략 파라미터 저장'으로 종목을 먼저 등록해주세요.")
+            st.info("등록된 계좌가 없습니다. "
+                    "**오늘의 주문표** 탭에서 계좌를 먼저 추가해주세요.")
 
         st.write("")
         bg1, bg2, bg3 = st.columns(3)
@@ -3502,10 +3523,13 @@ def render_settings_tab():
                     else:
                         save_config({"gs_url": gs_url}, sensitive=True)
                         save_config({"ms_use_tungchigi": str(use_tungchigi)})
-                    for _tk, _nm in _sheet_map.items():
-                        _mcfg.setdefault(_tk, {})["gs_sheet"] = _nm
+                    # 주문표가 읽는 위치(accounts)에 저장해야 실제로 반영된다
+                    _accs = _mcfg.setdefault("accounts", {})
+                    for _an, _nm in _sheet_map.items():
+                        if _an in _accs and isinstance(_accs[_an], dict):
+                            _accs[_an]["gs_sheet"] = _nm.strip()
                     _save_cfg(_mcfg)
-                    st.success("URL 및 종목별 시트 이름 저장 완료!")
+                    st.success("URL 및 계좌별 시트 이름 저장 완료!")
 
     st.write("")
 
@@ -3553,8 +3577,11 @@ def render_settings_tab():
             except Exception as e:
                 st.error(f"복원 실패: {e}")
 
-        if _tks:
-            st.caption("저장된 종목: " + ", ".join(_tks))
+        _acc_now = _ms_accounts()
+        if _acc_now:
+            st.caption("등록된 계좌: " + ", ".join(
+                f"{n}({v['ticker']} → {v['gs_sheet']})"
+                for n, v in _acc_now.items()))
 
     st.write("")
 
