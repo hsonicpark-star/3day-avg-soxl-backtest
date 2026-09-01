@@ -46,8 +46,19 @@ if not getattr(st.date_input, "_wide_range_patched", False):
     st.date_input = _date_input_wide
 
 # ── 공통 모듈 import ─────────────────────────────────────────
-from common.config import _IS_CLOUD, _CONFIG, load_config, get_ticker_settings
-from common.auth import render_login_gate, _cookie_mgr
+# Cloud 는 미처리 예외 메시지를 가려서(redacted) 보여주므로, 여기서 잡아
+# 실제 원인을 화면에 노출한다. 그러지 않으면 로그를 봐야만 진단이 가능하다.
+try:
+    from common.config import _IS_CLOUD, _CONFIG, load_config, get_ticker_settings
+    from common.auth import render_login_gate, _cookie_mgr
+except Exception as _common_err:
+    import streamlit as _st, traceback as _tb
+    _st.error(f"⚠️ 공통 모듈 로드 실패: {type(_common_err).__name__}: {_common_err}")
+    _st.caption("아래 상세 내용을 개발자에게 전달해주세요.")
+    _st.code(_tb.format_exc())
+    _st.info("💡 대부분 `streamlit_cookies_controller` 컴포넌트 초기화 실패입니다. "
+             "Manage app → Reboot 으로 해결되는 경우가 많습니다.")
+    _st.stop()
 
 # ── 클라우드: 로그인 게이트 ──────────────────────────────────
 if _IS_CLOUD:
