@@ -199,7 +199,16 @@ def _data_health(prices: dict) -> list:
             exp = df.attrs.get("expected")
             if not src:
                 src = f"로컬DB{f' → 야후+{app}행' if app else ''}"
-            if df.attrs.get("stale"):
+            # ⚠️ attrs["stale"] 을 그대로 믿지 않는다.
+            # _load_one 은 @st.cache_data(ttl=1800) 이라, 배포 직후에는
+            # '옛 코드가 만든 attrs' 가 최대 30분간 그대로 반환될 수 있다.
+            # 표시 시점에 마지막 날짜로 직접 다시 판정한다.
+            try:
+                stale = pricedb._is_stale(df.index[-1])
+                exp = exp if exp is not None else pricedb.expected_latest_close_date()
+            except Exception:
+                stale = bool(df.attrs.get("stale"))
+            if stale:
                 # 확정 거래일보다 뒤처진 '진짜' 낡음
                 _e = f"확정 거래일 {pd.Timestamp(exp).date()} 대비 " if exp is not None else ""
                 msgs.append(f"⚠️ **{tk}** 최신 종가 미확보 — {_e}최종 {last} "
