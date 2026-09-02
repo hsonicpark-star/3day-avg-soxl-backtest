@@ -1812,6 +1812,12 @@ def _order_text(plan: dict, p: ManseParams, acct_name: str = "") -> str:
         lines += ["", plan["message"]]
     if plan.get("note"):
         lines.append(f"※ {plan['note']}")
+    # 퉁치기 안내 — 원 주문과 상계 결과가 다를 때만 (자전거래 거부 증권사용)
+    try:
+        from dss_engine import tungchigi_message_lines
+        lines.extend(tungchigi_message_lines(_order_rows(plan)))
+    except Exception:
+        pass
     return "\n".join(lines)
 
 
@@ -1830,6 +1836,338 @@ def _order_rows(plan: dict) -> list:
         elif px is not None:
             rows.append([gubun, "LOC", round(float(px), 2), int(qty)])
     return rows
+
+
+def _tungchigi(rows: list):
+    """(퉁치기 주문, 원 주문과 다른가) — dss_engine 공용 로직 재사용.
+
+    Streamlit 소프트 리로드로 sys.modules 에 구버전이 남아 ImportError 가
+    나는 경우가 있어 reload 후 재시도한다 (DSS 와 동일한 방어)."""
+    try:
+        from dss_engine import build_tungchigi_orders as _bto, \
+            orders_differ as _od
+    except ImportError:
+        import importlib
+        import dss_engine as _de
+        importlib.reload(_de)
+        _bto, _od = _de.build_tungchigi_orders, _de.orders_differ
+    tung = _bto(rows)
+    return tung, (bool(tung) and _od(rows, tung))
+
+
+def _render_tungchigi(plan: dict):
+    """퉁치기 주문 탭 — 자전거래 거부 증권사용 상계 주문 (DSS 와 동일 구성)."""
+    st.caption("일부 증권사는 **LOC매도 가격 < LOC매수 가격** 이면 자전거래로 주문을 "
+               "거부합니다. 퉁치기는 매수/매도를 가격 구간별로 상계하여 "
+               "**어떤 종가에서도 순 체결 결과가 매일 주문과 완전히 동일**하면서 "
+               "가격 교차가 없는 주문으로 변환합니다.")
+    raw = _order_rows(plan)
+    if not raw:
+        st.info("오늘 주문이 없습니다.")
+        return
+    try:
+        tung, differs = _tungchigi(raw)
+    except Exception as e:
+        st.error(f"퉁치기 변환 실패: {type(e).__name__}: {e}")
+        return
+
+    if differs:
+        st.warning("⚠️ 매일 주문에 매수/매도 상계 구간 있음 (자전거래 위험) "
+                   "— 자전거래 거부 증권사는 아래 퉁치기 주문을 사용하세요.")
+    else:
+        st.success("✅ 매일 주문과 퉁치기 결과가 동일 — 어느 증권사든 "
+                   "매일 주문 그대로 사용 가능합니다.")
+
+    if not tung:
+        st.info("퉁치기 결과 주문이 없습니다 (완전 상계).")
+        return
+
+    view = []
+    for t in tung:
+        is_moc = (t["방법"] == "MOC")
+        view.append({
+            "구분": ("🔴 MOC매도" if is_moc else
+                     ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
+            "주문가": "시장가(종가)" if is_moc else f"${t['가격']:,.2f}",
+            "수량": f"{t['수량']:,}주",
+            "예상금액": ("-" if is_moc else f"${t['가격'] * t['수량']:,.2f}"),
+        })
+
+    def _sty(row):
+        out = [""] * len(row)
+        if "구분" in row.index:
+            ix = list(row.index).index("구분")
+            v = row["구분"]
+            if "MOC" in v:
+                out[ix] = "color: #C62828; font-weight: bold"
+            elif "매도" in v:
+                out[ix] = "color: #1565C0; font-weight: bold"
+            elif "매수" in v:
+                out[ix] = "color: #E65100; font-weight: bold"
+        return out
+
+    st.dataframe(pd.DataFrame(view).style.apply(_sty, axis=1),
+                 use_container_width=True, hide_index=True,
+                 height=38 + 35 * len(view))
+    st.info("💡 **퉁치기 주문 방식**: 위 주문을 그대로 넣으면 매일 주문과 "
+            "**정확히 같은 순 체결 결과**를 얻습니다 (상계된 만큼 수수료도 절약). "
+            "매수/매도 가격이 교차하지 않아 자전거래로 거부되지 않습니다.\n\n"
+            "📌 가격 구간별 상계 방식이므로, 표시된 수량·가격이 매일 주문과 "
+            "달라 보여도 정상입니다.")
+
+
+def _tung_view(tung: list) -> pd.DataFrame:
+    """퉁치기 주문 리스트 → 표시용 DataFrame."""
+    view = []
+    for t in tung:
+        is_moc = (t["방법"] == "MOC")
+        view.append({
+            "구분": ("🔴 MOC매도" if is_moc else
+                     ("LOC매도" if t["구분"] == "매도" else "LOC매수")),
+            "주문가": "시장가(종가)" if is_moc else f"${t['가격']:,.2f}",
+            "수량": f"{t['수량']:,}주",
+            "예상금액": ("-" if is_moc else f"${t['가격'] * t['수량']:,.2f}"),
+        })
+    return pd.DataFrame(view)
+
+
+def _tung_style(row):
+    out = [""] * len(row)
+    if "구분" in row.index:
+        ix = list(row.index).index("구분")
+        v = row["구분"]
+        if "MOC" in v:
+            out[ix] = "color: #C62828; font-weight: bold"
+        elif "매도" in v:
+            out[ix] = "color: #1565C0; font-weight: bold"
+        elif "매수" in v:
+            out[ix] = "color: #E65100; font-weight: bold"
+    return out
+
+
+def build_account_store(acct: dict) -> dict:
+    """계좌 하나의 시뮬레이션 + 주문표를 만들어 {res, plan, warn} 반환.
+
+    계좌 탭의 '주문표 생성' 버튼과 통합 퉁치기 탭의 일괄 생성이 **같은 경로**를
+    쓰도록 분리한 함수. 실패 시 예외를 그대로 올린다 (호출부에서 표시)."""
+    p = _acct_params(acct)
+    prices = _load_prices(p.needed_tickers(),
+                          acct.get("data_source", DATA_SOURCES[0]))
+    warn = _data_health(prices)
+    cash_flows = {}
+    for h in (acct.get("capital_adj_history", []) or []):
+        try:
+            cash_flows[pd.Timestamp(h["날짜"]).normalize()] = {
+                "deposit": float(h.get("조정금액", 0))}
+        except Exception:
+            pass
+    res = run_backtest(prices, p, start=acct.get("os_start"),
+                       end=str(datetime.today().date()),
+                       cash_flows=cash_flows)
+    if "error" in res:
+        raise RuntimeError(res["error"])
+    return {"res": res, "plan": build_order_plan(prices, p, bt_result=res),
+            "warn": warn}
+
+
+def generate_stores(accounts: dict, picked: list) -> list:
+    """선택 계좌들의 주문표를 생성해 session_state 에 저장. 오류 메시지 리스트 반환."""
+    errs = []
+    keys = list(accounts.keys())
+    for nm in picked:
+        try:
+            i = keys.index(nm)
+        except ValueError:
+            errs.append(f"'{nm}' 계좌를 찾을 수 없습니다.")
+            continue
+        try:
+            st.session_state[f"ms_os_a{i}"] = build_account_store(accounts[nm])
+        except Exception as e:
+            errs.append(f"'{nm}' 생성 실패: {type(e).__name__}: {e}")
+    return errs
+
+
+def merged_order_rows(accounts: dict, picked: list) -> tuple:
+    """선택한 계좌들의 주문 rows 를 합친다.
+
+    한 증권계좌에서 여러 전략을 굴릴 때, 전략별 주문을 따로 넣으면
+    한쪽 매수가와 다른쪽 매도가가 교차해 자전거래로 거부될 수 있다.
+    합쳐서 상계하면 그 교차가 사라진다.
+
+    Returns: (합친 rows, {계좌: rows}, 오류메시지 or None)
+    ※ 종목이 다른 계좌는 합칠 수 없다 (다른 종목끼리는 상계 대상이 아님).
+    """
+    per, tickers = {}, set()
+    for nm in picked:
+        store = None
+        for i, k in enumerate(accounts.keys()):
+            if k == nm:
+                store = st.session_state.get(f"ms_os_a{i}")
+                break
+        if not store or not isinstance(store.get("plan"), dict):
+            return [], {}, f"'{nm}' 계좌의 주문표가 아직 없습니다 — 해당 탭에서 먼저 생성해주세요."
+        plan = store["plan"]
+        if "error" in plan:
+            return [], {}, f"'{nm}' 계좌 주문표 오류: {plan['error']}"
+        per[nm] = _order_rows(plan)
+        tickers.add(str(accounts[nm].get("ticker", "")).upper())
+    if len(tickers) > 1:
+        return [], {}, f"종목이 서로 다릅니다 ({', '.join(sorted(tickers))}) — 같은 종목끼리만 합칠 수 있습니다."
+    merged = [r for nm in picked for r in per.get(nm, [])]
+    return merged, per, None
+
+
+def _render_merged_tungchigi(accounts: dict, cfg: dict):
+    """🔗 통합 퉁치기 탭 — 여러 계좌 주문을 합쳐 한 번에 상계."""
+    st.caption("한 증권계좌에서 여러 전략을 함께 굴릴 때 쓰는 기능입니다. "
+               "전략별 주문을 따로 넣으면 **A전략 매수가와 B전략 매도가가 교차**해 "
+               "자전거래로 거부될 수 있습니다. 주문을 모두 합쳐 상계하면 그 교차가 "
+               "사라지고, **순 체결 결과는 각각 넣었을 때와 완전히 동일**합니다.")
+
+    names = list(accounts.keys())
+    if len(names) < 2:
+        st.info("계좌가 2개 이상이어야 합칠 수 있습니다.")
+        return
+
+    picked = st.multiselect("합칠 계좌", names, default=names,
+                            key="ms_merge_pick",
+                            help="같은 증권계좌에서 함께 운용 중인 계좌들을 고르세요. "
+                                 "종목이 같아야 합니다.")
+    if len(picked) < 2:
+        st.info("계좌를 2개 이상 선택해주세요.")
+        return
+
+    # 계좌별 탭을 먼저 누를 필요 없이 여기서 한 번에 생성한다
+    _keys = list(accounts.keys())
+    _missing = [nm for nm in picked
+                if not st.session_state.get(f"ms_os_a{_keys.index(nm)}")]
+    _c1, _c2 = st.columns([2, 3])
+    with _c1:
+        _go = st.button("📋 선택 계좌 주문표 한 번에 생성",
+                        type="primary", key="ms_merge_gen",
+                        use_container_width=True)
+    with _c2:
+        if _missing:
+            st.caption(f"아직 생성 안 된 계좌: {', '.join(_missing)} "
+                       f"— 왼쪽 버튼을 누르면 한 번에 만듭니다.")
+        else:
+            st.caption("모든 선택 계좌의 주문표가 준비되어 있습니다. "
+                       "최신 종가로 다시 계산하려면 왼쪽 버튼을 누르세요.")
+    if _go:
+        with st.spinner("계좌별 시뮬레이션 중..."):
+            _errs = generate_stores(accounts, picked)
+        for _e in _errs:
+            st.error(_e)
+        if _errs:
+            return
+        _missing = []
+    elif _missing:
+        # 렌더될 때마다 자동으로 돌리면 주문표 탭 진입이 느려진다 → 버튼 클릭에서만
+        st.info("⬆️ **선택 계좌 주문표 한 번에 생성** 을 눌러주세요 "
+                "(계좌 탭을 따로 열 필요 없습니다).")
+        return
+
+    merged, per, err = merged_order_rows(accounts, picked)
+    if err:
+        st.warning(err)
+        return
+    if not merged:
+        st.info("합칠 주문이 없습니다.")
+        return
+
+    # 계좌별 원 주문 요약
+    st.markdown("##### 📥 합치기 전 — 계좌별 원 주문")
+    pre = []
+    for nm in picked:
+        for r in per[nm]:
+            pre.append({"계좌": nm, "구분": f"{r[0]} {r[1]}",
+                        "주문가": ("시장가(종가)" if r[1] == "MOC"
+                                 else f"${float(r[2]):,.2f}"),
+                        "수량": f"{int(r[3]):,}주"})
+    st.dataframe(pd.DataFrame(pre), use_container_width=True, hide_index=True,
+                 height=38 + 35 * min(len(pre), 12))
+
+    try:
+        tung, differs = _tungchigi(merged)
+    except Exception as e:
+        st.error(f"퉁치기 변환 실패: {type(e).__name__}: {e}")
+        return
+
+    # 계좌를 따로 넣었을 때 교차가 나는지 진단
+    _sell = [float(r[2]) for r in merged if r[0] == "매도" and r[1] == "LOC"]
+    _buy = [float(r[2]) for r in merged if r[0] == "매수" and r[1] == "LOC"]
+    _moc_sell = any(r[0] == "매도" and r[1] == "MOC" for r in merged)
+    crossed = bool((_sell and _buy and min(_sell) < max(_buy)) or (_moc_sell and _buy))
+
+    st.markdown("##### 🔄 합친 뒤 — 통합 퉁치기 주문")
+    if differs:
+        st.warning("⚠️ 계좌를 따로 주문하면 **매수/매도 가격이 교차**합니다 "
+                   "(자전거래 거부 위험) — 아래 통합 주문을 사용하세요.")
+    elif crossed:
+        st.warning("⚠️ 가격 교차 구간이 있습니다 — 아래 통합 주문을 사용하세요.")
+    else:
+        st.success("✅ 합쳐도 상계가 발생하지 않습니다 — 계좌별로 따로 넣어도 됩니다.")
+
+    if not tung:
+        st.info("통합 퉁치기 결과 주문이 없습니다 (완전 상계).")
+        return
+
+    st.dataframe(_tung_view(tung).style.apply(_tung_style, axis=1),
+                 use_container_width=True, hide_index=True,
+                 height=38 + 35 * len(tung))
+
+    _n_before = sum(int(r[3]) for r in merged)
+    _n_after = sum(int(t["수량"]) for t in tung)
+    _cards([
+        {"label": "합친 계좌", "value": f"{len(picked)}개",
+         "sub": " + ".join(picked)},
+        {"label": "주문 건수", "value": f"{len(merged)} → {len(tung)}건"},
+        {"label": "총 주문 수량", "value": f"{_n_before:,} → {_n_after:,}주",
+         "fg": (_MODE_COLOR["바닥"] if _n_after < _n_before else None),
+         "sub": (f"{_n_before - _n_after:,}주 상계" if _n_after < _n_before
+                 else "상계 없음")},
+    ])
+    st.info("💡 위 주문을 그대로 넣으면 계좌별로 따로 넣었을 때와 "
+            "**정확히 같은 순 체결 결과**를 얻습니다 (상계된 만큼 수수료 절약). "
+            "매수/매도 가격이 교차하지 않아 자전거래로 거부되지 않습니다.")
+
+    # ── 구글시트 전송 ──
+    gs_url = _gs_url()
+    _dflt = str(cfg.get("_merge_sheet", "") or "manse_통합")
+    _nm = st.text_input("전송할 시트 탭 이름", value=_dflt,
+                        key="ms_merge_sheet_nm",
+                        help="통합 주문을 기록할 구글시트 탭 이름입니다. "
+                             "계좌별 탭과 다른 이름을 쓰세요.")
+    if st.button("📤 통합 퉁치기 주문 시트 전송", key="ms_merge_send",
+                 use_container_width=True, disabled=not gs_url):
+        try:
+            rows = [[t["구분"], "MOC" if t["방법"] == "MOC" else "LOC",
+                     "" if t["방법"] == "MOC" else round(float(t["가격"]), 2),
+                     int(t["수량"])] for t in tung]
+            gc = _get_gspread_client()
+            sh = gc.open_by_url(gs_url)
+            try:
+                ws = sh.worksheet(_nm.strip())
+            except Exception:
+                st.error(f"⛔ 구글시트에 **'{_nm.strip()}'** 탭이 없습니다. "
+                         f"시트에서 해당 이름의 탭을 만들어 주세요 "
+                         f"(기존 주문 탭을 복사해 이름만 바꾸면 양식 유지). "
+                         f"현재 탭 목록: "
+                         f"{', '.join(w.title for w in sh.worksheets())}")
+                return
+            if len(rows) > 10:
+                st.warning(f"주문이 {len(rows)}건이라 기본 양식(10행)을 넘습니다 — "
+                           f"시트의 L4:O 영역이 충분한지 확인하세요.")
+            ws.batch_clear([f"L4:O{3 + max(10, len(rows))}"])
+            if rows:
+                ws.update(range_name="L4", values=rows)
+            ws.update(range_name="B11", values=[[
+                pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
+            cfg["_merge_sheet"] = _nm.strip()
+            _save_cfg(cfg)
+            st.success(f"✅ '{_nm.strip()}' L4에 통합 주문 {len(rows)}건 전송 완료")
+        except Exception as e:
+            st.error(f"전송 실패: {type(e).__name__}: {e}")
 
 
 def render_ordersheet_tab(params: dict):
@@ -1907,9 +2245,16 @@ def render_ordersheet_tab(params: dict):
         st.info("등록된 계좌가 없습니다. 위에서 계좌를 추가하세요.")
         return
 
-    for i, (nm, tab) in enumerate(zip(names, st.tabs([f"📊 {n}" for n in names]))):
+    _labels = [f"📊 {n}" for n in names]
+    if len(names) >= 2:
+        _labels.append("🔗 통합 퉁치기")
+    _tabs = st.tabs(_labels)
+    for i, (nm, tab) in enumerate(zip(names, _tabs)):
         with tab:
             _render_account(nm, accounts[nm], cfg, i)
+    if len(names) >= 2:
+        with _tabs[-1]:
+            _render_merged_tungchigi(accounts, cfg)
 
 
 def _render_account(name: str, acct: dict, cfg: dict, idx: int):
@@ -2150,27 +2495,9 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
                  key=f"ms_{sfx}_run", use_container_width=True):
         with st.spinner("시뮬레이션 중..."):
             try:
-                src = acct.get("data_source", DATA_SOURCES[0])
-                prices = _load_prices(p.needed_tickers(), src)
-                warn = _data_health(prices)
-                cash_flows = {}
-                for h in adj_hist:
-                    try:
-                        cash_flows[pd.Timestamp(h["날짜"]).normalize()] = {
-                            "deposit": float(h.get("조정금액", 0))}
-                    except Exception:
-                        pass
-                res = run_backtest(prices, p, start=acct.get("os_start"),
-                                   end=str(datetime.today().date()),
-                                   cash_flows=cash_flows)
-                if "error" in res:
-                    st.error(res["error"])
-                    return
-                plan = build_order_plan(prices, p, bt_result=res)
-                st.session_state[f"ms_os_{sfx}"] = {
-                    "res": res, "plan": plan, "warn": warn}
+                st.session_state[f"ms_os_{sfx}"] = build_account_store(acct)
             except Exception as e:
-                st.error(f"생성 실패: {e}")
+                st.error(f"생성 실패: {type(e).__name__}: {e}")
                 return
 
     store = st.session_state.get(f"ms_os_{sfx}")
@@ -2308,13 +2635,18 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
     if plan.get("note"):
         st.caption(f"※ {plan['note']}")
     if plan.get("orders"):
-        odf = pd.DataFrame(plan["orders"])
-        if "주문가" in odf.columns:
-            odf["주문가"] = odf["주문가"].map(
-                lambda v: "시장가(MOC)" if pd.isna(v) else f"${float(v):,.2f}")
-        st.dataframe(odf.style.format({"금액": "${:,.0f}",
-                                       "매도목표가": "${:,.2f}"}, na_rep="-"),
-                     use_container_width=True, hide_index=True)
+        _ot1, _ot2 = st.tabs(["📋 매일 주문 (직접 LOC)",
+                              "🔄 퉁치기 주문 (자전거래 회피)"])
+        with _ot1:
+            odf = pd.DataFrame(plan["orders"])
+            if "주문가" in odf.columns:
+                odf["주문가"] = odf["주문가"].map(
+                    lambda v: "시장가(MOC)" if pd.isna(v) else f"${float(v):,.2f}")
+            st.dataframe(odf.style.format({"금액": "${:,.0f}",
+                                           "매도목표가": "${:,.2f}"}, na_rep="-"),
+                         use_container_width=True, hide_index=True)
+        with _ot2:
+            _render_tungchigi(plan)
     else:
         st.warning("다음 거래일 주문 없음")
 
@@ -3490,11 +3822,31 @@ def render_settings_tab():
             else _cfg.get("ms_use_tungchigi", "")
         ).strip().lower() in ("true", "1", "y", "yes", "on")
         use_tungchigi = st.checkbox(
-            "시트 전송 시 퉁치기 주문으로 전송 (자전거래 거부 증권사용)",
+            "🔄 퉁치기 주문으로 전송 (자전거래 회피)",
             value=_tung_default, key="ms_use_tungchigi_ck",
             help="체크하면 매수/매도 상계(퉁치기) 적용 주문을 시트에 기록합니다. "
                  "순 체결 결과는 원 주문과 동일하며, LOC매도가 < LOC매수가 교차를 "
                  "거부하는 증권사에서 사용하세요.")
+
+        _merge_default = str(
+            _usercfg.get("ms_merge_tungchigi", "") if _IS_CLOUD_val
+            else _cfg.get("ms_merge_tungchigi", "")
+        ).strip().lower() in ("true", "1", "y", "yes", "on")
+        use_merge = st.checkbox(
+            "🔗 여러 계좌 주문을 합쳐서 전송 (한 증권계좌 운용)",
+            value=_merge_default, key="ms_merge_tungchigi_ck",
+            help="한 증권계좌에서 여러 전략을 함께 굴릴 때 체크하세요. "
+                 "계좌별 탭 대신 아래 지정한 탭 하나에 '전 계좌 합산 퉁치기' 주문을 "
+                 "기록합니다. 종목이 같은 계좌끼리만 합쳐집니다.")
+        merge_sheet = st.text_input(
+            "통합 주문 시트 탭 이름", key="ms_merge_sheet_cfg",
+            value=str(_usercfg.get("ms_merge_sheet", "") if _IS_CLOUD_val
+                      else _cfg.get("ms_merge_sheet", "")) or "manse_통합",
+            disabled=not use_merge,
+            help="합산 주문을 기록할 탭 이름 (계좌별 탭과 다른 이름 권장).")
+        if use_merge:
+            st.caption("⚠️ 합산 전송이 켜지면 **계좌별 개별 탭에는 기록하지 않습니다** "
+                       "— 같은 주문을 두 번 넣는 것을 막기 위해서입니다.")
 
         # ── 계좌별 시트 이름 매핑 ──
         # ⚠️ 종목이 아니라 **계좌** 기준이어야 한다.
@@ -3637,15 +3989,21 @@ def render_settings_tab():
                             _save_user_settings_to_sheet(
                                 st.session_state.username,
                                 {"gs_url": gs_url,
-                                 "ms_use_tungchigi": use_tungchigi})
+                                 "ms_use_tungchigi": use_tungchigi,
+                                 "ms_merge_tungchigi": use_merge,
+                                 "ms_merge_sheet": merge_sheet.strip()})
                             st.session_state.user_settings.update(
                                 {"gs_url": gs_url,
-                                 "ms_use_tungchigi": str(use_tungchigi)})
+                                 "ms_use_tungchigi": str(use_tungchigi),
+                                 "ms_merge_tungchigi": str(use_merge),
+                                 "ms_merge_sheet": merge_sheet.strip()})
                         except Exception as e:
                             st.error(f"저장 실패: {e}")
                     else:
                         save_config({"gs_url": gs_url}, sensitive=True)
-                        save_config({"ms_use_tungchigi": str(use_tungchigi)})
+                        save_config({"ms_use_tungchigi": str(use_tungchigi),
+                                     "ms_merge_tungchigi": str(use_merge),
+                                     "ms_merge_sheet": merge_sheet.strip()})
                     # 주문표가 읽는 위치(accounts)에 저장해야 실제로 반영된다
                     _accs = _mcfg.setdefault("accounts", {})
                     for _an, _nm in _sheet_map.items():

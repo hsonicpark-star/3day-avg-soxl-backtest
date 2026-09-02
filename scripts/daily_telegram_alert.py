@@ -1757,6 +1757,12 @@ def build_manse_message(plan: dict, p, ticker: str, acct_name: str = "") -> str:
         lines += ["", f"누적: ${m.get('최종자산', 0):,.0f} "
                       f"(CAGR {m.get('CAGR', 0)*100:.1f}%, "
                       f"MDD {m.get('MDD', 0)*100:.1f}%)"]
+    # 퉁치기 안내 (원 주문과 결과가 다를 때만 — 자전거래 거부 증권사용)
+    try:
+        from dss_engine import tungchigi_message_lines
+        lines.extend(tungchigi_message_lines(build_manse_order_rows(plan)))
+    except Exception:
+        pass
     return "\n".join(lines)
 
 
@@ -2986,6 +2992,11 @@ def main():
 
             if not ds_only and ms_chat_id and ms_token and ms_settings:
                 print(f"  👤 {username} [만능스위치]: {list(ms_settings.keys())} 처리 중...")
+                # 여러 계좌를 한 증권계좌에서 굴리는 경우 → 주문을 합쳐 한 탭에 기록
+                _ms_merge = str(user.get("ms_merge_tungchigi", "")).strip().lower() \
+                    in ("true", "1", "y", "yes", "on")
+                _ms_merge_sheet = str(user.get("ms_merge_sheet", "")).strip() or "manse_통합"
+                _merge_rows, _merge_tickers = [], set()
                 for acct_name, tk_cfg in ms_settings.items():
                     tk = tk_cfg.get("ticker", acct_name)
                     _gs_sheet_ms = str(tk_cfg.get("gs_sheet", tk)).strip() or tk
@@ -3040,14 +3051,49 @@ def main():
                     # ── 구글시트 주문표 기록 (텔레그램 결과와 독립) ──
                     if shared_gs_url:
                         _rows = build_manse_order_rows(ms_plan)
-                        if _rows and str(user.get("ms_use_tungchigi", "")).strip().lower()                                 in ("true", "1", "y", "yes", "on"):
-                            try:
-                                from dss_engine import rows_to_tungchigi_rows
-                                _rows = rows_to_tungchigi_rows(_rows)
-                            except Exception as _te:
-                                print(f"    ⚠️ [{_label}] 퉁치기 변환 실패 (원 주문 사용): {_te}")
-                        write_gsheet_with_status(client, shared_gs_url, _gs_sheet_ms,
-                                                  _rows, _label, status="OK")
+                        if _ms_merge:
+                            # 합산 모드 — 계좌별 탭에 쓰지 않고 모아뒀다가 한 번에
+                            # (같은 주문을 두 번 넣는 것을 막기 위해)
+                            _merge_rows.extend(_rows or [])
+                            _merge_tickers.add(str(tk).upper())
+                            print(f"    🔗 [{_label}] 합산 대기 ({len(_rows or [])}건)")
+                        else:
+                            _tg = str(user.get("ms_use_tungchigi", "")).strip().lower()
+                            if _rows and _tg in ("true", "1", "y", "yes", "on"):
+                                try:
+                                    from dss_engine import rows_to_tungchigi_rows
+                                    _rows = rows_to_tungchigi_rows(_rows)
+                                except Exception as _te:
+                                    print(f"    ⚠️ [{_label}] 퉁치기 변환 실패 (원 주문 사용): {_te}")
+                            write_gsheet_with_status(client, shared_gs_url, _gs_sheet_ms,
+                                                     _rows, _label, status="OK")
+
+                # ── 계좌 합산 퉁치기 전송 (계좌 루프 종료 후 한 번) ──
+                if _ms_merge and shared_gs_url:
+                    _mlabel = f"만능스위치/통합({_ms_merge_sheet})"
+                    if len(_merge_tickers) > 1:
+                        _emsg = ("종목이 서로 다름 ("
+                                 + ", ".join(sorted(_merge_tickers)) + ") — 합산 불가")
+                        print(f"    ❌ [{_mlabel}] {_emsg}")
+                        user_warnings.append(f"[{_mlabel}] ❌ {_emsg}")
+                        write_gsheet_with_status(client, shared_gs_url, _ms_merge_sheet,
+                                                 None, _mlabel, status="ERROR",
+                                                 error_reason=_emsg)
+                    elif _merge_rows:
+                        try:
+                            from dss_engine import rows_to_tungchigi_rows
+                            _mrows = rows_to_tungchigi_rows(_merge_rows)
+                        except Exception as _te:
+                            print(f"    ⚠️ [{_mlabel}] 퉁치기 변환 실패 (원 주문 사용): {_te}")
+                            _mrows = _merge_rows
+                        write_gsheet_with_status(client, shared_gs_url, _ms_merge_sheet,
+                                                 _mrows, _mlabel, status="OK")
+                        print(f"    ✅ [{_mlabel}] 합산 {len(_merge_rows)}건 "
+                              f"→ 퉁치기 {len(_mrows)}건 기록")
+                    else:
+                        write_gsheet_with_status(client, shared_gs_url, _ms_merge_sheet,
+                                                 [], _mlabel, status="OK")
+                        print(f"    ⏭️  [{_mlabel}] 합산할 주문 없음")
             else:
                 print(f"  ⏭️  {username} [만능스위치]: 미설정 → 건너뜀")
                 skip_count += 1
