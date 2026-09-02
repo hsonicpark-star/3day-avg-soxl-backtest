@@ -2954,8 +2954,20 @@ def render_portfolio_section(params: dict):
         rets = pd.DataFrame({k.split(" · ")[-1][:12]: v.pct_change()
                              for k, v in curves.items()}).dropna()
         cm = rets.corr()
-        st.dataframe(cm.style.format("{:.3f}").background_gradient(
-            cmap="Blues", vmin=0, vmax=1), use_container_width=True)
+
+        def _corr_bg(v):
+            # background_gradient 는 matplotlib 를 요구한다 (클라우드에 미설치)
+            # → 0~1 을 옅은 파랑으로 직접 보간한다
+            try:
+                x = min(max(float(v), 0.0), 1.0)
+            except (TypeError, ValueError):
+                return ""
+            r = int(255 - 90 * x)
+            g = int(255 - 55 * x)
+            return f"background-color: rgb({r},{g},255)"
+
+        st.dataframe(cm.style.format("{:.3f}").map(_corr_bg),
+                     use_container_width=True)
         _off = cm.where(~np.eye(len(cm), dtype=bool)).stack()
         st.caption(f"평균 상관 **{_off.mean():.3f}** · "
                    f"최저 {_off.min():.3f} · 최고 {_off.max():.3f} — "
@@ -3192,6 +3204,9 @@ def render_intro_tab(params: dict):
 
     # ── 성과 분석 ──
     render_perf_analysis(params)
+
+    # ── 포트폴리오 합산 분석 ──
+    render_portfolio_section(params)
 
 
 # ══════════════════════════════════════════════════════════
@@ -3712,7 +3727,6 @@ def render_random_start_panel(params: dict, p: ManseParams):
 # 탭5: DB 조회 / 관리
 # ══════════════════════════════════════════════════════════
 def render_db_tab(params: dict = None):
-    render_portfolio_section(params)
 
     st.markdown("### 📂 로컬 종가 DB")
     st.caption("야후 파이낸스 장애·레이트리밋에 대비한 백업 종가 저장소입니다. "
