@@ -2748,6 +2748,309 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
 # ══════════════════════════════════════════════════════════
 # 탭4: 전략 소개
 # ══════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════
+# 포트폴리오 합산 분석
+#   여러 프리셋(또는 계좌)을 동시에 굴렸을 때의 합산 성과.
+#   각 전략을 배분 자본으로 '실제로 다시' 백테스트해 합치므로
+#   정수 주식수 반올림까지 반영된다 (선형 스케일 가정 없음).
+# ══════════════════════════════════════════════════════════
+
+def _pf_stats(eq, cap: float) -> dict:
+    eq = eq.dropna()
+    if len(eq) < 2:
+        return {}
+    yrs = (eq.index[-1] - eq.index[0]).days / 365.25
+    mdd = float((eq / eq.cummax() - 1).min())
+    cagr = (float(eq.iloc[-1]) / cap) ** (1 / yrs) - 1 if yrs > 0 else np.nan
+    dr = eq.pct_change().dropna()
+    neg = dr[dr < 0]
+    return {
+        "CAGR": cagr, "MDD": mdd,
+        "Calmar": abs(cagr / mdd) if mdd else np.nan,
+        "Sharpe": float(dr.mean() / dr.std() * np.sqrt(252)) if dr.std() else np.nan,
+        "Sortino": (float(dr.mean() / neg.std() * np.sqrt(252))
+                    if len(neg) > 1 and neg.std() else np.nan),
+        "최악일": float(dr.min()) if len(dr) else np.nan,
+        "배수": float(eq.iloc[-1]) / cap,
+        "최종자산": float(eq.iloc[-1]),
+    }
+
+
+def _pf_yearly(eq, cap: float) -> dict:
+    """연도별 수익률 / MDD — 기준값은 전년 말 총자산."""
+    out = {}
+    for y, g in eq.groupby(eq.index.year):
+        i = eq.index.get_loc(g.index[0])
+        base = float(eq.iloc[i - 1]) if i > 0 else cap
+        out[int(y)] = (float(g.iloc[-1]) / base - 1,
+                       float((g / np.maximum.accumulate(g) - 1).min()))
+    return out
+
+
+def render_portfolio_section(params: dict):
+    """여러 전략을 동시에 굴렸을 때의 합산 성과."""
+    st.markdown("---")
+    st.subheader("🧩 포트폴리오 합산 분석")
+    st.caption("여러 프리셋을 각각 다른 계좌로 동시에 굴렸을 때의 합산 성과입니다. "
+               "배분한 자본으로 **실제로 다시 백테스트**해 합치므로 "
+               "정수 주식수 반올림까지 반영됩니다.")
+
+    _srcs = {f"프리셋 · {x['label']}": ("preset", x) for x in _MANSE_PRESETS}
+    _accts = (_load_cfg().get("accounts", {}) or {})
+    for _an, _ai in _accts.items():
+        _srcs[f"계좌 · {_an}"] = ("acct", _ai)
+
+    picked = st.multiselect(
+        "합칠 전략", list(_srcs.keys()),
+        default=[k for k in _srcs if k.startswith("프리셋")][:2],
+        key="ms_pf_pick",
+        help="프리셋은 내장 파라미터를, 계좌는 오늘의 주문표에 등록한 "
+             "파라미터를 씁니다. 종목이 같아야 합산이 의미 있습니다.")
+    if len(picked) < 2:
+        st.info("전략을 2개 이상 선택해주세요.")
+        return
+
+    c1, c2, c3, c4 = st.columns([1.1, 1, 1, 1])
+    with c1:
+        total_cap = st.number_input("총 투자금 ($)", value=60000.0, step=10000.0,
+                                    min_value=1000.0, key="ms_pf_cap")
+    with c2:
+        pf_start = st.date_input("시작일", value=pd.Timestamp("2017-01-03").date(),
+                                 key="ms_pf_start")
+    with c3:
+        pf_end = st.date_input("종료일", value=datetime.today().date(),
+                               key="ms_pf_end")
+    with c4:
+        pf_fee = st.number_input("수수료 (편도 %)", value=0.07, step=0.01,
+                                 format="%.3f", key="ms_pf_fee") / 100.0
+
+    eq_w = st.checkbox("균등 배분", value=True, key="ms_pf_eq",
+                       help="끄면 전략별 비중을 직접 지정합니다. "
+                            "분석 결과 균등 배분이 대체로 유리합니다 (아래 참고).")
+    weights = {}
+    if eq_w:
+        base, rem = divmod(100, len(picked))
+        for i, nm in enumerate(picked):
+            weights[nm] = base + (1 if i < rem else 0)
+        st.caption("비중: " + " · ".join(f"{n.split(' · ')[-1]} {w}%"
+                                        for n, w in weights.items()))
+    else:
+        cols = st.columns(len(picked))
+        for i, nm in enumerate(picked):
+            with cols[i]:
+                weights[nm] = st.number_input(
+                    nm.split(" · ")[-1][:14], value=100 // len(picked),
+                    min_value=1, max_value=99, step=5, key=f"ms_pf_w{i}")
+        tot = sum(weights.values())
+        if tot != 100:
+            st.warning(f"비중 합계가 {tot}% 입니다 — 100% 가 되도록 맞춰주세요.")
+            return
+
+    if st.button("📊 합산 성과 계산", type="primary", key="ms_pf_run",
+                 use_container_width=True):
+        with st.spinner("전략별 백테스트 중..."):
+            try:
+                curves, indiv, tickers = {}, {}, set()
+                for nm in picked:
+                    kind, obj = _srcs[nm]
+                    cap = total_cap * weights[nm] / 100.0
+                    if kind == "preset":
+                        tk = (params or {}).get("ticker") or "SOXL"
+                        p = preset_to_params(obj, tk, cap)
+                    else:
+                        p = _acct_params(obj)
+                        p.principal = cap
+                    p.fee = pf_fee
+                    tickers.add(p.ticker.upper())
+                    prices = _load_prices(p.needed_tickers(), DATA_SOURCES[0])
+                    r = run_backtest(prices, p, start=str(pf_start),
+                                     end=str(pf_end),
+                                     mode_frame=build_mode_frame(p, prices))
+                    if "error" in r:
+                        st.error(f"{nm}: {r['error']}")
+                        return
+                    curves[nm] = r["df"]["총자산"]
+                    indiv[nm] = (_pf_stats(r["df"]["총자산"], cap), cap,
+                                 r["df"]["모드"])
+                if len(tickers) > 1:
+                    st.warning(f"⚠️ 종목이 서로 다릅니다 ({', '.join(sorted(tickers))}) "
+                               f"— 합산 결과 해석에 주의하세요.")
+                idx = None
+                for c in curves.values():
+                    idx = c.index if idx is None else idx.intersection(c.index)
+                curves = {k: v.reindex(idx) for k, v in curves.items()}
+                st.session_state["ms_pf_res"] = {
+                    "curves": curves, "indiv": indiv, "total": total_cap,
+                    "weights": dict(weights),
+                    "mode": indiv[picked[0]][2].reindex(idx),
+                }
+            except Exception as e:
+                st.error(f"계산 실패: {type(e).__name__}: {e}")
+                return
+
+    res = st.session_state.get("ms_pf_res")
+    if not res:
+        st.info("⬆️ **합산 성과 계산** 을 눌러주세요.")
+        return
+
+    curves, indiv, total = res["curves"], res["indiv"], res["total"]
+    comb = sum(curves.values())
+    cs = _pf_stats(comb, total)
+
+    # ── 합산 지표 카드 ──
+    st.markdown("#### 📊 합산 성과")
+    _cards([
+        {"label": "CAGR", "value": f"{cs['CAGR']*100:.1f}%"},
+        {"label": "MDD", "value": f"{cs['MDD']*100:.1f}%", "fg": _NEG},
+        {"label": "Calmar", "value": f"{cs['Calmar']:.2f}",
+         "fg": _MODE_COLOR["바닥"]},
+        {"label": "Sharpe", "value": f"{cs['Sharpe']:.2f}"},
+        {"label": "최악 하루", "value": f"{cs['최악일']*100:.1f}%", "fg": _NEG},
+        {"label": "총자산", "value": f"${cs['최종자산']:,.0f}",
+         "sub": f"{cs['배수']:,.1f}배"},
+    ])
+
+    # ── 개별 vs 합산 비교 ──
+    st.markdown("#### 🔍 개별 전략 vs 합산")
+    rows = []
+    for nm, (stt, cap, _) in indiv.items():
+        rows.append({"전략": nm, "비중": f"{res['weights'][nm]}%",
+                     "투자금": cap, **{k: stt.get(k) for k in
+                                    ("CAGR", "MDD", "Calmar", "Sharpe",
+                                     "Sortino", "최악일", "배수")}})
+    rows.append({"전략": "🧩 합산", "비중": "100%", "투자금": total,
+                 **{k: cs.get(k) for k in ("CAGR", "MDD", "Calmar", "Sharpe",
+                                           "Sortino", "최악일", "배수")}})
+    cdf = pd.DataFrame(rows)
+
+    def _hl(row):
+        return ["background-color: #E8F0FE; font-weight: 600"
+                if row["전략"] == "🧩 합산" else "" for _ in row]
+
+    st.dataframe(
+        cdf.style.apply(_hl, axis=1).format({
+            "투자금": "${:,.0f}", "CAGR": "{:.1%}", "MDD": "{:.1%}",
+            "Calmar": "{:.2f}", "Sharpe": "{:.2f}", "Sortino": "{:.2f}",
+            "최악일": "{:.1%}", "배수": "{:,.1f}x"}, na_rep="-"),
+        use_container_width=True, hide_index=True)
+
+    # 분산 효과 진단
+    _best_mdd = max(st_["MDD"] for st_, _, _ in indiv.values())
+    _best_cal = max(st_["Calmar"] for st_, _, _ in indiv.values())
+    if cs["Calmar"] > _best_cal and cs["MDD"] > _best_mdd:
+        st.success(f"✅ **분산 효과 있음** — 합산 Calmar {cs['Calmar']:.2f} 가 "
+                   f"개별 최고({_best_cal:.2f})보다 높고, "
+                   f"MDD {cs['MDD']*100:.1f}% 도 개별 최선"
+                   f"({_best_mdd*100:.1f}%)보다 얕습니다.")
+    elif cs["MDD"] > _best_mdd:
+        st.info(f"ℹ️ MDD 는 개선됐지만({_best_mdd*100:.1f}% → "
+                f"{cs['MDD']*100:.1f}%) 위험조정수익은 개별 최고를 넘지 못했습니다.")
+    else:
+        st.warning("⚠️ 이 조합에서는 뚜렷한 분산 효과가 나타나지 않았습니다.")
+
+    # ── 상관행렬 ──
+    if len(curves) >= 2:
+        st.markdown("#### 🔗 일간 수익률 상관계수")
+        rets = pd.DataFrame({k.split(" · ")[-1][:12]: v.pct_change()
+                             for k, v in curves.items()}).dropna()
+        cm = rets.corr()
+        st.dataframe(cm.style.format("{:.3f}").background_gradient(
+            cmap="Blues", vmin=0, vmax=1), use_container_width=True)
+        _off = cm.where(~np.eye(len(cm), dtype=bool)).stack()
+        st.caption(f"평균 상관 **{_off.mean():.3f}** · "
+                   f"최저 {_off.min():.3f} · 최고 {_off.max():.3f} — "
+                   f"낮을수록 분산 효과가 큽니다.")
+
+    # ── 월별 히트맵 ──
+    st.markdown("#### 🗓️ 월별 수익률 히트맵 (합산)")
+    try:
+        st.markdown(monthly_perf_table(
+            comb, res.get("mode"),
+            mode_short={"바닥": "바", "중간": "중", "천장": "천"}),
+            unsafe_allow_html=True)
+        st.caption("각 칸은 월수익률 / 월 MDD / 그달의 구간 비율입니다. "
+                   "구간 비율은 첫 번째 전략 기준입니다.")
+    except Exception as e:
+        st.caption(f"히트맵 생성 실패: {e}")
+
+    # ── 연도별 ──
+    st.markdown("#### 📅 연도별 비교")
+    ylist = {nm: _pf_yearly(c, indiv[nm][1]) for nm, c in curves.items()}
+    yc = _pf_yearly(comb, total)
+    yrows, wins = [], 0
+    for y in sorted(yc):
+        row = {"연도": y}
+        worst = None
+        for nm in curves:
+            v = ylist[nm].get(y, (np.nan, np.nan))[0]
+            row[nm.split(" · ")[-1][:12]] = v
+            worst = v if worst is None or v < worst else worst
+        row["🧩 합산"] = yc[y][0]
+        row["합산 MDD"] = yc[y][1]
+        if worst is not None and yc[y][0] > worst:
+            wins += 1
+        yrows.append(row)
+    ydf = pd.DataFrame(yrows)
+    _pct = {c: "{:.1%}" for c in ydf.columns if c != "연도"}
+    st.dataframe(ydf.style.format(_pct, na_rep="-").map(
+        lambda v: (f"color: {_NEG}" if isinstance(v, float) and v < 0
+                   else (f"color: {_POS}" if isinstance(v, float) and v > 0 else "")),
+        subset=[c for c in ydf.columns if c not in ("연도", "합산 MDD")]),
+        use_container_width=True, hide_index=True)
+    st.caption(f"합산이 **가장 나쁜 개별 전략보다 나았던 해: {wins}/{len(yc)}년**")
+
+    # ── 분석 결론 ──
+    with st.expander("📚 이 기능으로 확인한 것들 (2026-09 분석 요약)", expanded=False):
+        st.markdown("""
+**1. 분산 효과는 진짜입니다 — 같은 종목이라도.**
+이평선형(4일) + 중심주가형을 50:50 으로 굴린 결과, 합산의 Calmar·Sharpe·Sortino가
+**두 전략 각각보다 높았습니다.** 기간 3종 × 수수료 2종, 여섯 조합 모두에서 예외가 없었습니다.
+MDD 는 −38.3% / −36.3% → **−32.7%**, 최악의 하루는 −22.3% / −23.8% → **−15.7%** 로 줄었습니다.
+
+같은 SOXL 을 거래하는데도 되는 이유는 **구간 판정 기준이 다르기 때문**입니다.
+이평선형은 QQQ 주봉의 120일 이동평균 이격을, 중심주가형은 월복리 추세선 이격을 봅니다.
+같은 날 한쪽은 천장, 다른 쪽은 중간으로 볼 수 있습니다. 일간 수익률 상관은 **0.67** 이었습니다.
+
+**2. "몇 개를 섞느냐"는 믿을 수 있고, "어떤 조합이 1등이냐"는 못 믿습니다.**
+프리셋 4종의 균등배분 조합 15가지를 전수 비교했습니다.
+훈련 구간(2017~2023) 상위 3개와 검증 구간(2024~2026) 상위 3개의 **교집합이 0개**,
+순위 상관은 0.44 였습니다. 개별 조합을 골라 "이게 최고"라 말할 근거가 없습니다.
+
+반면 **섞는 개수를 늘리면 최악의 선택을 해도 결과가 좋아진다**는 관계는
+다섯 시나리오 전부에서 성립했습니다 (개수별 최저 Calmar 가 단조 상승).
+어느 조합이 1등일지 모르니, **하한선**이 의사결정 기준이 되어야 합니다.
+
+**3. 비중 최적화는 하지 마십시오.**
+5% 단위로 모든 비중을 돌려 훈련 구간 최적 비중을 찾은 뒤 검증 구간에 적용했더니
+**11개 조합 중 8개에서 균등 배분에 졌습니다** (평균 −12.3%).
+사후에 알 수 있는 최선을 100 이라 하면 균등은 96% 를 회수했지만 훈련 최적은 84% 였습니다.
+
+실패 방식이 특징적입니다 — 평소엔 조금 손해 보다가 **가끔 크게 틀립니다**.
+(`이평1일+RSI` 는 훈련 구간에서 RSI 95% 몰빵이 최적이었는데 검증에서 −42% 였습니다.)
+최적 비중은 구간마다 뒤집힙니다: `이평4일+이평1일` 은 전체 55:45 / 훈련 80:20 / 검증 **25:75**.
+
+참고로 현재 운용 중인 **이평4일 + 중심주가의 전체 기간 최적 비중은 정확히 50:50** 이었습니다.
+
+**4. 기대할 것은 더 높은 수익률이 아니라 더 편안한 곡선입니다.**
+합산의 수익률은 대체로 두 전략의 중간입니다. 얻는 것은 얕아진 낙폭과 줄어든 최악의 하루입니다.
+""")
+
+    with st.expander("⚠️ 읽을 때 주의", expanded=False):
+        st.markdown("""
+- **프리셋이 모두 같은 데이터로 튜닝됐습니다.** 절대 수치보다 조합 간 상대 비교에
+  의미가 있고, 그 상대 비교조차 순위 단위로는 불안정합니다.
+- **2011~2015 구간은 SOXL 이 $0.6~$2 대**라 1센트 호가가 가격의 0.5~1.4% 였습니다.
+  이 구간 수익의 상당 부분이 센트 반올림에서 나오므로 **절대 배수는 과장돼 있습니다.**
+  기본 시작일을 2017년으로 둔 이유입니다.
+- **스프레드와 수용력은 반영하지 않았습니다.** 복리로 계좌가 커지면 종가 단일 경매에서
+  체결할 수 없는 규모가 됩니다.
+- **각 전략을 독립 계좌로 봅니다.** 전략끼리 현금을 공유하지 않으며,
+  주기적 리밸런싱도 하지 않습니다.
+- 월별 히트맵의 **구간 비율(바/중/천)은 첫 번째 전략 기준**입니다.
+  전략마다 모드 판정이 다르므로 참고용입니다.
+""")
+
+
 def render_intro_tab(params: dict):
     p: ManseParams = params["mp"]
     st.markdown("""
@@ -3409,6 +3712,8 @@ def render_random_start_panel(params: dict, p: ManseParams):
 # 탭5: DB 조회 / 관리
 # ══════════════════════════════════════════════════════════
 def render_db_tab(params: dict = None):
+    render_portfolio_section(params)
+
     st.markdown("### 📂 로컬 종가 DB")
     st.caption("야후 파이낸스 장애·레이트리밋에 대비한 백업 종가 저장소입니다. "
                "원칙은 **B방식** — 이미 저장된 과거 종가는 덮어쓰지 않고 새 날짜만 누적합니다.")
