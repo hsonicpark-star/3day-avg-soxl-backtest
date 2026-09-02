@@ -1,0 +1,147 @@
+<title>반반 투자 성과 분석</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F6F8FA; --surface:#FFFFFF; --sunken:#EEF2F6;
+  --ink:#16202B; --muted:#5A6B7B; --faint:#8494A3;
+  --rule:#DCE3EA; --rule-strong:#C3CFDA;
+  --accent:#1D4E89; --accent-soft:#E7EFF8;
+  --pos:#1B7A4B; --neg:#B3352C;
+  --panel:#141A22; --panel-rule:#2C3644;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+    --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+    --rule:#253240; --rule-strong:#33414F;
+    --accent:#74A9E0; --accent-soft:#1A2937;
+    --pos:#4ADE80; --neg:#F87171;
+    --panel:#0B1118; --panel-rule:#26303C;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+  --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+  --rule:#253240; --rule-strong:#33414F;
+  --accent:#74A9E0; --accent-soft:#1A2937;
+  --pos:#4ADE80; --neg:#F87171;
+  --panel:#0B1118; --panel-rule:#26303C;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:'IBM Plex Sans KR',system-ui,-apple-system,sans-serif;
+  font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:'Gowun Batang','Noto Serif KR',Georgia,serif; text-wrap:balance; margin:0}
+.num{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--rule-strong); padding:64px 0 28px; margin-bottom:44px}
+.eyebrow{
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; margin-bottom:18px;
+}
+h1{font-size:clamp(34px,5.2vw,52px); line-height:1.16; font-weight:700; letter-spacing:-.01em}
+.dek{color:var(--muted); font-size:17px; margin-top:16px; max-width:60ch}
+.setup{
+  display:flex; flex-wrap:wrap; gap:0 28px; margin-top:26px;
+  font-size:13px; color:var(--faint);
+}
+.setup b{color:var(--ink); font-weight:500}
+
+/* ── sections ── */
+section{margin-top:60px}
+h2{font-size:26px; font-weight:700; letter-spacing:-.005em}
+.kicker{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--faint); font-weight:600; margin-bottom:10px;
+}
+h2+p,.lede{margin-top:14px; color:var(--muted)}
+.lede{font-size:17px}
+
+/* ── verdict ── */
+.verdict{
+  background:var(--surface); border:1px solid var(--rule);
+  border-left:3px solid var(--accent); border-radius:4px;
+  padding:30px 34px; margin-top:8px;
+}
+.verdict .line{
+  font-family:'Gowun Batang','Noto Serif KR',Georgia,serif;
+  font-size:clamp(21px,2.7vw,27px); line-height:1.45; font-weight:700;
+  text-wrap:balance;
+}
+.verdict p{margin:14px 0 0; color:var(--muted); font-size:15px}
+
+/* ── stat trio ── */
+.trio{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:24px}
+.card{
+  background:var(--surface); border:1px solid var(--rule);
+  border-radius:4px; padding:20px 22px; min-width:0;
+}
+.card.hero{border-color:var(--accent); background:var(--accent-soft)}
+.card .who{
+  font-size:12px; font-weight:600; letter-spacing:.06em;
+  color:var(--muted); margin-bottom:14px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.card.hero .who{color:var(--accent)}
+.card .big{font-size:30px; font-weight:600; line-height:1.1}
+.card .cap{font-size:12px; color:var(--faint); margin-top:4px}
+.card dl{margin:16px 0 0; display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px}
+.card dt{color:var(--faint)}
+.card dd{margin:0; text-align:right; font-weight:500}
+
+/* ── tables ── */
+.scroll{overflow-x:auto; margin-top:22px; border:1px solid var(--rule); border-radius:4px}
+table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--surface)}
+th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{
+  background:var(--sunken); color:var(--muted); font-weight:600;
+  font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  border-bottom:1px solid var(--rule-strong);
+}
+tbody tr+tr td{border-top:1px solid var(--rule)}
+tbody tr.sum td{background:var(--accent-soft); font-weight:600}
+tbody tr.sum td:first-child{color:var(--accent)}
+td.n{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.pos{color:var(--pos)} .neg{color:var(--neg)}
+.grp td{
+  background:var(--sunken); font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600;
+}
+
+/* ── heatmap panel ── */
+.panel{
+  margin-top:22px; background:var(--panel); border:1px solid var(--panel-rule);
+  border-radius:5px; padding:18px;
+}
+.panel table{background:transparent; font-size:13px}
+.panel td,.panel th{white-space:normal}
+
+/* ── notes ── */
+.notes{
+  margin-top:22px; background:var(--sunken); border:1px solid var(--rule);
+  border-radius:4px; padding:22px 26px;
+}
+.notes h3{font-size:16px; font-weight:700; margin-bottom:12px}
+.notes ul{margin:0; padding-left:18px; color:var(--muted); font-size:14.5px}
+.notes li+li{margin-top:9px}
+.notes b{color:var(--ink); font-weight:600}
+
+footer{
+  margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+  font-size:12.5px; color:var(--faint);
+}
+@media (max-width:720px){
+  .trio{grid-template-columns:1fr}
+  .wrap{padding:0 18px 64px}
+}
+</style>

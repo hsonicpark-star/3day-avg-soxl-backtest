@@ -1,0 +1,314 @@
+<title>비중을 바꾸면 나아지나</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F6F8FA; --surface:#FFFFFF; --sunken:#EEF2F6;
+  --ink:#16202B; --muted:#5A6B7B; --faint:#8494A3;
+  --rule:#DCE3EA; --rule-strong:#C3CFDA;
+  --accent:#1D4E89; --accent-soft:#E7EFF8;
+  --pos:#1B7A4B; --neg:#B3352C;
+  --panel:#141A22; --panel-rule:#2C3644;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+    --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+    --rule:#253240; --rule-strong:#33414F;
+    --accent:#74A9E0; --accent-soft:#1A2937;
+    --pos:#4ADE80; --neg:#F87171;
+    --panel:#0B1118; --panel-rule:#26303C;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+  --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+  --rule:#253240; --rule-strong:#33414F;
+  --accent:#74A9E0; --accent-soft:#1A2937;
+  --pos:#4ADE80; --neg:#F87171;
+  --panel:#0B1118; --panel-rule:#26303C;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:'IBM Plex Sans KR',system-ui,-apple-system,sans-serif;
+  font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:'Gowun Batang','Noto Serif KR',Georgia,serif; text-wrap:balance; margin:0}
+.num{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--rule-strong); padding:64px 0 28px; margin-bottom:44px}
+.eyebrow{
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; margin-bottom:18px;
+}
+h1{font-size:clamp(34px,5.2vw,52px); line-height:1.16; font-weight:700; letter-spacing:-.01em}
+.dek{color:var(--muted); font-size:17px; margin-top:16px; max-width:60ch}
+.setup{
+  display:flex; flex-wrap:wrap; gap:0 28px; margin-top:26px;
+  font-size:13px; color:var(--faint);
+}
+.setup b{color:var(--ink); font-weight:500}
+
+/* ── sections ── */
+section{margin-top:60px}
+h2{font-size:26px; font-weight:700; letter-spacing:-.005em}
+.kicker{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--faint); font-weight:600; margin-bottom:10px;
+}
+h2+p,.lede{margin-top:14px; color:var(--muted)}
+.lede{font-size:17px}
+
+/* ── verdict ── */
+.verdict{
+  background:var(--surface); border:1px solid var(--rule);
+  border-left:3px solid var(--accent); border-radius:4px;
+  padding:30px 34px; margin-top:8px;
+}
+.verdict .line{
+  font-family:'Gowun Batang','Noto Serif KR',Georgia,serif;
+  font-size:clamp(21px,2.7vw,27px); line-height:1.45; font-weight:700;
+  text-wrap:balance;
+}
+.verdict p{margin:14px 0 0; color:var(--muted); font-size:15px}
+
+/* ── stat trio ── */
+.trio{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:24px}
+.card{
+  background:var(--surface); border:1px solid var(--rule);
+  border-radius:4px; padding:20px 22px; min-width:0;
+}
+.card.hero{border-color:var(--accent); background:var(--accent-soft)}
+.card .who{
+  font-size:12px; font-weight:600; letter-spacing:.06em;
+  color:var(--muted); margin-bottom:14px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.card.hero .who{color:var(--accent)}
+.card .big{font-size:30px; font-weight:600; line-height:1.1}
+.card .cap{font-size:12px; color:var(--faint); margin-top:4px}
+.card dl{margin:16px 0 0; display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px}
+.card dt{color:var(--faint)}
+.card dd{margin:0; text-align:right; font-weight:500}
+
+/* ── tables ── */
+.scroll{overflow-x:auto; margin-top:22px; border:1px solid var(--rule); border-radius:4px}
+table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--surface)}
+th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{
+  background:var(--sunken); color:var(--muted); font-weight:600;
+  font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  border-bottom:1px solid var(--rule-strong);
+}
+tbody tr+tr td{border-top:1px solid var(--rule)}
+tbody tr.sum td{background:var(--accent-soft); font-weight:600}
+tbody tr.sum td:first-child{color:var(--accent)}
+td.n{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.pos{color:var(--pos)} .neg{color:var(--neg)}
+.grp td{
+  background:var(--sunken); font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600;
+}
+
+/* ── heatmap panel ── */
+.panel{
+  margin-top:22px; background:var(--panel); border:1px solid var(--panel-rule);
+  border-radius:5px; padding:18px;
+}
+.panel table{background:transparent; font-size:13px}
+.panel td,.panel th{white-space:normal}
+
+/* ── notes ── */
+.notes{
+  margin-top:22px; background:var(--sunken); border:1px solid var(--rule);
+  border-radius:4px; padding:22px 26px;
+}
+.notes h3{font-size:16px; font-weight:700; margin-bottom:12px}
+.notes ul{margin:0; padding-left:18px; color:var(--muted); font-size:14.5px}
+.notes li+li{margin-top:9px}
+.notes b{color:var(--ink); font-weight:600}
+
+footer{
+  margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+  font-size:12.5px; color:var(--faint);
+}
+@media (max-width:720px){
+  .trio{grid-template-columns:1fr}
+  .wrap{padding:0 18px 64px}
+}
+</style>
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:22px 20px 16px; margin-top:22px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:12px; text-align:center}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 비대칭 배분</div>
+  <h1>비중을 바꾸면 나아지나</h1>
+  <p class="dek">반반이 아니라 60:40, 70:30으로 기울이면 더 나은지 확인했습니다.
+  5% 단위로 가능한 모든 비중을 돌렸고, 그렇게 찾은 최적 비중이
+  실제로 쓸 만한지까지 검증했습니다.</p>
+  <div class="setup">
+    <span>총자본 <b>$60,000 고정</b></span>
+    <span>비중 단위 <b>5%</b></span>
+    <span>격자 <b>2종 19 · 3종 171 · 4종 969</b></span>
+    <span>수수료 <b>편도 0.07%</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">비중 최적화는 하지 마십시오. 균등 배분이 더 낫습니다.</div>
+    <p>훈련 구간에서 찾은 최적 비중을 검증 구간에 적용했더니
+    <b>11개 조합 중 8개에서 균등 배분에게 졌습니다</b>(평균 -12.3%).
+    사후에 알 수 있는 최선을 100이라 할 때, 균등 배분은 <b>96%</b>를 회수했지만
+    훈련 최적 비중은 <b>84%</b>에 그쳤습니다. 비중을 맞추려는 노력이
+    아무것도 안 하는 것보다 손해였습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">결정적 검증</div>
+  <h2>훈련 최적 비중을 실제로 써봤을 때</h2>
+  <div class="prose">
+    <p>2017~2023에서 각 조합의 최적 비중을 찾고, 그 비중을 그대로
+    <b>최적화에 한 번도 쓰지 않은 2024~2026</b>에 적용했습니다.
+    비교 대상은 아무 계산 없이 그냥 균등하게 나눈 배분입니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>조합</th><th>개수</th><th>훈련 최적 비중</th>
+        <th>검증: 훈련최적</th><th>검증: 균등</th><th>검증: 사후최적</th><th>차이</th>
+      </tr></thead>
+      <tbody><tr><td>이평4일 + 이평1일</td><td class="n">2</td><td class="n" style="color:var(--muted)">80/20</td><td class="n">6.90</td><td class="n"><b>7.10</b></td><td class="n" style="color:var(--faint)">7.22</td><td class="n" style="color:var(--neg);font-weight:600">-2.8%</td></tr>
+<tr><td>이평4일 + 중심주가</td><td class="n">2</td><td class="n" style="color:var(--muted)">95/5</td><td class="n">6.76</td><td class="n"><b>6.85</b></td><td class="n" style="color:var(--faint)">7.17</td><td class="n" style="color:var(--neg);font-weight:600">-1.4%</td></tr>
+<tr><td>이평4일 + RSI</td><td class="n">2</td><td class="n" style="color:var(--muted)">65/35</td><td class="n">6.67</td><td class="n"><b>6.59</b></td><td class="n" style="color:var(--faint)">6.75</td><td class="n" style="color:var(--pos);font-weight:600">+1.2%</td></tr>
+<tr><td>이평1일 + 중심주가</td><td class="n">2</td><td class="n" style="color:var(--muted)">95/5</td><td class="n">6.68</td><td class="n"><b>6.43</b></td><td class="n" style="color:var(--faint)">7.02</td><td class="n" style="color:var(--pos);font-weight:600">+4.0%</td></tr>
+<tr style="background:var(--accent-soft)"><td>이평1일 + RSI</td><td class="n">2</td><td class="n" style="color:var(--muted)">5/95</td><td class="n">3.84</td><td class="n"><b>6.62</b></td><td class="n" style="color:var(--faint)">6.81</td><td class="n" style="color:var(--neg);font-weight:600">-42.0%</td></tr>
+<tr style="background:var(--accent-soft)"><td>중심주가 + RSI</td><td class="n">2</td><td class="n" style="color:var(--muted)">5/95</td><td class="n">3.77</td><td class="n"><b>5.96</b></td><td class="n" style="color:var(--faint)">6.03</td><td class="n" style="color:var(--neg);font-weight:600">-36.8%</td></tr>
+<tr><td>이평4일 + 이평1일 + 중심주가</td><td class="n">3</td><td class="n" style="color:var(--muted)">75/20/5</td><td class="n">6.89</td><td class="n"><b>7.53</b></td><td class="n" style="color:var(--faint)">7.83</td><td class="n" style="color:var(--neg);font-weight:600">-8.6%</td></tr>
+<tr><td>이평4일 + 이평1일 + RSI</td><td class="n">3</td><td class="n" style="color:var(--muted)">65/5/30</td><td class="n">6.76</td><td class="n"><b>6.92</b></td><td class="n" style="color:var(--faint)">7.24</td><td class="n" style="color:var(--neg);font-weight:600">-2.3%</td></tr>
+<tr><td>이평4일 + 중심주가 + RSI</td><td class="n">3</td><td class="n" style="color:var(--muted)">65/5/30</td><td class="n">6.65</td><td class="n"><b>6.52</b></td><td class="n" style="color:var(--faint)">7.07</td><td class="n" style="color:var(--pos);font-weight:600">+2.0%</td></tr>
+<tr style="background:var(--accent-soft)"><td>이평1일 + 중심주가 + RSI</td><td class="n">3</td><td class="n" style="color:var(--muted)">5/5/90</td><td class="n">3.82</td><td class="n"><b>6.86</b></td><td class="n" style="color:var(--faint)">7.12</td><td class="n" style="color:var(--neg);font-weight:600">-44.3%</td></tr>
+<tr><td>이평4일 + 이평1일 + 중심주가 + RSI</td><td class="n">4</td><td class="n" style="color:var(--muted)">65/5/5/25</td><td class="n">6.76</td><td class="n"><b>7.09</b></td><td class="n" style="color:var(--faint)">7.71</td><td class="n" style="color:var(--neg);font-weight:600">-4.6%</td></tr></tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>강조된 두 줄이 이 표의 핵심입니다. 훈련 구간에서
+    <b>이평1일+RSI</b>는 RSI에 95%를 몰아주는 것이 최적이었는데,
+    검증 구간에서 그 비중은 Calmar 3.84에 그쳤습니다 — 균등의 6.62 대비 <b>-42%</b>입니다.
+    <b>이평1일+중심주가+RSI</b>도 RSI 90% 몰빵이 최적이었고 검증에서 -44%였습니다.</p>
+    <p>비중 최적화가 실패하는 방식이 이렇습니다. 평소엔 조금 손해 보다가,
+    한 번 크게 틀립니다. 균등 배분은 그 큰 실패가 구조적으로 불가능합니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">왜 실패하나</div>
+  <h2>최적 비중은 구간마다 뒤집힌다</h2>
+  <p class="lede">같은 조합인데 어느 구간을 보느냐에 따라 최적 비중이 정반대로 갑니다.
+  <b>이평4일 + 이평1일</b>은 전체에서 55:45, 훈련에서 80:20, 검증에서 <b>25:75</b>였습니다.
+  마지막 열의 '고원 비율'은 최적 대비 95% 이상 성적을 내는 격자점의 비율로,
+  높을수록 비중 선택이 성적에 영향을 덜 준다는 뜻입니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>조합</th><th>개수</th><th>최적: 전체</th><th>최적: 훈련</th><th>최적: 검증</th>
+        <th>균등의 손해</th><th>고원 비율</th>
+      </tr></thead>
+      <tbody><tr><td>이평1일 + RSI</td><td class="n">2</td><td class="n" style="color:var(--muted)">80/20</td><td class="n" style="color:var(--muted)">5/95</td><td class="n" style="color:var(--muted)">65/35</td><td class="n">3.2%</td><td class="n" style="color:var(--faint)">63%</td></tr>
+<tr><td>이평1일 + 중심주가</td><td class="n">2</td><td class="n" style="color:var(--muted)">75/25</td><td class="n" style="color:var(--muted)">95/5</td><td class="n" style="color:var(--muted)">80/20</td><td class="n">2.4%</td><td class="n" style="color:var(--faint)">68%</td></tr>
+<tr><td>이평4일 + RSI</td><td class="n">2</td><td class="n" style="color:var(--muted)">60/40</td><td class="n" style="color:var(--muted)">65/35</td><td class="n" style="color:var(--muted)">90/10</td><td class="n">4.5%</td><td class="n" style="color:var(--faint)">47%</td></tr>
+<tr><td>이평4일 + 이평1일</td><td class="n">2</td><td class="n" style="color:var(--muted)">55/45</td><td class="n" style="color:var(--muted)">80/20</td><td class="n" style="color:var(--muted)">25/75</td><td class="n">2.0%</td><td class="n" style="color:var(--faint)">58%</td></tr>
+<tr class="sum"><td>이평4일 + 중심주가</td><td class="n">2</td><td class="n" style="color:var(--muted)">50/50</td><td class="n" style="color:var(--muted)">95/5</td><td class="n" style="color:var(--muted)">85/15</td><td class="n">0.0%</td><td class="n" style="color:var(--faint)">68%</td></tr>
+<tr><td>중심주가 + RSI</td><td class="n">2</td><td class="n" style="color:var(--muted)">30/70</td><td class="n" style="color:var(--muted)">5/95</td><td class="n" style="color:var(--muted)">65/35</td><td class="n">0.4%</td><td class="n" style="color:var(--faint)">95%</td></tr>
+<tr><td>이평1일 + 중심주가 + RSI</td><td class="n">3</td><td class="n" style="color:var(--muted)">75/20/5</td><td class="n" style="color:var(--muted)">5/5/90</td><td class="n" style="color:var(--muted)">40/25/35</td><td class="n">5.2%</td><td class="n" style="color:var(--faint)">40%</td></tr>
+<tr><td>이평4일 + 이평1일 + RSI</td><td class="n">3</td><td class="n" style="color:var(--muted)">35/30/35</td><td class="n" style="color:var(--muted)">65/5/30</td><td class="n" style="color:var(--muted)">20/75/5</td><td class="n">0.0%</td><td class="n" style="color:var(--faint)">46%</td></tr>
+<tr><td>이평4일 + 이평1일 + 중심주가</td><td class="n">3</td><td class="n" style="color:var(--muted)">30/20/50</td><td class="n" style="color:var(--muted)">75/20/5</td><td class="n" style="color:var(--muted)">20/55/25</td><td class="n">1.4%</td><td class="n" style="color:var(--faint)">49%</td></tr>
+<tr><td>이평4일 + 중심주가 + RSI</td><td class="n">3</td><td class="n" style="color:var(--muted)">50/20/30</td><td class="n" style="color:var(--muted)">65/5/30</td><td class="n" style="color:var(--muted)">75/15/10</td><td class="n">2.8%</td><td class="n" style="color:var(--faint)">44%</td></tr>
+<tr><td>이평4일 + 이평1일 + 중심주가 + RSI</td><td class="n">4</td><td class="n" style="color:var(--muted)">35/20/40/5</td><td class="n" style="color:var(--muted)">65/5/5/25</td><td class="n" style="color:var(--muted)">20/55/20/5</td><td class="n">6.4%</td><td class="n" style="color:var(--faint)">36%</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">비중 곡선</div>
+  <h2>봉우리가 아니라 고원이다</h2>
+  <p class="lede">2종 조합 6가지의 비중별 Calmar입니다(전체 기간).
+  가로축은 앞쪽 프리셋의 비중, 점은 각 곡선의 최고점입니다.
+  대부분 넓고 평평해서, 어디를 골라도 큰 차이가 없습니다.</p>
+  <div class="chart">
+    <svg viewBox="0 0 760 330" width="100%" role="img" style="display:block;overflow:visible"><line x1="56" y1="290.0" x2="744" y2="290.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="294.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">1.8</text><line x1="56" y1="230.5" x2="744" y2="230.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="234.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.1</text><line x1="56" y1="171.0" x2="744" y2="171.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="175.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.4</text><line x1="56" y1="111.5" x2="744" y2="111.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="115.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.7</text><line x1="56" y1="52.0" x2="744" y2="52.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="56.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">3.0</text><text x="56.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">0%</text><text x="193.6" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">20%</text><text x="331.2" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">40%</text><text x="468.8" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">60%</text><text x="606.4" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">80%</text><text x="744.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">100%</text><text x="400" y="326" text-anchor="middle" font-size="11" fill="var(--muted)">첫 번째 프리셋 비중</text><text x="14" y="46" font-size="11" fill="var(--muted)">Calmar</text><path d="M90.4,191.7 L124.8,182.3 L159.2,172.5 L193.6,162.1 L228.0,151.3 L262.4,139.8 L296.8,127.8 L331.2,115.0 L365.6,101.4 L400.0,87.0 L434.4,75.0 L468.8,76.2 L503.2,77.2 L537.6,78.2 L572.0,79.1 L606.4,79.9 L640.8,80.7 L675.2,81.4 L709.6,98.9" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="434.4" cy="75.0" r="4" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,216.0 L124.8,188.6 L159.2,163.4 L193.6,140.1 L228.0,119.8 L262.4,100.0 L296.8,90.5 L331.2,86.0 L365.6,81.6 L400.0,80.9 L434.4,84.0 L468.8,87.3 L503.2,90.7 L537.6,94.2 L572.0,97.8 L606.4,101.4 L640.8,105.0 L675.2,108.6 L709.6,116.6" fill="none" stroke="#C0662B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="400.0" cy="80.9" r="4" fill="#C0662B" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,249.1 L124.8,230.6 L159.2,214.2 L193.6,198.2 L228.0,182.4 L262.4,166.7 L296.8,151.0 L331.2,135.3 L365.6,119.5 L400.0,103.6 L434.4,87.5 L468.8,77.3 L503.2,78.6 L537.6,79.6 L572.0,83.5 L606.4,89.8 L640.8,96.2 L675.2,102.6 L709.6,109.2" fill="none" stroke="#3E8A6E" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="468.8" cy="77.3" r="4" fill="#3E8A6E" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,234.2 L124.8,226.0 L159.2,219.4 L193.6,213.9 L228.0,209.1 L262.4,204.9 L296.8,201.2 L331.2,197.8 L365.6,194.7 L400.0,191.8 L434.4,189.2 L468.8,186.7 L503.2,184.4 L537.6,182.2 L572.0,180.1 L606.4,182.8 L640.8,188.0 L675.2,192.7 L709.6,196.9" fill="none" stroke="#8A5BA6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="572.0" cy="180.1" r="4" fill="#8A5BA6" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,255.4 L124.8,238.8 L159.2,224.5 L193.6,219.9 L228.0,215.5 L262.4,211.4 L296.8,207.6 L331.2,204.0 L365.6,200.5 L400.0,197.2 L434.4,194.1 L468.8,191.1 L503.2,188.2 L537.6,185.5 L572.0,182.8 L606.4,181.7 L640.8,187.0 L675.2,191.9 L709.6,196.5" fill="none" stroke="#B3352C" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="606.4" cy="181.7" r="4" fill="#B3352C" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,267.0 L124.8,261.6 L159.2,255.8 L193.6,250.0 L228.0,245.6 L262.4,244.3 L296.8,244.8 L331.2,245.3 L365.6,245.7 L400.0,246.1 L434.4,246.4 L468.8,246.7 L503.2,246.9 L537.6,247.0 L572.0,247.0 L606.4,246.9 L640.8,246.7 L675.2,246.2 L709.6,245.6" fill="none" stroke="#4C7FA8" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="262.4" cy="244.3" r="4" fill="#4C7FA8" stroke="var(--surface)" stroke-width="1.5"/></svg><div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;justify-content:center"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:var(--accent);display:inline-block"></i>이평4일 → 이평1일</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#C0662B;display:inline-block"></i>이평4일 → 중심주가</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#3E8A6E;display:inline-block"></i>이평4일 → RSI</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#8A5BA6;display:inline-block"></i>이평1일 → 중심주가</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#B3352C;display:inline-block"></i>이평1일 → RSI</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#4C7FA8;display:inline-block"></i>중심주가 → RSI</span></div>
+    <div class="cap">전체 기간 2011~2026 · 수수료 0.07% · 5% 단위</div>
+  </div>
+  <div class="prose" style="margin-top:26px">
+    <p>같은 조합을 구간만 바꿔 그리면 봉우리가 어떻게 움직이는지 보입니다.
+    아래는 지금 운용 중인 <b>이평4일 + 중심주가</b>입니다.</p>
+  </div>
+  <div class="chart">
+    <svg viewBox="0 0 760 330" width="100%" role="img" style="display:block;overflow:visible"><line x1="56" y1="290.0" x2="744" y2="290.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="294.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">1.6</text><line x1="56" y1="230.5" x2="744" y2="230.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="234.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">3.1</text><line x1="56" y1="171.0" x2="744" y2="171.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="175.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">4.7</text><line x1="56" y1="111.5" x2="744" y2="111.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="115.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">6.2</text><line x1="56" y1="52.0" x2="744" y2="52.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="56.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">7.8</text><text x="56.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">0%</text><text x="193.6" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">20%</text><text x="331.2" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">40%</text><text x="468.8" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">60%</text><text x="606.4" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">80%</text><text x="744.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">100%</text><text x="400" y="326" text-anchor="middle" font-size="11" fill="var(--muted)">첫 번째 프리셋 비중</text><text x="14" y="46" font-size="11" fill="var(--muted)">Calmar</text><path d="M90.4,267.0 L124.8,261.8 L159.2,257.0 L193.6,252.6 L228.0,248.7 L262.4,245.0 L296.8,243.2 L331.2,242.3 L365.6,241.5 L400.0,241.4 L434.4,241.9 L468.8,242.6 L503.2,243.2 L537.6,243.9 L572.0,244.5 L606.4,245.2 L640.8,245.9 L675.2,246.6 L709.6,248.1" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="400.0" cy="241.4" r="4" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,239.7 L124.8,234.9 L159.2,230.1 L193.6,225.2 L228.0,220.2 L262.4,215.1 L296.8,212.6 L331.2,211.0 L365.6,209.5 L400.0,208.1 L434.4,206.6 L468.8,205.3 L503.2,203.9 L537.6,202.6 L572.0,201.3 L606.4,200.1 L640.8,199.1 L675.2,198.8 L709.6,198.5" fill="none" stroke="#C0662B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="709.6" cy="198.5" r="4" fill="#C0662B" stroke="var(--surface)" stroke-width="1.5"/><path d="M90.4,149.7 L124.8,113.2 L159.2,104.3 L193.6,101.7 L228.0,99.0 L262.4,96.5 L296.8,94.4 L331.2,92.0 L365.6,89.6 L400.0,87.3 L434.4,85.1 L468.8,83.1 L503.2,81.0 L537.6,79.1 L572.0,77.0 L606.4,75.2 L640.8,75.0 L675.2,80.3 L709.6,91.0" fill="none" stroke="#3E8A6E" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="640.8" cy="75.0" r="4" fill="#3E8A6E" stroke="var(--surface)" stroke-width="1.5"/></svg><div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;justify-content:center"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:var(--accent);display:inline-block"></i>전체 2011~</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#C0662B;display:inline-block"></i>IS 2017~2023</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#3E8A6E;display:inline-block"></i>OOS 2024~2026</span></div>
+    <div class="cap">이평4일 + 중심주가 · 전체 / 훈련 / 검증 구간 비교</div>
+  </div>
+  <div class="prose" style="margin-top:26px">
+    <p>전체 기간에서는 50:50 근처가 봉우리인데, 훈련 구간만 보면 95:5로,
+    검증 구간만 보면 85:15로 옮겨갑니다. 세 곡선 모두 평평한 편이라
+    어느 비중을 써도 크게 손해 보지 않지만, <b>봉우리 위치 자체는 신호가 아니라 잡음</b>입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">지금 운용</div>
+  <h2>이평4일 + 중심주가 50:50은 이미 최적이었다</h2>
+  <div class="prose">
+    <p>전체 기간 기준으로 이 조합의 최적 비중은 정확히 <b>50:50</b>이었습니다.
+    균등 배분이 최적 대비 잃는 것이 <b>0.0%</b>, 즉 <b>0</b>입니다.
+    비중을 조정할 이유가 없습니다.</p>
+    <p>덧붙이면, 조합에 프리셋을 더 많이 넣을수록 비중 최적화의 위험이 커집니다.
+    4종 조합은 격자가 969개나 되는데 고원 비율은 36%로 가장 좁고,
+    균등 대비 손해도 가장 컸습니다. 자유도가 늘수록 과최적화 여지도 늘어난다는
+    교과서적인 모습입니다.</p>
+    <p><b>결론은 단순합니다.</b> 몇 개를 섞을지만 정하고, 비중은 균등하게 나누십시오.
+    앞선 조합 리포트의 결론("개수는 믿을 수 있고 순위는 못 믿는다")과 정확히 같은 성질입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 분석의 한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>검증 구간이 2년 8개월로 짧습니다.</b> 균등이 이겼다는 결론도
+      이 한 구간의 결과입니다. 다만 방향이 일관되고(11개 중 8개), 실패 사례의
+      크기가 크다는 점은 우연으로 보기 어렵습니다.</li>
+      <li><b>비중을 고정한 채 재조정하지 않았습니다.</b> 주기적 리밸런싱은
+      다루지 않았고, 각 계좌가 자기 자본만으로 복리 운용됩니다.</li>
+      <li><b>Calmar 기준입니다.</b> Sharpe 나 CAGR 을 목표로 하면 최적 비중이 달라지지만,
+      순위가 불안정하다는 성질 자체는 바뀌지 않습니다.</li>
+      <li><b>총자본 $60,000 고정</b>이라 조합이 커질수록 계좌당 금액이 줄어듭니다.
+      정수 주식수 반올림은 그대로 반영했지만, 자본이 아주 작아지면
+      전략이 제대로 작동하지 않을 수 있습니다(5% = $3,000).</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 두 리포트와 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 계산 기준일 2026-09-01 ·
+  재현: <code>python combo_weights.py &amp;&amp; python mkreport_weights.py</code>
+</footer>
+
+</div>

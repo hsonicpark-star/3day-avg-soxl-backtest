@@ -1,0 +1,173 @@
+__HEAD__
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:22px 20px 16px; margin-top:22px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:12px; text-align:center}
+.build{background:var(--surface); border:1px solid var(--rule);
+       border-left:3px solid var(--accent); border-radius:4px;
+       padding:24px 28px; margin-top:22px}
+.build h3{font-size:17px; font-weight:700; margin-bottom:10px}
+.build p{margin:0 0 12px; color:var(--muted); font-size:15px}
+.build p:last-child{margin-bottom:0}
+table.split thead th{font-size:10.5px}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 이평4일 + 중심주가</div>
+  <h1>1주 매수로 바꾸면</h1>
+  <p class="dek">1티어를 "시드의 1%만큼" 사는 대신 "딱 1주"만 사도록 바꾸면
+  무엇이 달라지는지 비교했습니다.</p>
+  <div class="setup">
+    <span>계좌당 <b>$30,000</b> · 합계 <b>$60,000</b></span>
+    <span>기간 <b>2011-01-03 ~ 2026-08-20</b></span>
+    <span>수수료 <b>편도 0.07%</b></span>
+    <span>2티어 <b>99% 그대로</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">성과는 사실상 같습니다. 그런데 부수 효과가 큽니다 —
+    비율 파라미터가 성과와 완전히 분리됩니다.</div>
+    <p>전체 기간 Calmar __A_FULL__ → __B_FULL__로 차이가 1% 미만이고,
+    구간에 따라 부호도 엇갈립니다. 성과만 보면 바꿀 이유도 안 바꿀 이유도 없습니다.
+    진짜 차이는 <b>1티어 비율을 마음대로 올릴 수 있게 된다</b>는 데 있습니다.
+    지난번 경고했던 "1주도 못 사서 전략이 멈추는" 문제를 여기서 없앨 수 있습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">성과 비교</div>
+  <h2>세 구간 모두 차이가 1% 안팎</h2>
+  <p class="lede">개별 전략만 보면 1주 고정이 근소하게 낫고(이평4일 2.63→2.65,
+  중심주가 2.03→2.06), 합산은 근소하게 못합니다(2.85→2.83).
+  방향이 일정하지 않다는 것 자체가 <b>의미 있는 차이가 아니라는</b> 뜻입니다.</p>
+  <div class="scroll">
+    <table class="split">
+      <thead>
+        <tr>
+          <th rowspan="2">대상</th><th rowspan="2">방식</th>
+          <th colspan="3">전체 2011~</th><th colspan="3">훈련 2017~2023</th>
+          <th colspan="3">검증 2024~2026</th>
+        </tr>
+        <tr>
+          <th>Calmar</th><th>CAGR</th><th>MDD</th>
+          <th>Calmar</th><th>CAGR</th><th>MDD</th>
+          <th>Calmar</th><th>CAGR</th><th>MDD</th>
+        </tr>
+      </thead>
+      <tbody>__PTAB__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">무엇이 달라지나</div>
+  <h2>1티어에 들어가는 돈이 사라진다</h2>
+  <p class="lede">체결 건수는 거의 그대로인데(283 → 286건) 투입 금액이 완전히 달라집니다.
+  "1%"는 복리로 불어난 시드의 1%라서, 후반부에는 한 번에 수만 주가 나갔습니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>전략</th><th>방식</th><th>1티어 체결</th>
+        <th>중앙 수량</th><th>최대 수량</th><th>누적 투입액</th>
+      </tr></thead>
+      <tbody>__QTAB__</tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>이평4일 기준 1티어 누적 투입액이 <b>$__CAP_A__ → $__CAP_B__</b>로 줄어듭니다.
+    그런데도 성과가 같다는 것은, 앞선 리포트의 결론을 다시 확인해 줍니다 —
+    <b>1티어는 수익을 내는 다리가 아니라 2티어를 여는 스위치</b>입니다.
+    스위치는 1주면 충분합니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">진짜 효과</div>
+  <h2>비율이 성과와 분리된다</h2>
+  <p class="lede">지금 방식에서는 1티어 비율을 올리면 성과가 무너집니다.
+  1주 고정으로 바꾸면 비율은 <b>"주문을 낼 자격"만 결정하고 수량에는 관여하지 않으므로</b>,
+  1%든 90%든 결과가 똑같습니다.</p>
+  <div class="chart">
+    __CHART__
+    <div class="cap">1티어 seed_w 를 올릴 때 · 50:50 합산 · 전체 기간</div>
+  </div>
+  <div class="prose" style="margin-top:26px">
+    <p>빨간 선은 지금 방식입니다. 90%까지 올리면 Calmar가 __A90__로
+    <b>__A90D__%</b> 무너집니다. 파란 선은 1주 고정으로, <b>완전히 평평합니다</b> —
+    소수점 셋째 자리까지 같습니다.</p>
+    <p>이게 왜 중요하냐면, 지난 리포트에서 <b>1티어 금액이 1주 값보다 작으면
+    2티어가 영영 안 열린다</b>고 경고했었습니다. 계좌 $30,000의 1%는 $300이라
+    SOXL이 $300을 넘으면 위험한 상황이었습니다. 지금 방식에서는 비율을 올려
+    여유를 확보하려 하면 성과를 잃었습니다. <b>1주 고정이면 그 맞교환이 사라집니다.</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">주의</div>
+  <h2>1주 고정만으로는 벽이 사라지지 않는다</h2>
+  <p class="lede">수량을 1주로 바꿔도 비율을 1%에 그대로 두면
+  <b>주문 자격 조건이 그대로라 벽도 그대로</b>입니다.
+  아래는 2024년 이후 2티어 체결 건수이고, 맨 오른쪽이 정상값입니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>계좌</th><th>전략</th><th>A 현재</th><th>B 1주 고정</th>
+        <th>C 1주 + 비율 50%</th><th>정상</th>
+      </tr></thead>
+      <tbody>__RTAB__</tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>$3,000 계좌에서 A와 B는 똑같이 망가지고(167건), <b>C만 정상으로 돌아옵니다.</b>
+    즉 <b>수량 고정과 비율 인상을 같이 해야</b> 의미가 있습니다.
+    지금 $30,000 계좌에서는 셋 다 정상이라 당장 급한 변경은 아닙니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">적용하려면</div>
+  <h2>지금 엔진에는 없는 기능입니다</h2>
+  <div class="build">
+    <h3>분석용으로만 구현했습니다</h3>
+    <p>현재 <code>manse_engine.py</code>에는 "정해진 주식 수만 매수" 모드가 없습니다.
+    레벨 옵션의 <code>fixed_qty</code>(정량매수)는 이름과 달리
+    "사다리 없이 시드÷주문가"라서 여전히 금액 기준입니다.</p>
+    <p>이번 비교는 백테스트를 돌리는 동안에만 수량 계산 함수를 가로채는 방식으로 냈습니다.
+    <b>엔진과 앱은 건드리지 않았습니다.</b> 실제로 쓰시려면 티어 설정에
+    "1티어 고정 수량" 옵션을 추가하는 작업이 필요합니다.</p>
+    <p>다만 지금 당장 바꿀 이유는 약합니다 — 성과 이득이 없고,
+    $30,000 계좌에서는 벽 문제도 아직 안 걸립니다.
+    <b>SOXL이 $250~300에 다시 근접하거나</b> 계좌를 쪼갤 계획이 생기면
+    그때 검토하시는 편이 좋겠습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 분석의 한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>"1주"는 절대 수량이라 시드 규모와 무관합니다.</b> 초기 구간에서는
+      1%(=$300, 당시 SOXL $0.6로 500주)보다 압도적으로 작고,
+      후반부에는 차이가 더 벌어집니다. 성과가 비슷하게 나온 것은
+      1티어 기여 자체가 원래 작았기 때문입니다.</li>
+      <li><b>2티어는 99% 그대로 두었습니다.</b> 2티어까지 정량으로 바꾸면
+      전혀 다른 전략이 됩니다.</li>
+      <li><b>세 레벨에 같은 설정을 적용했습니다.</b> 레벨별 차등은 다루지 않았습니다.</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 리포트들과 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 계산 기준일 2026-09-02 ·
+  재현: <code>python tier_oneshare.py &amp;&amp; python mkreport_oneshare.py</code>
+</footer>
+
+</div>

@@ -1,0 +1,349 @@
+<title>티어 비율을 바꾸면</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F6F8FA; --surface:#FFFFFF; --sunken:#EEF2F6;
+  --ink:#16202B; --muted:#5A6B7B; --faint:#8494A3;
+  --rule:#DCE3EA; --rule-strong:#C3CFDA;
+  --accent:#1D4E89; --accent-soft:#E7EFF8;
+  --pos:#1B7A4B; --neg:#B3352C;
+  --panel:#141A22; --panel-rule:#2C3644;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+    --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+    --rule:#253240; --rule-strong:#33414F;
+    --accent:#74A9E0; --accent-soft:#1A2937;
+    --pos:#4ADE80; --neg:#F87171;
+    --panel:#0B1118; --panel-rule:#26303C;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+  --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+  --rule:#253240; --rule-strong:#33414F;
+  --accent:#74A9E0; --accent-soft:#1A2937;
+  --pos:#4ADE80; --neg:#F87171;
+  --panel:#0B1118; --panel-rule:#26303C;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:'IBM Plex Sans KR',system-ui,-apple-system,sans-serif;
+  font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:'Gowun Batang','Noto Serif KR',Georgia,serif; text-wrap:balance; margin:0}
+.num{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--rule-strong); padding:64px 0 28px; margin-bottom:44px}
+.eyebrow{
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; margin-bottom:18px;
+}
+h1{font-size:clamp(34px,5.2vw,52px); line-height:1.16; font-weight:700; letter-spacing:-.01em}
+.dek{color:var(--muted); font-size:17px; margin-top:16px; max-width:60ch}
+.setup{
+  display:flex; flex-wrap:wrap; gap:0 28px; margin-top:26px;
+  font-size:13px; color:var(--faint);
+}
+.setup b{color:var(--ink); font-weight:500}
+
+/* ── sections ── */
+section{margin-top:60px}
+h2{font-size:26px; font-weight:700; letter-spacing:-.005em}
+.kicker{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--faint); font-weight:600; margin-bottom:10px;
+}
+h2+p,.lede{margin-top:14px; color:var(--muted)}
+.lede{font-size:17px}
+
+/* ── verdict ── */
+.verdict{
+  background:var(--surface); border:1px solid var(--rule);
+  border-left:3px solid var(--accent); border-radius:4px;
+  padding:30px 34px; margin-top:8px;
+}
+.verdict .line{
+  font-family:'Gowun Batang','Noto Serif KR',Georgia,serif;
+  font-size:clamp(21px,2.7vw,27px); line-height:1.45; font-weight:700;
+  text-wrap:balance;
+}
+.verdict p{margin:14px 0 0; color:var(--muted); font-size:15px}
+
+/* ── stat trio ── */
+.trio{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:24px}
+.card{
+  background:var(--surface); border:1px solid var(--rule);
+  border-radius:4px; padding:20px 22px; min-width:0;
+}
+.card.hero{border-color:var(--accent); background:var(--accent-soft)}
+.card .who{
+  font-size:12px; font-weight:600; letter-spacing:.06em;
+  color:var(--muted); margin-bottom:14px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.card.hero .who{color:var(--accent)}
+.card .big{font-size:30px; font-weight:600; line-height:1.1}
+.card .cap{font-size:12px; color:var(--faint); margin-top:4px}
+.card dl{margin:16px 0 0; display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px}
+.card dt{color:var(--faint)}
+.card dd{margin:0; text-align:right; font-weight:500}
+
+/* ── tables ── */
+.scroll{overflow-x:auto; margin-top:22px; border:1px solid var(--rule); border-radius:4px}
+table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--surface)}
+th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{
+  background:var(--sunken); color:var(--muted); font-weight:600;
+  font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  border-bottom:1px solid var(--rule-strong);
+}
+tbody tr+tr td{border-top:1px solid var(--rule)}
+tbody tr.sum td{background:var(--accent-soft); font-weight:600}
+tbody tr.sum td:first-child{color:var(--accent)}
+td.n{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.pos{color:var(--pos)} .neg{color:var(--neg)}
+.grp td{
+  background:var(--sunken); font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600;
+}
+
+/* ── heatmap panel ── */
+.panel{
+  margin-top:22px; background:var(--panel); border:1px solid var(--panel-rule);
+  border-radius:5px; padding:18px;
+}
+.panel table{background:transparent; font-size:13px}
+.panel td,.panel th{white-space:normal}
+
+/* ── notes ── */
+.notes{
+  margin-top:22px; background:var(--sunken); border:1px solid var(--rule);
+  border-radius:4px; padding:22px 26px;
+}
+.notes h3{font-size:16px; font-weight:700; margin-bottom:12px}
+.notes ul{margin:0; padding-left:18px; color:var(--muted); font-size:14.5px}
+.notes li+li{margin-top:9px}
+.notes b{color:var(--ink); font-weight:600}
+
+footer{
+  margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+  font-size:12.5px; color:var(--faint);
+}
+@media (max-width:720px){
+  .trio{grid-template-columns:1fr}
+  .wrap{padding:0 18px 64px}
+}
+</style>
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:22px 20px 16px; margin-top:22px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:12px; text-align:center}
+.warn{background:var(--surface); border:1px solid var(--rule);
+      border-left:3px solid var(--neg); border-radius:4px; padding:24px 28px; margin-top:22px}
+.warn h3{font-size:17px; font-weight:700; margin-bottom:10px; color:var(--neg)}
+.warn p{margin:0 0 12px; color:var(--muted); font-size:15px}
+.warn p:last-child{margin-bottom:0}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 이평4일 + 중심주가</div>
+  <h1>티어 비율을 바꾸면</h1>
+  <p class="dek">지금 1티어 1% / 2티어 99%로 운영 중인 시드 배분을
+  25:75처럼 바꾸면 어떻게 되는지 확인했습니다.
+  1%부터 95%까지 전 구간을 돌렸습니다.</p>
+  <div class="setup">
+    <span>계좌당 <b>$30,000</b> · 합계 <b>$60,000</b></span>
+    <span>비율 <b>1~95%</b> (세 레벨 동일 적용)</span>
+    <span>기간 <b>2011-01-03 ~ 2026-08-20</b></span>
+    <span>수수료 <b>편도 0.07%</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">지금 그대로 두십시오. 1%가 최적이고,
+    올릴수록 수익과 낙폭이 <em>동시에</em> 나빠집니다.</div>
+    <p>보통 이런 조정은 "수익을 줄이고 안정성을 얻는" 맞교환인데, 여기는 아닙니다.
+    25:75로 바꾸면 CAGR은 93.2% → 75.9%로 떨어지고
+    MDD는 -32.7% → -44.4%로 <b>더 깊어집니다.</b>
+    Calmar 기준 <b>-40%</b>입니다. 얻는 것이 없습니다.</p>
+  </div>
+
+  <div class="trio">
+    <div class="card hero">
+      <div class="who">1% / 99% · 현재</div>
+      <div class="big num">2.85</div>
+      <div class="cap">Calmar</div>
+      <dl>
+        <dt>CAGR</dt><dd class="num">93.2%</dd>
+        <dt>MDD</dt><dd class="num">-32.7%</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="who">25% / 75%</div>
+      <div class="big num">1.71</div>
+      <div class="cap">Calmar · -40%</div>
+      <dl>
+        <dt>CAGR</dt><dd class="num neg">75.9%</dd>
+        <dt>MDD</dt><dd class="num neg">-44.4%</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="who">50% / 50%</div>
+      <div class="big num">0.76</div>
+      <div class="cap">Calmar · -73%</div>
+      <dl>
+        <dt>CAGR</dt><dd class="num neg">52.3%</dd>
+        <dt>MDD</dt><dd class="num neg">-68.9%</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">전 구간 스윕</div>
+  <h2>올릴수록 단조롭게 나빠진다</h2>
+  <p class="lede">봉우리도 골짜기도 없이 한 방향입니다.
+  앞선 두 리포트에서 본 "구간마다 최적점이 뒤집히는" 현상이 여기서는 없습니다 —
+  전체·훈련·검증 <b>세 구간 모두에서, 두 전략 모두 1%가 최적</b>이었습니다.</p>
+  <div class="chart">
+    <svg viewBox="0 0 760 330" width="100%" role="img" style="display:block;overflow:visible"><line x1="56" y1="290.0" x2="744" y2="290.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="294.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">-0.09</text><line x1="56" y1="230.5" x2="744" y2="230.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="234.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">0.72</text><line x1="56" y1="171.0" x2="744" y2="171.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="175.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">1.54</text><line x1="56" y1="111.5" x2="744" y2="111.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="115.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.35</text><line x1="56" y1="52.0" x2="744" y2="52.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="56.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">3.17</text><text x="56.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">1%</text><text x="121.9" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">10%</text><text x="195.1" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">20%</text><text x="268.3" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">30%</text><text x="341.4" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">40%</text><text x="414.6" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">50%</text><text x="487.8" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">60%</text><text x="561.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">70%</text><text x="634.2" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">80%</text><text x="707.4" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">90%</text><text x="400" y="326" text-anchor="middle" font-size="11" fill="var(--muted)">1티어 시드 비율</text><text x="14" y="46" font-size="11" fill="var(--muted)">Calmar</text><path d="M56.0,91.4 L85.3,104.0 L121.9,118.6 L158.5,131.2 L195.1,143.6 L231.7,155.4 L268.3,166.5 L304.9,177.2 L341.4,193.1 L378.0,207.8 L414.6,219.5 L487.8,233.3 L561.0,244.0 L634.2,250.4 L707.4,256.6 L744.0,259.4" fill="none" stroke="#C0662B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="56.0" cy="91.4" r="4" fill="#C0662B" stroke="var(--surface)" stroke-width="1.5"/><path d="M56.0,135.0 L85.3,146.1 L121.9,160.5 L158.5,174.1 L195.1,187.0 L231.7,199.4 L268.3,213.4 L304.9,228.0 L341.4,242.6 L378.0,259.2 L414.6,266.8 L487.8,265.7 L561.0,264.0 L634.2,264.8 L707.4,266.0 L744.0,267.0" fill="none" stroke="#3E8A6E" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="56.0" cy="135.0" r="4" fill="#3E8A6E" stroke="var(--surface)" stroke-width="1.5"/><path d="M56.0,75.0 L85.3,83.6 L121.9,101.4 L158.5,122.8 L195.1,141.7 L231.7,158.5 L268.3,173.7 L304.9,187.5 L341.4,204.1 L378.0,217.5 L414.6,227.9 L487.8,240.4 L561.0,249.4 L634.2,254.7 L707.4,259.9 L744.0,262.2" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="56.0" cy="75.0" r="4" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5"/></svg><div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;justify-content:center"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#C0662B;display:inline-block"></i>이평4일</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#3E8A6E;display:inline-block"></i>중심주가</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:var(--accent);display:inline-block"></i>50:50 합산</span></div>
+    <div class="cap">전체 기간 2011~2026 · 수수료 0.07%</div>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>1티어 / 2티어</th><th>CAGR</th><th>MDD</th><th>Calmar</th>
+        <th>Sharpe</th><th>최악일</th><th>현재 대비</th>
+      </tr></thead>
+      <tbody><tr class="sum"><td class="n">1% / 99%<span style="font-size:10px;letter-spacing:.08em;color:var(--accent);font-weight:600"> 현재</span></td><td class="n">93.2%</td><td class="n neg">-32.7%</td><td class="n"><b>2.85</b></td><td class="n">1.59</td><td class="n neg">-15.7%</td><td class="n" style="color:var(--faint);font-weight:600">+0%</td></tr>
+<tr><td class="n">5% / 95%</td><td class="n">90.6%</td><td class="n neg">-33.1%</td><td class="n"><b>2.74</b></td><td class="n">1.55</td><td class="n neg">-16.3%</td><td class="n" style="color:var(--neg);font-weight:600">-4%</td></tr>
+<tr><td class="n">10% / 90%</td><td class="n">87.2%</td><td class="n neg">-35.0%</td><td class="n"><b>2.49</b></td><td class="n">1.51</td><td class="n neg">-17.0%</td><td class="n" style="color:var(--neg);font-weight:600">-13%</td></tr>
+<tr><td class="n">15% / 85%</td><td class="n">83.6%</td><td class="n neg">-38.0%</td><td class="n"><b>2.20</b></td><td class="n">1.46</td><td class="n neg">-17.8%</td><td class="n" style="color:var(--neg);font-weight:600">-23%</td></tr>
+<tr><td class="n">20% / 80%</td><td class="n">79.9%</td><td class="n neg">-41.2%</td><td class="n"><b>1.94</b></td><td class="n">1.40</td><td class="n neg">-18.6%</td><td class="n" style="color:var(--neg);font-weight:600">-32%</td></tr>
+<tr><td class="n">25% / 75%</td><td class="n">75.9%</td><td class="n neg">-44.4%</td><td class="n"><b>1.71</b></td><td class="n">1.34</td><td class="n neg">-19.3%</td><td class="n" style="color:var(--neg);font-weight:600">-40%</td></tr>
+<tr><td class="n">30% / 70%</td><td class="n">71.7%</td><td class="n neg">-47.7%</td><td class="n"><b>1.50</b></td><td class="n">1.27</td><td class="n neg">-20.2%</td><td class="n" style="color:var(--neg);font-weight:600">-47%</td></tr>
+<tr><td class="n">40% / 60%</td><td class="n">62.4%</td><td class="n neg">-57.4%</td><td class="n"><b>1.09</b></td><td class="n">1.13</td><td class="n neg">-21.9%</td><td class="n" style="color:var(--neg);font-weight:600">-62%</td></tr>
+<tr><td class="n">50% / 50%</td><td class="n">52.3%</td><td class="n neg">-68.9%</td><td class="n"><b>0.76</b></td><td class="n">0.98</td><td class="n neg">-23.7%</td><td class="n" style="color:var(--neg);font-weight:600">-73%</td></tr>
+<tr><td class="n">70% / 30%</td><td class="n">38.3%</td><td class="n neg">-82.5%</td><td class="n"><b>0.46</b></td><td class="n">0.82</td><td class="n neg">-29.4%</td><td class="n" style="color:var(--neg);font-weight:600">-84%</td></tr>
+<tr><td class="n">90% / 10%</td><td class="n">27.9%</td><td class="n neg">-86.9%</td><td class="n"><b>0.32</b></td><td class="n">0.70</td><td class="n neg">-30.8%</td><td class="n" style="color:var(--neg);font-weight:600">-89%</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">원인</div>
+  <h2>거래는 그대로고, 나쁜 다리에 돈만 더 실린다</h2>
+  <div class="prose">
+    <p>비율을 1%에서 25%로 바꿔도 <b>거래 건수와 승률은 한 건도 달라지지 않습니다.</b>
+    바뀌는 것은 각 주문에 실리는 금액뿐입니다. 그러니 결과의 차이는 전부
+    "어느 다리에 얼마를 태웠나"에서 나옵니다.</p>
+    <p>두 다리의 성격은 이렇습니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>전략</th><th>티어</th><th>거래</th><th>승률</th><th>평균 보유</th><th>손익비</th>
+      </tr></thead>
+      <tbody><tr><td>이평4일</td><td class="n">1티어</td><td class="n">283</td><td class="n">89.4%</td><td class="n">8.2일</td><td class="n" style="color:var(--neg);font-weight:600">0.32</td></tr>
+<tr class="sum"><td>이평4일</td><td class="n">2티어</td><td class="n">1,796</td><td class="n">57.3%</td><td class="n">1.4일</td><td class="n" style="color:var(--pos);font-weight:600">1.22</td></tr>
+<tr><td>중심주가</td><td class="n">1티어</td><td class="n">278</td><td class="n">91.0%</td><td class="n">5.1일</td><td class="n" style="color:var(--neg);font-weight:600">0.17</td></tr>
+<tr class="sum"><td>중심주가</td><td class="n">2티어</td><td class="n">2,522</td><td class="n">52.9%</td><td class="n">1.0일</td><td class="n" style="color:var(--pos);font-weight:600">1.74</td></tr></tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p><b>1티어는 승률이 89~91%로 높은데 손익비가 0.17~0.32에 불과합니다.</b>
+    자주 이기지만 질 때 크게 집니다 — 3배 레버리지 종목을 5~8일씩 들고 가니 당연합니다.
+    반면 2티어는 승률이 53~57%로 평범해도 손익비가 1.22~1.74이고, 보유는 하루 남짓입니다.</p>
+    <p>중심주가형의 중간 구간 1티어는 아예 <b>누적 손익이 마이너스</b>입니다.
+    승률 87.8%인데도 그렇습니다. 비율을 올린다는 건 이런 다리에 돈을 더 넣는 일입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">1티어의 정체</div>
+  <h2>1티어는 포지션이 아니라 스위치다</h2>
+  <div class="prose">
+    <p>티어 선택 방식이 <b>'보유'</b>라서, 보유 종목이 0개면 1티어 주문이 나가고
+    1개를 들고 있으면 2티어 주문이 나갑니다. 즉 1티어가 한 주라도 사줘야
+    <b>2티어가 열립니다.</b> 1%라는 숫자는 포지션 크기를 고른 게 아니라,
+    2티어를 여는 데 필요한 최소한만 쓰겠다는 설계입니다.</p>
+    <p>실제로 1% 아래로 더 내려도 성적은 계속 좋아집니다 — 다만 개선폭이
+    0.1%에서도 Calmar 2.63 → 2.68로 2% 남짓이라 실익이 없고,
+    아래에서 보듯 <b>위험합니다.</b></p>
+  </div>
+  <div class="chart">
+    <svg viewBox="0 0 760 330" width="100%" role="img" style="display:block;overflow:visible"><line x1="56" y1="290.0" x2="744" y2="290.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="294.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">1.78</text><line x1="56" y1="230.5" x2="744" y2="230.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="234.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.03</text><line x1="56" y1="171.0" x2="744" y2="171.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="175.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.28</text><line x1="56" y1="111.5" x2="744" y2="111.5" stroke="var(--rule)" stroke-width="1"/><text x="46" y="115.5" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.53</text><line x1="56" y1="52.0" x2="744" y2="52.0" stroke="var(--rule)" stroke-width="1"/><text x="46" y="56.0" text-anchor="end" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2.78</text><text x="56.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">0.1%</text><text x="112.2" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">0.5%</text><text x="182.4" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">1%</text><text x="322.8" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">2%</text><text x="463.2" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">3%</text><text x="744.0" y="312" text-anchor="middle" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono,monospace">5%</text><text x="400" y="326" text-anchor="middle" font-size="11" fill="var(--muted)">1티어 시드 비율 (확대)</text><text x="14" y="46" font-size="11" fill="var(--muted)">Calmar</text><path d="M56.0,75.0 L77.1,78.9 L112.2,81.6 L182.4,87.1 L322.8,97.7 L463.2,108.2 L744.0,128.6" fill="none" stroke="#C0662B" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="56.0" cy="75.0" r="4" fill="#C0662B" stroke="var(--surface)" stroke-width="1.5"/><path d="M56.0,222.7 L77.1,224.0 L112.2,226.1 L182.4,230.3 L322.8,238.9 L463.2,247.5 L744.0,267.0" fill="none" stroke="#3E8A6E" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="56.0" cy="222.7" r="4" fill="#3E8A6E" stroke="var(--surface)" stroke-width="1.5"/></svg><div style="display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;justify-content:center"><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#C0662B;display:inline-block"></i>이평4일</span><span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)"><i style="width:14px;height:2px;background:#3E8A6E;display:inline-block"></i>중심주가</span></div>
+    <div class="cap">1% 미만 확대 · 개선은 계속되지만 폭이 미미하다</div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">실무 주의</div>
+  <h2>1티어 금액이 1주 값보다 작으면 전략이 멈춘다</h2>
+  <div class="prose">
+    <p>1티어가 스위치인 이상, <b>최소 1주는 살 수 있어야 합니다.</b>
+    사지 못하면 2티어가 영영 열리지 않고 전략 대부분이 작동하지 않습니다.
+    아래는 2024년 이후 구간의 2티어 체결 건수로, 정상값은 277건입니다.</p>
+  </div>
+  <div class="scroll">
+    <table><thead><tr><th>계좌 규모</th><th>0.1%</th><th>0.5%</th><th>1%</th><th>2%</th></tr></thead><tbody><tr><td class="n">$3,000</td><td class="n" style="color:var(--neg);font-weight:600">0</td><td class="n" style="color:var(--neg);font-weight:600">12</td><td class="n" style="color:var(--neg);font-weight:600">167</td><td class="n" style="color:var(--pos);font-weight:400">277</td></tr>
+<tr><td class="n">$6,000</td><td class="n" style="color:var(--neg);font-weight:600">0</td><td class="n" style="color:var(--neg);font-weight:600">167</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td></tr>
+<tr><td class="n">$10,000</td><td class="n" style="color:var(--neg);font-weight:600">1</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td></tr>
+<tr class="sum"><td class="n">$30,000</td><td class="n" style="color:var(--neg);font-weight:600">151</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td></tr>
+<tr><td class="n">$60,000</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td></tr>
+<tr><td class="n">$100,000</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td><td class="n" style="color:var(--pos);font-weight:400">277</td></tr></tbody></table>
+  </div>
+  <div class="warn">
+    <h3>지금 세팅의 여유는 2.7주입니다</h3>
+    <p>계좌 $30,000의 1%는 $300이고, SOXL 현재가 $112.79 기준으로 <b>2.7주</b>입니다.
+    정상 작동합니다.</p>
+    <p>다만 <b>SOXL이 $300을 넘으면 1주도 못 삽니다.</b>
+    2024년 이후 최고가가 $300.77이었으니 이미 한 번 닿았던 수준입니다.
+    주가가 크게 오르거나 계좌가 줄어들면 확인이 필요합니다.
+    점검 방법은 간단합니다 — <b>1티어 주문 수량이 0주로 뜨는지</b> 보시면 됩니다.</p>
+    <p>혹시 그런 상황이 오면, 비율을 올리는 것이 맞는 대응입니다.
+    2%로만 올려도 $600이 되어 여유가 두 배가 되고, 성적 손실은 Calmar 기준 2% 남짓입니다.
+    <b>25%까지 갈 이유는 없습니다.</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 분석의 한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>세 레벨(바닥·중간·천장)에 같은 비율을 적용했습니다.</b>
+      레벨마다 다른 비율을 주는 경우는 다루지 않았습니다. 다만 세 레벨 모두
+      1티어의 손익비가 낮으므로 결론이 뒤집힐 가능성은 낮습니다.</li>
+      <li><b>2티어 구조는 그대로 두었습니다.</b> 티어를 3개 이상으로 늘리거나
+      1티어의 매수·매도 갭과 손절일수를 함께 바꾸면 이야기가 달라집니다.
+      여기서는 <b>비율만</b> 바꿨습니다.</li>
+      <li><b>1주 하한선은 계좌 규모와 주가에 따라 달라집니다.</b>
+      위 표는 2024년 이후 구간 기준이며, 시드가 복리로 커지면 여유도 함께 커집니다.</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 리포트들과 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 계산 기준일 2026-09-02 ·
+  재현: <code>python tier_ratio.py &amp;&amp; python tier_detail.py &amp;&amp; python mkreport_tier.py</code>
+</footer>
+
+</div>

@@ -1,0 +1,185 @@
+__HEAD__
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:22px 20px 16px; margin-top:22px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:12px; text-align:center}
+.warn{background:var(--surface); border:1px solid var(--rule);
+      border-left:3px solid var(--neg); border-radius:4px; padding:24px 28px; margin-top:22px}
+.warn h3{font-size:17px; font-weight:700; margin-bottom:10px; color:var(--neg)}
+.warn p{margin:0 0 12px; color:var(--muted); font-size:15px}
+.warn p:last-child{margin-bottom:0}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 이평4일 + 중심주가</div>
+  <h1>티어 비율을 바꾸면</h1>
+  <p class="dek">지금 1티어 1% / 2티어 99%로 운영 중인 시드 배분을
+  25:75처럼 바꾸면 어떻게 되는지 확인했습니다.
+  1%부터 95%까지 전 구간을 돌렸습니다.</p>
+  <div class="setup">
+    <span>계좌당 <b>$30,000</b> · 합계 <b>$60,000</b></span>
+    <span>비율 <b>1~95%</b> (세 레벨 동일 적용)</span>
+    <span>기간 <b>2011-01-03 ~ 2026-08-20</b></span>
+    <span>수수료 <b>편도 0.07%</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">지금 그대로 두십시오. 1%가 최적이고,
+    올릴수록 수익과 낙폭이 <em>동시에</em> 나빠집니다.</div>
+    <p>보통 이런 조정은 "수익을 줄이고 안정성을 얻는" 맞교환인데, 여기는 아닙니다.
+    25:75로 바꾸면 CAGR은 __CUR_CAGR__% → __C25_CAGR__%로 떨어지고
+    MDD는 __CUR_MDD__% → __C25_MDD__%로 <b>더 깊어집니다.</b>
+    Calmar 기준 <b>__C25_D__%</b>입니다. 얻는 것이 없습니다.</p>
+  </div>
+
+  <div class="trio">
+    <div class="card hero">
+      <div class="who">1% / 99% · 현재</div>
+      <div class="big num">__CUR_CAL__</div>
+      <div class="cap">Calmar</div>
+      <dl>
+        <dt>CAGR</dt><dd class="num">__CUR_CAGR__%</dd>
+        <dt>MDD</dt><dd class="num">__CUR_MDD__%</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="who">25% / 75%</div>
+      <div class="big num">__C25_CAL__</div>
+      <div class="cap">Calmar · __C25_D__%</div>
+      <dl>
+        <dt>CAGR</dt><dd class="num neg">__C25_CAGR__%</dd>
+        <dt>MDD</dt><dd class="num neg">__C25_MDD__%</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="who">50% / 50%</div>
+      <div class="big num">0.76</div>
+      <div class="cap">Calmar · -73%</div>
+      <dl>
+        <dt>CAGR</dt><dd class="num neg">52.3%</dd>
+        <dt>MDD</dt><dd class="num neg">-68.9%</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">전 구간 스윕</div>
+  <h2>올릴수록 단조롭게 나빠진다</h2>
+  <p class="lede">봉우리도 골짜기도 없이 한 방향입니다.
+  앞선 두 리포트에서 본 "구간마다 최적점이 뒤집히는" 현상이 여기서는 없습니다 —
+  전체·훈련·검증 <b>세 구간 모두에서, 두 전략 모두 1%가 최적</b>이었습니다.</p>
+  <div class="chart">
+    __CHART1__
+    <div class="cap">전체 기간 2011~2026 · 수수료 0.07%</div>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>1티어 / 2티어</th><th>CAGR</th><th>MDD</th><th>Calmar</th>
+        <th>Sharpe</th><th>최악일</th><th>현재 대비</th>
+      </tr></thead>
+      <tbody>__RTAB__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">원인</div>
+  <h2>거래는 그대로고, 나쁜 다리에 돈만 더 실린다</h2>
+  <div class="prose">
+    <p>비율을 1%에서 25%로 바꿔도 <b>거래 건수와 승률은 한 건도 달라지지 않습니다.</b>
+    바뀌는 것은 각 주문에 실리는 금액뿐입니다. 그러니 결과의 차이는 전부
+    "어느 다리에 얼마를 태웠나"에서 나옵니다.</p>
+    <p>두 다리의 성격은 이렇습니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>전략</th><th>티어</th><th>거래</th><th>승률</th><th>평균 보유</th><th>손익비</th>
+      </tr></thead>
+      <tbody>__BTAB__</tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p><b>1티어는 승률이 89~91%로 높은데 손익비가 0.17~0.32에 불과합니다.</b>
+    자주 이기지만 질 때 크게 집니다 — 3배 레버리지 종목을 5~8일씩 들고 가니 당연합니다.
+    반면 2티어는 승률이 53~57%로 평범해도 손익비가 1.22~1.74이고, 보유는 하루 남짓입니다.</p>
+    <p>중심주가형의 중간 구간 1티어는 아예 <b>누적 손익이 마이너스</b>입니다.
+    승률 87.8%인데도 그렇습니다. 비율을 올린다는 건 이런 다리에 돈을 더 넣는 일입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">1티어의 정체</div>
+  <h2>1티어는 포지션이 아니라 스위치다</h2>
+  <div class="prose">
+    <p>티어 선택 방식이 <b>'보유'</b>라서, 보유 종목이 0개면 1티어 주문이 나가고
+    1개를 들고 있으면 2티어 주문이 나갑니다. 즉 1티어가 한 주라도 사줘야
+    <b>2티어가 열립니다.</b> 1%라는 숫자는 포지션 크기를 고른 게 아니라,
+    2티어를 여는 데 필요한 최소한만 쓰겠다는 설계입니다.</p>
+    <p>실제로 1% 아래로 더 내려도 성적은 계속 좋아집니다 — 다만 개선폭이
+    0.1%에서도 Calmar 2.63 → 2.68로 2% 남짓이라 실익이 없고,
+    아래에서 보듯 <b>위험합니다.</b></p>
+  </div>
+  <div class="chart">
+    __CHART2__
+    <div class="cap">1% 미만 확대 · 개선은 계속되지만 폭이 미미하다</div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">실무 주의</div>
+  <h2>1티어 금액이 1주 값보다 작으면 전략이 멈춘다</h2>
+  <div class="prose">
+    <p>1티어가 스위치인 이상, <b>최소 1주는 살 수 있어야 합니다.</b>
+    사지 못하면 2티어가 영영 열리지 않고 전략 대부분이 작동하지 않습니다.
+    아래는 2024년 이후 구간의 2티어 체결 건수로, 정상값은 277건입니다.</p>
+  </div>
+  <div class="scroll">
+    <table>__FTAB__</table>
+  </div>
+  <div class="warn">
+    <h3>지금 세팅의 여유는 2.7주입니다</h3>
+    <p>계좌 $30,000의 1%는 $300이고, SOXL 현재가 $112.79 기준으로 <b>2.7주</b>입니다.
+    정상 작동합니다.</p>
+    <p>다만 <b>SOXL이 $300을 넘으면 1주도 못 삽니다.</b>
+    2024년 이후 최고가가 $300.77이었으니 이미 한 번 닿았던 수준입니다.
+    주가가 크게 오르거나 계좌가 줄어들면 확인이 필요합니다.
+    점검 방법은 간단합니다 — <b>1티어 주문 수량이 0주로 뜨는지</b> 보시면 됩니다.</p>
+    <p>혹시 그런 상황이 오면, 비율을 올리는 것이 맞는 대응입니다.
+    2%로만 올려도 $600이 되어 여유가 두 배가 되고, 성적 손실은 Calmar 기준 2% 남짓입니다.
+    <b>25%까지 갈 이유는 없습니다.</b></p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 분석의 한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>세 레벨(바닥·중간·천장)에 같은 비율을 적용했습니다.</b>
+      레벨마다 다른 비율을 주는 경우는 다루지 않았습니다. 다만 세 레벨 모두
+      1티어의 손익비가 낮으므로 결론이 뒤집힐 가능성은 낮습니다.</li>
+      <li><b>2티어 구조는 그대로 두었습니다.</b> 티어를 3개 이상으로 늘리거나
+      1티어의 매수·매도 갭과 손절일수를 함께 바꾸면 이야기가 달라집니다.
+      여기서는 <b>비율만</b> 바꿨습니다.</li>
+      <li><b>1주 하한선은 계좌 규모와 주가에 따라 달라집니다.</b>
+      위 표는 2024년 이후 구간 기준이며, 시드가 복리로 커지면 여유도 함께 커집니다.</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 리포트들과 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 계산 기준일 2026-09-02 ·
+  재현: <code>python tier_ratio.py &amp;&amp; python tier_detail.py &amp;&amp; python mkreport_tier.py</code>
+</footer>
+
+</div>

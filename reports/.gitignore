@@ -1,0 +1,9 @@
+# 루트 .gitignore 의 *.csv 예외 — 리포트 원자료는 커밋한다
+# (mkreport_*.py 가 이 파일들을 읽어 리포트를 조립한다)
+!*.csv
+
+# 단, 일별 자산곡선은 용량이 커서 제외 — 분석 스크립트로 재생성된다
+combo_equity.csv
+combo_all_equity.csv
+oneshare_equity.csv
+best3_equity.csv

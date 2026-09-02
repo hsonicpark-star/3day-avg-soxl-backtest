@@ -1,0 +1,316 @@
+<title>반반 투자 성과 분석</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F6F8FA; --surface:#FFFFFF; --sunken:#EEF2F6;
+  --ink:#16202B; --muted:#5A6B7B; --faint:#8494A3;
+  --rule:#DCE3EA; --rule-strong:#C3CFDA;
+  --accent:#1D4E89; --accent-soft:#E7EFF8;
+  --pos:#1B7A4B; --neg:#B3352C;
+  --panel:#141A22; --panel-rule:#2C3644;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+    --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+    --rule:#253240; --rule-strong:#33414F;
+    --accent:#74A9E0; --accent-soft:#1A2937;
+    --pos:#4ADE80; --neg:#F87171;
+    --panel:#0B1118; --panel-rule:#26303C;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+  --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+  --rule:#253240; --rule-strong:#33414F;
+  --accent:#74A9E0; --accent-soft:#1A2937;
+  --pos:#4ADE80; --neg:#F87171;
+  --panel:#0B1118; --panel-rule:#26303C;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:'IBM Plex Sans KR',system-ui,-apple-system,sans-serif;
+  font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:'Gowun Batang','Noto Serif KR',Georgia,serif; text-wrap:balance; margin:0}
+.num{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--rule-strong); padding:64px 0 28px; margin-bottom:44px}
+.eyebrow{
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; margin-bottom:18px;
+}
+h1{font-size:clamp(34px,5.2vw,52px); line-height:1.16; font-weight:700; letter-spacing:-.01em}
+.dek{color:var(--muted); font-size:17px; margin-top:16px; max-width:60ch}
+.setup{
+  display:flex; flex-wrap:wrap; gap:0 28px; margin-top:26px;
+  font-size:13px; color:var(--faint);
+}
+.setup b{color:var(--ink); font-weight:500}
+
+/* ── sections ── */
+section{margin-top:60px}
+h2{font-size:26px; font-weight:700; letter-spacing:-.005em}
+.kicker{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--faint); font-weight:600; margin-bottom:10px;
+}
+h2+p,.lede{margin-top:14px; color:var(--muted)}
+.lede{font-size:17px}
+
+/* ── verdict ── */
+.verdict{
+  background:var(--surface); border:1px solid var(--rule);
+  border-left:3px solid var(--accent); border-radius:4px;
+  padding:30px 34px; margin-top:8px;
+}
+.verdict .line{
+  font-family:'Gowun Batang','Noto Serif KR',Georgia,serif;
+  font-size:clamp(21px,2.7vw,27px); line-height:1.45; font-weight:700;
+  text-wrap:balance;
+}
+.verdict p{margin:14px 0 0; color:var(--muted); font-size:15px}
+
+/* ── stat trio ── */
+.trio{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:24px}
+.card{
+  background:var(--surface); border:1px solid var(--rule);
+  border-radius:4px; padding:20px 22px; min-width:0;
+}
+.card.hero{border-color:var(--accent); background:var(--accent-soft)}
+.card .who{
+  font-size:12px; font-weight:600; letter-spacing:.06em;
+  color:var(--muted); margin-bottom:14px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.card.hero .who{color:var(--accent)}
+.card .big{font-size:30px; font-weight:600; line-height:1.1}
+.card .cap{font-size:12px; color:var(--faint); margin-top:4px}
+.card dl{margin:16px 0 0; display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px}
+.card dt{color:var(--faint)}
+.card dd{margin:0; text-align:right; font-weight:500}
+
+/* ── tables ── */
+.scroll{overflow-x:auto; margin-top:22px; border:1px solid var(--rule); border-radius:4px}
+table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--surface)}
+th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{
+  background:var(--sunken); color:var(--muted); font-weight:600;
+  font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  border-bottom:1px solid var(--rule-strong);
+}
+tbody tr+tr td{border-top:1px solid var(--rule)}
+tbody tr.sum td{background:var(--accent-soft); font-weight:600}
+tbody tr.sum td:first-child{color:var(--accent)}
+td.n{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.pos{color:var(--pos)} .neg{color:var(--neg)}
+.grp td{
+  background:var(--sunken); font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600;
+}
+
+/* ── heatmap panel ── */
+.panel{
+  margin-top:22px; background:var(--panel); border:1px solid var(--panel-rule);
+  border-radius:5px; padding:18px;
+}
+.panel table{background:transparent; font-size:13px}
+.panel td,.panel th{white-space:normal}
+
+/* ── notes ── */
+.notes{
+  margin-top:22px; background:var(--sunken); border:1px solid var(--rule);
+  border-radius:4px; padding:22px 26px;
+}
+.notes h3{font-size:16px; font-weight:700; margin-bottom:12px}
+.notes ul{margin:0; padding-left:18px; color:var(--muted); font-size:14.5px}
+.notes li+li{margin-top:9px}
+.notes b{color:var(--ink); font-weight:600}
+
+footer{
+  margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+  font-size:12.5px; color:var(--faint);
+}
+@media (max-width:720px){
+  .trio{grid-template-columns:1fr}
+  .wrap{padding:0 18px 64px}
+}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 포트폴리오 백테스트</div>
+  <h1>이평선형과 중심주가형을<br>반반 담으면 어떻게 되나</h1>
+  <p class="dek">두 전략을 각각 굴리는 것보다, 반반 나눠 담는 쪽이 나은지 확인했습니다.
+  같은 종목을 거래하니 분산 효과가 없을 수도 있다는 게 출발점이었습니다.</p>
+  <div class="setup">
+    <span>종목 <b>SOXL</b></span>
+    <span>계좌당 <b>$30,000</b> · 합계 <b>$60,000</b></span>
+    <span>기간 <b>2011-01-03 ~ 2026-08-20</b></span>
+    <span>수수료 <b>편도 0.07%</b></span>
+    <span>데이터 <b>로컬 DB (무조정 종가)</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">분산 효과가 있습니다. 합산 포트폴리오의 위험조정수익이
+    두 전략 각각보다 높습니다.</div>
+    <p>수익률은 두 전략의 중간이지만 <b>낙폭이 더 얕습니다.</b>
+    Calmar·Sharpe·Sortino 세 지표 모두에서 합산이 1위였고,
+    검증한 여섯 가지 기간·수수료 조합에서 예외가 없었습니다.</p>
+  </div>
+
+  <div class="trio">
+    <div class="card">
+      <div class="who">이평선형 (4일)</div>
+      <div class="big num">100.7%</div>
+      <div class="cap">CAGR</div>
+      <dl>
+        <dt>MDD</dt><dd class="num neg">-38.3%</dd>
+        <dt>Calmar</dt><dd class="num">2.63</dd>
+        <dt>최악 하루</dt><dd class="num neg">-22.3%</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="who">중심주가형</div>
+      <div class="big num">73.9%</div>
+      <div class="cap">CAGR</div>
+      <dl>
+        <dt>MDD</dt><dd class="num neg">-36.3%</dd>
+        <dt>Calmar</dt><dd class="num">2.03</dd>
+        <dt>최악 하루</dt><dd class="num neg">-23.8%</dd>
+      </dl>
+    </div>
+    <div class="card hero">
+      <div class="who">50:50 합산</div>
+      <div class="big num">93.2%</div>
+      <div class="cap">CAGR</div>
+      <dl>
+        <dt>MDD</dt><dd class="num">-32.7%</dd>
+        <dt>Calmar</dt><dd class="num"><b>2.85</b></dd>
+        <dt>최악 하루</dt><dd class="num">-15.7%</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">작동 원리</div>
+  <h2>같은 종목인데 왜 분산이 되나</h2>
+  <div class="prose">
+    <p>두 전략 모두 SOXL을 거래하지만 <b>구간을 판정하는 기준이 다릅니다.</b>
+    이평선형은 QQQ 주봉이 120일 이동평균에서 얼마나 벌어졌는지를 보고,
+    중심주가형은 월복리 추세선 대비 이격도를 봅니다. 같은 날 한쪽은 천장,
+    다른 쪽은 중간으로 볼 수 있습니다.</p>
+    <p>그 결과 일간 수익률 상관계수가 <b>0.67</b>입니다. 완전히 같이 움직이지도,
+    독립적이지도 않은 구간입니다. 둘 다 -10% 이상 낙폭에 빠져 있는 날은
+    전체의 <b>23%</b>뿐이었습니다.</p>
+    <p>가장 눈에 띄는 개선은 <b>최악의 하루</b>입니다. 단독으로는 하루에 -22%,
+    -24%까지 맞았지만 합산은 -15.7%에서 멈췄습니다. 한쪽이 크게 맞는 날
+    다른 쪽이 덜 맞았다는 뜻입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">기간 · 수수료별 검증</div>
+  <h2>어떤 조건에서도 뒤집히지 않았다</h2>
+  <p class="lede">기간 3종 × 수수료 2종, 여섯 조합 모두에서 합산의 Calmar가 가장 높았습니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>전략</th><th>CAGR</th><th>MDD</th><th>Calmar</th><th>Sharpe</th><th>Sortino</th>
+      </tr></thead>
+      <tbody>
+        <tr class="grp"><td colspan="6">전체 2011~ · 수수료 0%</td></tr>
+        <tr><td>이평선형 (4일)</td><td class="n">122.0%</td><td class="n neg">-35.9%</td><td class="n">3.40</td><td class="n">1.74</td><td class="n">2.15</td></tr>
+        <tr><td>중심주가형</td><td class="n">98.4%</td><td class="n neg">-34.7%</td><td class="n">2.84</td><td class="n">1.66</td><td class="n">2.13</td></tr>
+        <tr class="sum"><td>50:50 합산</td><td class="n">114.5%</td><td class="n">-31.1%</td><td class="n">3.69</td><td class="n">1.83</td><td class="n">2.44</td></tr>
+
+        <tr class="grp"><td colspan="6">전체 2011~ · 수수료 0.07%</td></tr>
+        <tr><td>이평선형 (4일)</td><td class="n">100.7%</td><td class="n neg">-38.3%</td><td class="n">2.63</td><td class="n">1.55</td><td class="n">2.13</td></tr>
+        <tr><td>중심주가형</td><td class="n">73.9%</td><td class="n neg">-36.3%</td><td class="n">2.03</td><td class="n">1.38</td><td class="n">1.96</td></tr>
+        <tr class="sum"><td>50:50 합산</td><td class="n">93.2%</td><td class="n">-32.7%</td><td class="n">2.85</td><td class="n">1.59</td><td class="n">2.24</td></tr>
+
+        <tr class="grp"><td colspan="6">2017~ · 수수료 0.07%</td></tr>
+        <tr><td>이평선형 (4일)</td><td class="n">151.6%</td><td class="n neg">-35.4%</td><td class="n">4.28</td><td class="n">1.89</td><td class="n">2.64</td></tr>
+        <tr><td>중심주가형</td><td class="n">113.2%</td><td class="n neg">-36.1%</td><td class="n">3.14</td><td class="n">1.66</td><td class="n">2.41</td></tr>
+        <tr class="sum"><td>50:50 합산</td><td class="n">138.6%</td><td class="n">-32.0%</td><td class="n">4.34</td><td class="n">1.93</td><td class="n">2.78</td></tr>
+
+        <tr class="grp"><td colspan="6">2020~ · 수수료 0.07%</td></tr>
+        <tr><td>이평선형 (4일)</td><td class="n">197.9%</td><td class="n neg">-35.4%</td><td class="n">5.59</td><td class="n">2.08</td><td class="n">2.98</td></tr>
+        <tr><td>중심주가형</td><td class="n">144.7%</td><td class="n neg">-36.1%</td><td class="n">4.01</td><td class="n">1.80</td><td class="n">2.67</td></tr>
+        <tr class="sum"><td>50:50 합산</td><td class="n">178.2%</td><td class="n">-31.7%</td><td class="n">5.63</td><td class="n">2.12</td><td class="n">3.14</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">월별 수익률</div>
+  <h2>합산 포트폴리오의 월별 히트맵</h2>
+  <p class="lede">각 칸은 월수익률 / 월 MDD / 그달의 구간 비율(바닥·중간·천장)입니다.
+  우측 두 열은 연간 수익률과 연간 최대낙폭입니다. 수수료 0.07% 적용.</p>
+  <div class="panel">__HEATMAP__</div>
+</section>
+
+<section>
+  <div class="kicker">연도별</div>
+  <h2>16년 내내 최악의 한쪽보다 나았다</h2>
+  <p class="lede">합산 수익률이 두 전략 중 못한 쪽보다 높았던 해가 <b>16년 중 16번</b>입니다.
+  손실 난 해는 2011년 중심주가형(-6.6%) 한 번뿐이었고, 그해 합산은 +1.6%로 지켜냈습니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>연도</th><th>이평선형</th><th>MDD</th><th>중심주가형</th><th>MDD</th><th>50:50 합산</th><th>MDD</th>
+      </tr></thead>
+      <tbody>__YEARLY__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 숫자를 그대로 믿으면 안 되는 이유</h2>
+  <div class="notes">
+    <h3>구조적 한계</h3>
+    <ul>
+      <li><b>수용력.</b> 복리로 계좌가 커지면 종가 단일 경매에서 체결할 수 없는 규모가 됩니다.
+      계좌가 1~2천만 달러를 넘는 구간부터 이 곡선은 현실이 아닙니다.</li>
+      <li><b>초기 구간의 반올림 의존.</b> 2011~2015년 SOXL은 $0.6~$2 수준이라
+      1센트 호가가 가격의 0.5~1.4%였습니다. 이 구간 수익의 상당 부분이
+      센트 반올림에서 나옵니다. 2017년 이후 수치를 더 신뢰하십시오.</li>
+      <li><b>스프레드 미반영.</b> 수수료만 넣었을 뿐 호가 스프레드는 없습니다.
+      보유기간이 짧아(중앙값 1~2일) 실제 비용에 민감합니다.</li>
+      <li><b>상관은 고정이 아닙니다.</b> 0.67은 과거 평균이고,
+      급락장에서는 두 전략이 함께 무너질 수 있습니다.</li>
+    </ul>
+  </div>
+  <div class="notes" style="margin-top:14px">
+    <h3>그럼에도 유효한 결론</h3>
+    <ul>
+      <li>위 한계는 <b>세 전략에 똑같이</b> 적용됩니다. 따라서 절대 수익률은 못 믿어도
+      <b>셋 사이의 상대 비교</b>는 유효합니다.</li>
+      <li>반반 배분이 낙폭과 최악의 하루를 줄인다는 결론은
+      여섯 조합 전부·16개 연도 전부에서 일관됐습니다.</li>
+      <li>기대할 것은 <b>더 높은 수익률이 아니라 더 편안한 곡선</b>입니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 원본 구글시트 대조 검증 완료(3,931 거래일, 모드·티어·주문가·수량 0 오차) ·
+  계산 기준일 2026-09-01
+</footer>
+
+</div>

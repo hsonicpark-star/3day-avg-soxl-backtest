@@ -1,0 +1,148 @@
+__HEAD__
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:22px 20px 16px; margin-top:22px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:12px; text-align:center}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 비대칭 배분</div>
+  <h1>비중을 바꾸면 나아지나</h1>
+  <p class="dek">반반이 아니라 60:40, 70:30으로 기울이면 더 나은지 확인했습니다.
+  5% 단위로 가능한 모든 비중을 돌렸고, 그렇게 찾은 최적 비중이
+  실제로 쓸 만한지까지 검증했습니다.</p>
+  <div class="setup">
+    <span>총자본 <b>$60,000 고정</b></span>
+    <span>비중 단위 <b>5%</b></span>
+    <span>격자 <b>2종 19 · 3종 171 · 4종 969</b></span>
+    <span>수수료 <b>편도 0.07%</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">비중 최적화는 하지 마십시오. 균등 배분이 더 낫습니다.</div>
+    <p>훈련 구간에서 찾은 최적 비중을 검증 구간에 적용했더니
+    <b>11개 조합 중 8개에서 균등 배분에게 졌습니다</b>(평균 __MEAN__%).
+    사후에 알 수 있는 최선을 100이라 할 때, 균등 배분은 <b>__CAPE__%</b>를 회수했지만
+    훈련 최적 비중은 <b>__CAPO__%</b>에 그쳤습니다. 비중을 맞추려는 노력이
+    아무것도 안 하는 것보다 손해였습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">결정적 검증</div>
+  <h2>훈련 최적 비중을 실제로 써봤을 때</h2>
+  <div class="prose">
+    <p>2017~2023에서 각 조합의 최적 비중을 찾고, 그 비중을 그대로
+    <b>최적화에 한 번도 쓰지 않은 2024~2026</b>에 적용했습니다.
+    비교 대상은 아무 계산 없이 그냥 균등하게 나눈 배분입니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>조합</th><th>개수</th><th>훈련 최적 비중</th>
+        <th>검증: 훈련최적</th><th>검증: 균등</th><th>검증: 사후최적</th><th>차이</th>
+      </tr></thead>
+      <tbody>__OOSTAB__</tbody>
+    </table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>강조된 두 줄이 이 표의 핵심입니다. 훈련 구간에서
+    <b>이평1일+RSI</b>는 RSI에 95%를 몰아주는 것이 최적이었는데,
+    검증 구간에서 그 비중은 Calmar 3.84에 그쳤습니다 — 균등의 6.62 대비 <b>-42%</b>입니다.
+    <b>이평1일+중심주가+RSI</b>도 RSI 90% 몰빵이 최적이었고 검증에서 -44%였습니다.</p>
+    <p>비중 최적화가 실패하는 방식이 이렇습니다. 평소엔 조금 손해 보다가,
+    한 번 크게 틀립니다. 균등 배분은 그 큰 실패가 구조적으로 불가능합니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">왜 실패하나</div>
+  <h2>최적 비중은 구간마다 뒤집힌다</h2>
+  <p class="lede">같은 조합인데 어느 구간을 보느냐에 따라 최적 비중이 정반대로 갑니다.
+  <b>이평4일 + 이평1일</b>은 전체에서 55:45, 훈련에서 80:20, 검증에서 <b>25:75</b>였습니다.
+  마지막 열의 '고원 비율'은 최적 대비 95% 이상 성적을 내는 격자점의 비율로,
+  높을수록 비중 선택이 성적에 영향을 덜 준다는 뜻입니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>조합</th><th>개수</th><th>최적: 전체</th><th>최적: 훈련</th><th>최적: 검증</th>
+        <th>균등의 손해</th><th>고원 비율</th>
+      </tr></thead>
+      <tbody>__WTAB__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">비중 곡선</div>
+  <h2>봉우리가 아니라 고원이다</h2>
+  <p class="lede">2종 조합 6가지의 비중별 Calmar입니다(전체 기간).
+  가로축은 앞쪽 프리셋의 비중, 점은 각 곡선의 최고점입니다.
+  대부분 넓고 평평해서, 어디를 골라도 큰 차이가 없습니다.</p>
+  <div class="chart">
+    __CHART1__
+    <div class="cap">전체 기간 2011~2026 · 수수료 0.07% · 5% 단위</div>
+  </div>
+  <div class="prose" style="margin-top:26px">
+    <p>같은 조합을 구간만 바꿔 그리면 봉우리가 어떻게 움직이는지 보입니다.
+    아래는 지금 운용 중인 <b>이평4일 + 중심주가</b>입니다.</p>
+  </div>
+  <div class="chart">
+    __CHART2__
+    <div class="cap">이평4일 + 중심주가 · 전체 / 훈련 / 검증 구간 비교</div>
+  </div>
+  <div class="prose" style="margin-top:26px">
+    <p>전체 기간에서는 50:50 근처가 봉우리인데, 훈련 구간만 보면 95:5로,
+    검증 구간만 보면 85:15로 옮겨갑니다. 세 곡선 모두 평평한 편이라
+    어느 비중을 써도 크게 손해 보지 않지만, <b>봉우리 위치 자체는 신호가 아니라 잡음</b>입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">지금 운용</div>
+  <h2>이평4일 + 중심주가 50:50은 이미 최적이었다</h2>
+  <div class="prose">
+    <p>전체 기간 기준으로 이 조합의 최적 비중은 정확히 <b>50:50</b>이었습니다.
+    균등 배분이 최적 대비 잃는 것이 <b>__CURL__%</b>, 즉 <b>0</b>입니다.
+    비중을 조정할 이유가 없습니다.</p>
+    <p>덧붙이면, 조합에 프리셋을 더 많이 넣을수록 비중 최적화의 위험이 커집니다.
+    4종 조합은 격자가 969개나 되는데 고원 비율은 36%로 가장 좁고,
+    균등 대비 손해도 가장 컸습니다. 자유도가 늘수록 과최적화 여지도 늘어난다는
+    교과서적인 모습입니다.</p>
+    <p><b>결론은 단순합니다.</b> 몇 개를 섞을지만 정하고, 비중은 균등하게 나누십시오.
+    앞선 조합 리포트의 결론("개수는 믿을 수 있고 순위는 못 믿는다")과 정확히 같은 성질입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 분석의 한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>검증 구간이 2년 8개월로 짧습니다.</b> 균등이 이겼다는 결론도
+      이 한 구간의 결과입니다. 다만 방향이 일관되고(11개 중 8개), 실패 사례의
+      크기가 크다는 점은 우연으로 보기 어렵습니다.</li>
+      <li><b>비중을 고정한 채 재조정하지 않았습니다.</b> 주기적 리밸런싱은
+      다루지 않았고, 각 계좌가 자기 자본만으로 복리 운용됩니다.</li>
+      <li><b>Calmar 기준입니다.</b> Sharpe 나 CAGR 을 목표로 하면 최적 비중이 달라지지만,
+      순위가 불안정하다는 성질 자체는 바뀌지 않습니다.</li>
+      <li><b>총자본 $60,000 고정</b>이라 조합이 커질수록 계좌당 금액이 줄어듭니다.
+      정수 주식수 반올림은 그대로 반영했지만, 자본이 아주 작아지면
+      전략이 제대로 작동하지 않을 수 있습니다(5% = $3,000).</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 두 리포트와 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 계산 기준일 2026-09-01 ·
+  재현: <code>python combo_weights.py &amp;&amp; python mkreport_weights.py</code>
+</footer>
+
+</div>

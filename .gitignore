@@ -21,3 +21,29 @@ Thumbs.db
 # 로컬 종가 백업 DB 는 커밋 (야후 장애 대비 — Cloud 배포에도 필요)
 !pricedb/
 !pricedb/*.csv
+
+# ── 로컬 분석용 일회성 스크립트 (배포에 불필요) ──
+/_cam_*.py
+/analyze_opt.py
+/analyze_v2.py
+/compare_safe_vs_ultrasafe.py
+/compare_strategies.py
+/find_high_calmar*.py
+/optimize_dss*.py
+/walkforward_dss.py
+/test_app_ui.py
+/test_portfolio.py
+
+# 중간 산출물 / 캐시
+*.pkl
+*.log
+*.pdf
+
+# 리팩토링 전 스냅샷 (로컬 보관 — 중첩 저장소라 push 해도 내용이 안 올라간다)
+/260318_backup/
+/260331_backup/
+/260411_backup/
+
+# 개발 환경 로컬 설정
+.claude/launch.json
+.claude/settings.local.json

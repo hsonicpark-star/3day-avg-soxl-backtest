@@ -1,0 +1,187 @@
+__HEAD__
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 프리셋 4종 조합 비교</div>
+  <h1>어떤 조합이 최선인가</h1>
+  <p class="dek">2티어 프리셋 4가지를 균등배분으로 섞을 수 있는 모든 방법 15가지를
+  돌려보고, 그 순위를 믿어도 되는지까지 확인했습니다.</p>
+  <div class="setup">
+    <span>프리셋 <b>이평4일 · 이평1일 · 중심주가 · RSI</b></span>
+    <span>조합 <b>15가지</b> (단독 4 · 2개 6 · 3개 4 · 4개 1)</span>
+    <span>계좌당 <b>$30,000</b> 균등</span>
+    <span>수수료 <b>편도 0.07%</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">"어떤 조합이 1등이냐"는 믿을 수 없고,
+    "몇 개를 섞느냐"는 믿을 수 있습니다.</div>
+    <p>훈련 구간에서 뽑은 상위 3개 조합과 검증 구간의 상위 3개 조합은
+    <b>겹치는 것이 하나도 없었습니다</b>(순위 상관 __RHO__).
+    반면 <b>섞는 개수를 늘리면 최악의 선택을 해도 결과가 좋아진다</b>는 관계는
+    검증한 다섯 시나리오 전부에서 예외 없이 성립했습니다.</p>
+  </div>
+
+  <div class="trio">
+    <div class="card">
+      <div class="who">단독 1개 · 4가지</div>
+      <div class="big num">2.21</div>
+      <div class="cap">평균 Calmar · 최저 1.91</div>
+      <dl>
+        <dt>평균 MDD</dt><dd class="num neg">-39.9%</dd>
+        <dt>평균 최악일</dt><dd class="num neg">-24.6%</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <div class="who">2개 조합 · 6가지</div>
+      <div class="big num">2.51</div>
+      <div class="cap">평균 Calmar · 최저 2.04</div>
+      <dl>
+        <dt>평균 MDD</dt><dd class="num neg">-36.4%</dd>
+        <dt>평균 최악일</dt><dd class="num neg">-19.5%</dd>
+      </dl>
+    </div>
+    <div class="card hero">
+      <div class="who">3개 조합 · 4가지</div>
+      <div class="big num">2.71</div>
+      <div class="cap">평균 Calmar · 최저 2.23</div>
+      <dl>
+        <dt>평균 MDD</dt><dd class="num">-34.0%</dd>
+        <dt>평균 최악일</dt><dd class="num">-18.1%</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">전체 순위</div>
+  <h2>15가지 조합, Calmar 내림차순</h2>
+  <p class="lede">전체 기간(2011~) · 수수료 0.07% 기준. 상위 8개가 전부
+  <b>이평4일을 포함</b>하고, 이평4일이 없는 조합은 이평4일 단독보다도 아래입니다 —
+  다만 이 지배력은 뒤에서 보듯 훈련 구간에 한정된 현상입니다.</p>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>조합</th><th>개수</th><th>CAGR</th><th>MDD</th>
+        <th>Calmar</th><th>Sharpe</th><th>Sortino</th><th>최악일</th><th>배수</th>
+      </tr></thead>
+      <tbody>__RANK15__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">순위를 믿을 수 있나</div>
+  <h2>훈련 구간 1등은 검증 구간에서 10등이 됐다</h2>
+  <div class="prose">
+    <p>프리셋 자체가 이 데이터로 튜닝된 것이라, 위 순위가 그대로 미래에 통할지
+    따로 확인해야 합니다. 2017~2023으로 순위를 매기고
+    <b>최적화에 한 번도 쓰지 않은 2024~2026</b>에서 다시 매겨 비교했습니다.</p>
+    <p>순위 상관은 <b>__RHO__</b>에 그쳤고, 양쪽 상위 3개의 교집합은 <b>__OVER__개</b>였습니다.
+    훈련 1등이던 <b>이평4일+RSI</b>는 검증에서 10위로 떨어졌고,
+    훈련 6위였던 <b>이평4일+이평1일</b>이 검증 2위로 올라왔습니다.
+    개별 조합을 골라 "이게 최고"라고 말할 근거가 없다는 뜻입니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>조합</th><th>훈련 순위</th><th>검증 순위</th><th>이동</th>
+        <th>훈련 Calmar</th><th>검증 Calmar</th>
+      </tr></thead>
+      <tbody>__STAB__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">그럼 무엇이 안정적인가</div>
+  <h2>섞는 개수는 다섯 시나리오 모두에서 통했다</h2>
+  <p class="lede">칸은 <b>그 개수 조합들의 평균 Calmar</b>이고,
+  괄호는 <b>최저값</b>—즉 그 개수에서 가장 나쁜 선택을 했을 때의 성적입니다.
+  평균은 3개에서 정점을 찍지만, <b>최저값은 개수를 늘릴수록 예외 없이 올라갑니다.</b></p>
+  <div class="scroll">
+    <table>__SIZE__</table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>이게 실전에서 더 중요한 성질입니다. 우리는 어느 조합이 1등일지 미리 알 수 없으니,
+    <b>아무거나 골라도 보장되는 하한선</b>이 의사결정 기준이 되어야 합니다.
+    단독은 최악의 경우 Calmar 1.91까지 떨어지지만, 3개를 섞으면 최악이어도 2.23입니다.</p>
+    <p>단, 4개 칸의 괄호값은 조합이 하나뿐이라 평균과 같습니다.
+    4개를 섞는 것이 3개보다 확실히 낫다고 말하기엔 표본이 부족합니다 —
+    평균 기준으로는 세 시나리오에서 오히려 3개가 근소하게 앞섰습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">분산이 되는 이유</div>
+  <h2>네 프리셋의 상관계수</h2>
+  <p class="lede">전부 같은 SOXL을 거래하는데도 0.65~0.73 구간에 고르게 분포합니다.
+  구간 판정 기준이 서로 달라서입니다. 가장 낮은 쌍은 <b>이평4일 ↔ RSI (0.650)</b>,
+  가장 높은 쌍은 <b>이평1일 ↔ 중심주가 (0.729)</b>입니다.</p>
+  <div class="scroll">
+    <table>__CORR__</table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>주목할 점은 <b>이평4일과 이평1일이 0.683</b>이라는 것입니다.
+    둘은 같은 이평선 기준을 쓰는데도 파라미터가 달라 다른 쌍들과 비슷한 수준으로 분산됩니다.
+    실제로 이 둘만 섞은 조합이 전체 기간 <b>최악의 하루 -14.1%</b>로 15개 중 가장 좋았습니다.
+    "기준이 달라야 분산된다"는 직관보다 실제 분산 효과가 넓게 작동합니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">지금 운용과 비교</div>
+  <h2>현재 2종에 이평1일을 더하면</h2>
+  <div class="prose">
+    <p>지금 굴리는 <b>이평4일 + 중심주가</b>는 15개 중 3위로 이미 상위권입니다.
+    여기에 이평1일을 더한 <b>이평4일 + 이평1일 + 중심주가</b>는
+    전체·2017~·수수료0%·검증 구간에서 모두 1위였고 훈련 구간에서만 4위였습니다.
+    다섯 시나리오 중 네 곳에서 1위입니다.</p>
+    <p>전체 기간 기준 Calmar 2.85 → <b>2.95</b>, MDD -32.7% → <b>-31.8%</b>,
+    CAGR 93.2% → 94.0%. 연도별로 보면 3종이 2종보다 수익률이 나았던 해가 16년 중 9번,
+    <b>MDD가 나았던 해가 12번</b>입니다. 개선폭 자체는 크지 않습니다.</p>
+    <p>다만 3종을 권하는 근거는 "이 조합이 1위여서"가 아니라 <b>개수를 늘리는 효과</b> 쪽입니다.
+    앞에서 봤듯 개별 순위는 구간이 바뀌면 흔들리지만, 개수 효과는 흔들리지 않았습니다.
+    계좌를 하나 더 여는 운영 부담이 감당된다면 3종, 아니면 현재 2종을 유지해도
+    충분히 상위권입니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">월별 수익률</div>
+  <h2>이평4일 + 이평1일 + 중심주가</h2>
+  <p class="lede">계좌당 $30,000씩 총 $90,000, 수수료 0.07%.
+  각 칸은 월수익률 / 월 MDD / 그달의 구간 비율(바·중·천),
+  우측 두 열은 연간 수익률과 연간 최대낙폭입니다.</p>
+  <div class="panel">__HEATMAP__</div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>이 비교의 한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>프리셋 4종이 모두 같은 데이터로 튜닝됐습니다.</b> 그래서 절대 수치보다
+      조합 간 상대 비교에 의미가 있고, 그 상대 비교조차 순위 단위로는
+      불안정하다는 것이 이 리포트의 결론입니다.</li>
+      <li><b>검증 구간이 2년 8개월로 짧습니다.</b> 순위 상관 __RHO__가 낮은 것은
+      과최적화 탓일 수도, 단순히 표본이 짧은 탓일 수도 있습니다.
+      어느 쪽이든 개별 순위를 신뢰하지 말라는 결론은 같습니다.</li>
+      <li><b>2011~2015 구간은 SOXL이 $0.6~$2대</b>라 1센트 호가가 가격의 0.5~1.4%였습니다.
+      이 구간 수익의 상당 부분이 센트 반올림에서 나오므로 절대 배수는 과장돼 있습니다.</li>
+      <li><b>스프레드와 수용력은 반영하지 않았습니다.</b> 계좌를 여러 개로 나눌수록
+      계좌당 규모가 작아져 체결은 오히려 쉬워지지만, 관리 부담은 늘어납니다.</li>
+      <li><b>균등배분만 검토했습니다.</b> 60:40 같은 비대칭 배분은 다루지 않았습니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 계산 기준일 2026-09-01 ·
+  재현: <code>python combo_all.py &amp;&amp; python mkreport_all.py</code>
+</footer>
+
+</div>
