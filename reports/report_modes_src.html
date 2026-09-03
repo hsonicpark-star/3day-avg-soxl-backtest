@@ -1,0 +1,430 @@
+__HEAD__
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:20px 18px 14px; margin-top:20px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:10px; text-align:center}
+.chart .sub{font-size:11.5px; color:var(--faint); margin:0 0 4px}
+.key{display:flex; flex-wrap:wrap; gap:6px 16px; margin-bottom:12px;
+     font-size:12px; color:var(--muted)}
+.key span{display:flex; align-items:center; gap:5px}
+.sw{width:11px; height:11px; border-radius:2px; display:inline-block}
+.ln{width:16px; height:2px; display:inline-block}
+.steps{counter-reset:s; margin-top:22px; display:grid; gap:12px}
+.step{display:grid; grid-template-columns:30px 1fr; gap:14px; align-items:start}
+.step .n{width:26px; height:26px; border-radius:50%; background:var(--accent-soft);
+         color:var(--accent); font-size:12px; font-weight:600;
+         display:flex; align-items:center; justify-content:center;
+         font-family:'IBM Plex Mono',monospace}
+.step .b{font-size:15px; color:var(--muted); line-height:1.65}
+.step .b b{color:var(--ink)}
+.warn{background:var(--surface); border:1px solid var(--rule);
+      border-left:3px solid var(--neg); border-radius:4px;
+      padding:22px 26px; margin-top:20px}
+.warn h3{font-size:16px; font-weight:700; margin-bottom:10px; color:var(--neg)}
+.warn p{margin:0 0 10px; color:var(--muted); font-size:14.5px}
+.warn p:last-child{margin-bottom:0}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 모드 판단 기준</div>
+  <h1>바닥·중간·천장은 어떻게 정해지나</h1>
+  <p class="dek">이 전략은 시장을 세 구간으로 나눠 각각 다른 규칙으로 매매합니다.
+  그 구간을 정하는 자가 세 가지 있습니다 — 중심주가, 이평선, RSI.
+  셋이 어떻게 다르고 왜 섞으면 좋은지 정리했습니다.</p>
+  <div class="setup">
+    <span>판정 종목 <b>QQQ</b></span>
+    <span>매매 종목 <b>SOXL</b></span>
+    <span>기준 <b>주봉</b></span>
+    <span>데이터 <b>__PERIOD__</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">로직은 하나입니다. 자가 셋일 뿐입니다.</div>
+    <p>세 기준 모두 <b>똑같은 순서</b>로 돌아갑니다 — 자로 재서 구간을 정하고,
+    그 구간에 배정된 파라미터로 SOXL을 사고팝니다.
+    다른 것은 <b>무엇을 자로 쓰느냐</b> 하나뿐입니다.
+    그런데 그 하나가 달라서 같은 날 답이 갈리고, 그래서 섞으면 낙폭이 얕아집니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">공통 흐름</div>
+  <h2>세 기준 모두 이 다섯 단계를 따른다</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><div class="b">
+      <b>자로 잰다.</b> QQQ 주봉 종가를 기준선과 비교하거나(중심주가·이평선),
+      최근 14주의 오르내림 비율을 계산한다(RSI).</div></div>
+    <div class="step"><div class="n">2</div><div class="b">
+      <b>구간을 정한다.</b> 그 값이 아래 경계보다 낮으면 <b>바닥</b>,
+      위 경계보다 높으면 <b>천장</b>, 사이면 <b>중간</b>.</div></div>
+    <div class="step"><div class="n">3</div><div class="b">
+      <b>한 주 늦춘다.</b> 이번 주는 <b>지난주 판정</b>을 쓴다.
+      이번 주 종가를 봐야 이번 주 판정이 나오는데 그걸 이번 주 매매에 쓰면
+      미래를 보는 셈이기 때문이다.</div></div>
+    <div class="step"><div class="n">4</div><div class="b">
+      <b>구간의 규칙으로 산다.</b> 보유가 0개면 1티어, 1개면 2티어 주문이 나간다.
+      매수 주문가 = 전일 종가 × (1 + 매수목표)이고, LOC이라
+      <b>주문가가 당일 종가 이상이면 체결</b>된다.</div></div>
+    <div class="step"><div class="n">5</div><div class="b">
+      <b>살 때 팔 조건이 정해진다.</b> 목표가 = 매수가 × (1 + 매도목표),
+      마감일 = 손절일수 뒤. 그 안에 목표를 넘으면 LOC로 팔고,
+      못 넘으면 마감일에 <b>MOC(종가)로 무조건 청산</b>한다.</div></div>
+  </div>
+  <div class="notes" style="margin-top:22px">
+    <h3>1티어가 1%뿐인 이유</h3>
+    <ul>
+      <li>티어를 <b>보유 개수 + 1</b>로 정하기 때문에, 1티어가 한 주라도 사줘야
+      2티어(99%)가 열립니다. <b>1티어는 포지션이 아니라 스위치</b>이고,
+      1%는 스위치를 켜는 데 필요한 최소한입니다.</li>
+      <li>실제로 1티어는 승률이 89~91%로 높은데 손익비가 0.17~0.32에 불과합니다.
+      자주 이기고 질 때 크게 집니다. 여기에 돈을 더 넣으면 성과가 나빠집니다.</li>
+      <li><b>손절일수가 1이면 중간에 팔 기회가 없어 항상 MOC</b>입니다.
+      매수일 다음날이 곧 마감일이라 그 사이에 거래일이 없기 때문입니다.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">한눈에</div>
+  <h2>세 기준 비교</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th></th><th>중심주가</th><th>이평선</th><th>RSI</th>
+      </tr></thead>
+      <tbody>__CMP__</tbody>
+    </table>
+  </div>
+  <p class="lede" style="margin-top:18px">가장 큰 차이는 <b>기준선이 움직이느냐</b>입니다.
+  중심주가는 과거에 고정한 선이라 시장이 그 선보다 빨리 자라면 이격도가 계속 커집니다.
+  이평선은 시장을 따라다니고, RSI는 0~100에 갇혀 있어 그럴 수가 없습니다.</p>
+</section>
+
+<section>
+  <div class="kicker">기준 ①</div>
+  <h2>중심주가 — 고정된 추세선에서 얼마나 벌어졌나</h2>
+  <div class="prose">
+    <p>2016년 1월 QQQ를 <b>$__C_BASE__</b>로 놓고 <b>매달 __C_RATE__%</b>씩 복리로 늘린 선입니다
+    (연 __C_ACAGR__%). 매년 다시 맞추지 않는 <b>고정선</b>입니다.</p>
+    <p><code>중심주가 = __C_BASE__ × __C_RATEF__ ^ (12 × (연도−2016) + (월−1))</code></p>
+    <p>이 값은 우리가 정한 것이 아니라 <b>원본 시트 수식에 하드코딩</b>된 상수를
+    그대로 옮긴 것입니다. 이격도 = QQQ 주봉종가 ÷ 중심주가 − 1.</p>
+  </div>
+  <div class="chart">
+    <div class="sub">위: QQQ와 추세선(로그 눈금) · 아래: 이격도</div>
+    <div class="key">
+      <span><i class="ln" style="background:#2C2C2A"></i>QQQ 실제</span>
+      <span><i class="ln" style="border-top:2px dashed #888780;height:0"></i>중심주가</span>
+      <span><i class="sw" style="background:#E6F1FB;border:1px solid #85B7EB"></i>바닥</span>
+      <span><i class="sw" style="background:#F1EFE8;border:1px solid #B4B2A9"></i>중간</span>
+      <span><i class="sw" style="background:#FCEBEB;border:1px solid #F09595"></i>천장</span>
+    </div>
+    <svg id="c1" viewBox="0 0 760 250" width="100%" role="img"
+         aria-label="QQQ와 고정 추세선, 로그 눈금" style="display:block;margin-bottom:16px"></svg>
+    <svg id="c2" viewBox="0 0 760 220" width="100%" role="img"
+         aria-label="중심주가 대비 이격도 추이" style="display:block"></svg>
+    <div class="cap">경계: 바닥 &lt; __C_LOW__% · 천장 &gt; __C_HIGH__%</div>
+  </div>
+
+  <div class="warn">
+    <h3>이 기준만 드리프트가 있습니다</h3>
+    <p>QQQ의 실제 연복리는 2016년 이후 <b>__C_REAL__%</b>로, 추세선 가정(__C_ACAGR__%)보다 높습니다.
+    그만큼 매년 위로 벌어져, 이격도 추세가 <b>연 +__C_SLOPE__%p</b>씩 올라갑니다.
+    천장에 머무는 시간이 초기 33%에서 최근 57%로 늘었습니다.</p>
+    <p>다만 <b>아직 조정이 필요한 단계는 아닙니다.</b> 조정이 올 때마다 이격도가 끌려 내려와서,
+    바닥은 최근 11년 중 8년에서 여전히 도달했습니다. 바닥을 못 찍은 해는
+    드리프트 탓이라기보다 <b>큰 조정이 없던 해</b>였습니다.</p>
+    <p>그리고 <b>반사적으로 경계를 올리는 것은 위험합니다.</b> 최근 데이터로 파라미터를
+    다시 맞추면 검증 구간에서 지기 쉽다는 것을 이미 확인했습니다
+    (비중 최적화가 11개 조합 중 8개에서 균등 배분에 패배). 굳이 신호를 정한다면
+    <b>바닥이 3년 연속 한 번도 안 나올 때</b>가 구조 변화를 의심할 시점입니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>연도</th><th>최저 이격도</th><th>평균</th><th>최고</th><th>바닥 도달</th></tr></thead>
+      <tbody>__C_YEARLY__</tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">기준 ②</div>
+  <h2>이평선 — 움직이는 평균선에서 얼마나 벌어졌나</h2>
+  <div class="prose">
+    <p>기준선이 <b>QQQ의 120일 이동평균</b>입니다. 일봉으로 계산한 뒤 주말 값을 씁니다.
+    이격도 = 주봉종가 ÷ MA120 − 1.</p>
+    <p>고정선이 아니라 <b>시장을 따라다니는 선</b>이라 이격도가 한쪽으로 쌓이지 않습니다.
+    추세 기울기가 <b>연 +__M_SLOPE__%p</b>로, 중심주가형(+__C_SLOPE__%p)의 10분의 1 수준입니다.
+    경계가 −1.25% / +5.75%로 훨씬 좁은 것도 이 때문입니다 —
+    이동평균은 주가를 바짝 따라가서 이격도 자체가 작게 나옵니다.</p>
+  </div>
+  <div class="chart">
+    <div class="sub">위: QQQ와 MA120(로그 눈금) · 아래: 이격도</div>
+    <div class="key">
+      <span><i class="ln" style="background:#2C2C2A"></i>QQQ 실제</span>
+      <span><i class="ln" style="border-top:2px dashed #888780;height:0"></i>MA120</span>
+      <span><i class="sw" style="background:#E6F1FB;border:1px solid #85B7EB"></i>바닥</span>
+      <span><i class="sw" style="background:#F1EFE8;border:1px solid #B4B2A9"></i>중간</span>
+      <span><i class="sw" style="background:#FCEBEB;border:1px solid #F09595"></i>천장</span>
+    </div>
+    <svg id="m1" viewBox="0 0 760 250" width="100%" role="img"
+         aria-label="QQQ와 120일 이동평균, 로그 눈금" style="display:block;margin-bottom:16px"></svg>
+    <svg id="m2" viewBox="0 0 760 220" width="100%" role="img"
+         aria-label="이동평균 대비 이격도 추이" style="display:block"></svg>
+    <div class="cap">경계: 바닥 &lt; __M_LOW__% · 천장 &gt; __M_HIGH__%</div>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>대신 <b>모드가 가장 자주 바뀝니다</b> — 평균 __M_RUN__주마다 전환합니다
+    (중심주가 __C_RUN__주 · RSI __R_RUN__주). 이격도 범위도 좁습니다.</p>
+    <p>프리셋 이름의 <b>(4일)</b>과 <b>(1일)</b>은 이 기준을 쓰는 두 변형인데,
+    핵심 차이는 <b>중간 구간 2티어의 손절일수</b>입니다. 1일이면 중간에 팔 기회가 없어
+    무조건 MOC로 넘기고, 4일이면 그 사이 목표가를 넘길 때 LOC로 익절할 수 있습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">기준 ③</div>
+  <h2>RSI — 오르는 힘과 내리는 힘의 비율</h2>
+  <div class="prose">
+    <p>앞의 둘과 달리 <b>기준선이 없습니다.</b> 최근 <b>14주</b> 동안 오른 주들의 평균 상승폭과
+    내린 주들의 평균 하락폭을 구해, 오른 힘이 전체의 몇 %인지를 0~100으로 나타냅니다.</p>
+    <p><code>RSI = 상승평균 ÷ (상승평균 + 하락평균) × 100</code></p>
+    <p>50이면 오르내림이 반반, 100에 가까우면 14주 내내 거의 오르기만 한 것입니다.
+    <b>14일이 아니라 14주</b>입니다 — 약 3.5개월로, 흔히 쓰는 일봉 RSI(14)보다
+    5배 넘게 긴 호흡입니다.</p>
+  </div>
+  <div class="chart">
+    <div class="sub">위: QQQ 주가, 배경색이 그때의 구간 판정 · 아래: 주봉 RSI(14)</div>
+    <div class="key">
+      <span><i class="ln" style="background:#2C2C2A"></i>QQQ / RSI</span>
+      <span><i class="sw" style="background:#E6F1FB;border:1px solid #85B7EB"></i>바닥</span>
+      <span><i class="sw" style="background:#F1EFE8;border:1px solid #B4B2A9"></i>중간</span>
+      <span><i class="sw" style="background:#FCEBEB;border:1px solid #F09595"></i>천장</span>
+    </div>
+    <svg id="r1" viewBox="0 0 760 200" width="100%" role="img"
+         aria-label="QQQ 주가와 RSI 구간 판정 배경색" style="display:block;margin-bottom:16px"></svg>
+    <svg id="r2" viewBox="0 0 760 220" width="100%" role="img"
+         aria-label="주봉 RSI 14 추이" style="display:block"></svg>
+    <div class="cap">경계: 바닥 &lt; __R_LOW__ · 천장 &gt; __R_HIGH__</div>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>위 칸을 보면 <b>주가가 오르는 구간 내내 붉은색(천장)</b>입니다.
+    RSI는 "얼마나 비싼가"가 아니라 "얼마나 꾸준히 오르고 있나"를 재기 때문에,
+    상승 추세가 이어지면 계속 천장으로 판정합니다.</p>
+    <p>그래서 <b>바닥이 극단적으로 드뭅니다</b> — 16년간 __R_FLOOR__%뿐입니다.
+    RSI가 30 밑으로 간 주는 12주뿐이고 최저치는 2025년 4월의 22.1이었습니다.</p>
+  </div>
+
+  <div class="warn">
+    <h3>이 RSI는 증권사 앱의 RSI와 다릅니다</h3>
+    <p>원본 시트가 <b>단순평균(SMA)</b> 방식을 쓰는데, 트레이딩뷰나 증권사 앱은
+    <b>와일더 지수평활</b> 방식입니다. 같은 이름이지만 다른 계산입니다.</p>
+    <p>실제로 대조하면 상관은 __R_CORR__로 같이 움직이지만, 최대 차이가 <b>__R_MAXD__pt</b>이고
+    <b>구간 판정이 갈린 주가 __R_DIS__ / __R_TOT__ (__R_DISP__%)</b>입니다.
+    지금 이 순간도 시트 방식 __R_NOWS__ vs 표준 방식 __R_NOWW__입니다.</p>
+    <p>차트 앱에서 보시려면 <b>주봉으로 바꿔야</b> 그나마 비슷하고, 그래도 계산 방식이 달라
+    어긋납니다. <b>앱 숫자로 판단하지 마시고 주문표를 보십시오.</b>
+    우리 엔진은 원본 시트와 소수점 셋째 자리까지 일치합니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">그래서</div>
+  <h2>자가 다르니 답이 갈리고, 그래서 섞으면 낫다</h2>
+  <p class="lede">세 전략의 일간 수익률 상관입니다. 같은 QQQ를 보고 같은 SOXL을 거래하는데도
+  0.65~0.67에 그칩니다.</p>
+  <div class="scroll">
+    <table>__CORR__</table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>하나는 "장기 추세 대비 얼마나 비싼가"를 묻고, 하나는 "최근 넉 달 평균 대비 어떤가"를 묻고,
+    하나는 "얼마나 꾸준히 오르고 있나"를 묻습니다. 답이 자주 엇갈립니다.</p>
+    <p>이 엇갈림이 <b>분산 효과</b>의 원천입니다. 이평4일 + 중심주가를 반반 섞으면
+    MDD가 −38.3% / −36.3%에서 <b>−32.7%</b>로, 최악의 하루가 −22.3% / −23.8%에서
+    <b>−15.7%</b>로 줄었습니다. 수익률은 두 전략의 중간이지만 곡선이 훨씬 편안해집니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>경계값과 티어 파라미터는 모두 과거 데이터로 튜닝된 것</b>입니다.
+      원본 시트의 값을 그대로 쓰고 있으며, 우리가 재추정하지 않습니다.</li>
+      <li><b>판정은 QQQ로 하고 매매는 SOXL로 합니다.</b> 둘의 관계가 과거와 달라지면
+      기준 자체가 무의미해질 수 있습니다.</li>
+      <li><b>구간 비율은 균등하지 않습니다.</b> 세 기준 모두 천장이 가장 길고 바닥이 가장 짧습니다
+      (RSI는 바닥이 6%뿐). "세 구간을 골고루 오간다"는 그림이 아닙니다.</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 리포트들과 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 원본 시트 대조 검증 완료 ·
+  계산 기준일 __TODAY__ ·
+  재현: <code>python modes_data.py &amp;&amp; python mkreport_modes.py</code>
+</footer>
+
+</div>
+
+<script>
+(function(){
+  const DATA = __DATA__;
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (n,a) => { const e=document.createElementNS(NS,n);
+    for(const k in a) e.setAttribute(k,a[k]); return e; };
+  const txt = (x,y,t,o={}) => { const e=el("text",
+    {x:x,y:y,"font-size":o.fs||11,fill:o.fill||"#888780",
+     "text-anchor":o.anchor||"start","font-family":"IBM Plex Mono,ui-monospace,monospace"});
+    e.textContent=t; return e; };
+  const BG=["#E6F1FB","#F1EFE8","#FCEBEB"];
+  const yrTicks=(D)=>{const m={};D.forEach((d,i)=>{const y=d[0].slice(0,4);
+    if(!(y in m))m[y]=i;});return m;};
+  const XT=["2011","2014","2017","2020","2023","2026"];
+
+  // 기준선 + 밴드형 (중심주가 · 이평선)
+  function bandChart(id1,id2,D,LOW,HIGH,refName){
+    (function(){
+      const S=document.getElementById(id1),W=760,H=250,L=52,R=14,T=12,B=26;
+      const iw=W-L-R,ih=H-T-B, yi=yrTicks(D);
+      const vals=[];D.forEach(d=>{vals.push(d[1],d[2]*(1+HIGH),d[2]*(1+LOW));});
+      const lo=Math.log10(Math.min(...vals)*0.92),hi=Math.log10(Math.max(...vals)*1.06);
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(Math.log10(v)-lo)/(hi-lo));
+      const mid=(f1,f2)=>{
+        const up=D.map((d,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(d[2]*f1).toFixed(1)}`).join("");
+        const dn=D.slice().reverse().map((d,i)=>{const j=D.length-1-i;
+          return `L${X(j).toFixed(1)},${Y(d[2]*f2).toFixed(1)}`;}).join("");
+        return up+dn+"Z";};
+      const edge=(f,ey)=>{
+        const up=D.map((d,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(d[2]*f).toFixed(1)}`).join("");
+        return `${up}L${X(D.length-1).toFixed(1)},${ey}L${X(0).toFixed(1)},${ey}Z`;};
+      S.appendChild(el("path",{d:edge(1+HIGH,T),fill:BG[2],opacity:.55}));
+      S.appendChild(el("path",{d:mid(1+HIGH,1+LOW),fill:BG[1],opacity:.75}));
+      S.appendChild(el("path",{d:edge(1+LOW,T+ih),fill:BG[0],opacity:.6}));
+      [50,100,200,400,800].forEach(v=>{if(Math.log10(v)<lo||Math.log10(v)>hi)return;
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.7}));
+        S.appendChild(txt(L-8,Y(v)+4,"$"+v,{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      const ln=(f,st,dash)=>{const d=D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[2]*f).toFixed(1)}`).join("");
+        const p=el("path",{d:d,fill:"none",stroke:st,"stroke-width":dash?1.5:2,
+          "stroke-linejoin":"round"});if(dash)p.setAttribute("stroke-dasharray",dash);
+        S.appendChild(p);};
+      ln(1+HIGH,"#F09595","4 3");ln(1+LOW,"#85B7EB","4 3");ln(1,"#888780","6 4");
+      S.appendChild(el("path",{d:D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[1]).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=D.length-1;
+      S.appendChild(el("circle",{cx:X(li),cy:Y(D[li][1]),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+      S.appendChild(txt(L+6,Y(D[li][2]*1.03),refName,{fs:11,fill:"#5F5E5A"}));
+    })();
+    (function(){
+      const S=document.getElementById(id2),W=760,H=220,L=52,R=14,T=12,B=26;
+      const iw=W-L-R,ih=H-T-B, yi=yrTicks(D);
+      const g=D.map(d=>d[1]/d[2]-1);
+      const lo=Math.min(...g)-0.04,hi=Math.max(...g)+0.05;
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(v-lo)/(hi-lo));
+      S.appendChild(el("rect",{x:L,y:T,width:iw,height:Y(HIGH)-T,fill:BG[2],opacity:.6}));
+      S.appendChild(el("rect",{x:L,y:Y(HIGH),width:iw,height:Y(LOW)-Y(HIGH),
+        fill:BG[1],opacity:.8}));
+      S.appendChild(el("rect",{x:L,y:Y(LOW),width:iw,height:T+ih-Y(LOW),
+        fill:BG[0],opacity:.65}));
+      [-0.2,-0.1,0,0.1,0.2,0.3,0.4,0.5,0.6].forEach(v=>{if(v<lo||v>hi)return;
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.6}));
+        S.appendChild(txt(L-8,Y(v)+4,(v*100).toFixed(0)+"%",{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      [[HIGH,"#E24B4A","#A32D2D","천장 "+(HIGH*100).toFixed(2).replace(/0$/,"")+"%"],
+       [LOW,"#378ADD","#185FA5","바닥 "+(LOW*100).toFixed(2).replace(/0$/,"")+"%"]]
+       .forEach(([v,c,tc,t])=>{
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:c,
+          "stroke-width":1.5,"stroke-dasharray":"5 3"}));
+        S.appendChild(txt(L+iw-4,Y(v)-6,t,{anchor:"end",fs:11,fill:tc}));});
+      S.appendChild(el("path",{d:g.map((v,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=g.length-1,m=g[li]<LOW?0:(g[li]<=HIGH?1:2);
+      S.appendChild(el("circle",{cx:X(li),cy:Y(g[li]),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+      S.appendChild(txt(X(li)-6,Y(g[li])-10,
+        "지금 "+(g[li]>=0?"+":"")+(g[li]*100).toFixed(1)+"% · "+["바닥","중간","천장"][m],
+        {anchor:"end",fs:12,fill:["#185FA5","#5F5E5A","#A32D2D"][m]}));
+    })();
+  }
+
+  // 오실레이터형 (RSI)
+  function rsiChart(id1,id2,D,LOW,HIGH){
+    const mo=v=>v<LOW?0:(v<=HIGH?1:2), yi=yrTicks(D);
+    (function(){
+      const S=document.getElementById(id1),W=760,H=200,L=52,R=14,T=10,B=26;
+      const iw=W-L-R,ih=H-T-B,px=D.map(d=>d[1]);
+      const lo=Math.log10(Math.min(...px)*0.9),hi=Math.log10(Math.max(...px)*1.08);
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(Math.log10(v)-lo)/(hi-lo));
+      let s0=0;
+      for(let i=1;i<=D.length;i++){
+        if(i===D.length||mo(D[i][2])!==mo(D[s0][2])){
+          const x1=X(s0),x2=X(Math.min(i,D.length-1));
+          S.appendChild(el("rect",{x:x1,y:T,width:Math.max(x2-x1,1),height:ih,
+            fill:BG[mo(D[s0][2])],opacity:.75}));
+          s0=i;}}
+      [50,100,200,400,800].forEach(v=>{if(Math.log10(v)<lo||Math.log10(v)>hi)return;
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.6}));
+        S.appendChild(txt(L-8,Y(v)+4,"$"+v,{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      S.appendChild(el("path",{d:D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[1]).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=D.length-1;
+      S.appendChild(el("circle",{cx:X(li),cy:Y(D[li][1]),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+    })();
+    (function(){
+      const S=document.getElementById(id2),W=760,H=220,L=52,R=14,T=12,B=26;
+      const iw=W-L-R,ih=H-T-B,lo=15,hi=100;
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(v-lo)/(hi-lo));
+      S.appendChild(el("rect",{x:L,y:T,width:iw,height:Y(HIGH)-T,fill:BG[2],opacity:.6}));
+      S.appendChild(el("rect",{x:L,y:Y(HIGH),width:iw,height:Y(LOW)-Y(HIGH),
+        fill:BG[1],opacity:.8}));
+      S.appendChild(el("rect",{x:L,y:Y(LOW),width:iw,height:T+ih-Y(LOW),
+        fill:BG[0],opacity:.65}));
+      [20,40,60,80,100].forEach(v=>{
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.6}));
+        S.appendChild(txt(L-8,Y(v)+4,String(v),{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      [[HIGH,"#E24B4A","#A32D2D","천장 경계 "+HIGH],
+       [LOW,"#378ADD","#185FA5","바닥 경계 "+LOW]].forEach(([v,c,tc,t])=>{
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:c,
+          "stroke-width":1.5,"stroke-dasharray":"5 3"}));
+        S.appendChild(txt(L+iw-4,Y(v)-6,t,{anchor:"end",fs:11,fill:tc}));});
+      S.appendChild(el("path",{d:D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[2]).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=D.length-1,v=D[li][2],m=mo(v);
+      S.appendChild(el("circle",{cx:X(li),cy:Y(v),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+      S.appendChild(txt(X(li)-6,Y(v)-10,"지금 "+v.toFixed(1)+" · "+["바닥","중간","천장"][m],
+        {anchor:"end",fs:12,fill:["#185FA5","#5F5E5A","#A32D2D"][m]}));
+    })();
+  }
+
+  bandChart("c1","c2",DATA.center.series,DATA.center.low,DATA.center.high,"중심주가");
+  bandChart("m1","m2",DATA.ma.series,DATA.ma.low,DATA.ma.high,"MA120");
+  rsiChart("r1","r2",DATA.rsi.series,DATA.rsi.low,DATA.rsi.high);
+})();
+</script>

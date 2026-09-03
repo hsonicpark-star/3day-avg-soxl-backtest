@@ -1,0 +1,595 @@
+<title>바닥·중간·천장은 어떻게 정해지나</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --ground:#F6F8FA; --surface:#FFFFFF; --sunken:#EEF2F6;
+  --ink:#16202B; --muted:#5A6B7B; --faint:#8494A3;
+  --rule:#DCE3EA; --rule-strong:#C3CFDA;
+  --accent:#1D4E89; --accent-soft:#E7EFF8;
+  --pos:#1B7A4B; --neg:#B3352C;
+  --panel:#141A22; --panel-rule:#2C3644;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+    --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+    --rule:#253240; --rule-strong:#33414F;
+    --accent:#74A9E0; --accent-soft:#1A2937;
+    --pos:#4ADE80; --neg:#F87171;
+    --panel:#0B1118; --panel-rule:#26303C;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E151D; --surface:#17212C; --sunken:#121A23;
+  --ink:#E4ECF3; --muted:#93A4B4; --faint:#6F8090;
+  --rule:#253240; --rule-strong:#33414F;
+  --accent:#74A9E0; --accent-soft:#1A2937;
+  --pos:#4ADE80; --neg:#F87171;
+  --panel:#0B1118; --panel-rule:#26303C;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:'IBM Plex Sans KR',system-ui,-apple-system,sans-serif;
+  font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:'Gowun Batang','Noto Serif KR',Georgia,serif; text-wrap:balance; margin:0}
+.num{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--rule-strong); padding:64px 0 28px; margin-bottom:44px}
+.eyebrow{
+  font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:600; margin-bottom:18px;
+}
+h1{font-size:clamp(34px,5.2vw,52px); line-height:1.16; font-weight:700; letter-spacing:-.01em}
+.dek{color:var(--muted); font-size:17px; margin-top:16px; max-width:60ch}
+.setup{
+  display:flex; flex-wrap:wrap; gap:0 28px; margin-top:26px;
+  font-size:13px; color:var(--faint);
+}
+.setup b{color:var(--ink); font-weight:500}
+
+/* ── sections ── */
+section{margin-top:60px}
+h2{font-size:26px; font-weight:700; letter-spacing:-.005em}
+.kicker{
+  font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--faint); font-weight:600; margin-bottom:10px;
+}
+h2+p,.lede{margin-top:14px; color:var(--muted)}
+.lede{font-size:17px}
+
+/* ── verdict ── */
+.verdict{
+  background:var(--surface); border:1px solid var(--rule);
+  border-left:3px solid var(--accent); border-radius:4px;
+  padding:30px 34px; margin-top:8px;
+}
+.verdict .line{
+  font-family:'Gowun Batang','Noto Serif KR',Georgia,serif;
+  font-size:clamp(21px,2.7vw,27px); line-height:1.45; font-weight:700;
+  text-wrap:balance;
+}
+.verdict p{margin:14px 0 0; color:var(--muted); font-size:15px}
+
+/* ── stat trio ── */
+.trio{display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:24px}
+.card{
+  background:var(--surface); border:1px solid var(--rule);
+  border-radius:4px; padding:20px 22px; min-width:0;
+}
+.card.hero{border-color:var(--accent); background:var(--accent-soft)}
+.card .who{
+  font-size:12px; font-weight:600; letter-spacing:.06em;
+  color:var(--muted); margin-bottom:14px; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+.card.hero .who{color:var(--accent)}
+.card .big{font-size:30px; font-weight:600; line-height:1.1}
+.card .cap{font-size:12px; color:var(--faint); margin-top:4px}
+.card dl{margin:16px 0 0; display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:13px}
+.card dt{color:var(--faint)}
+.card dd{margin:0; text-align:right; font-weight:500}
+
+/* ── tables ── */
+.scroll{overflow-x:auto; margin-top:22px; border:1px solid var(--rule); border-radius:4px}
+table{border-collapse:collapse; width:100%; font-size:13.5px; background:var(--surface)}
+th,td{padding:9px 14px; text-align:right; white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+thead th{
+  background:var(--sunken); color:var(--muted); font-weight:600;
+  font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  border-bottom:1px solid var(--rule-strong);
+}
+tbody tr+tr td{border-top:1px solid var(--rule)}
+tbody tr.sum td{background:var(--accent-soft); font-weight:600}
+tbody tr.sum td:first-child{color:var(--accent)}
+td.n{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.pos{color:var(--pos)} .neg{color:var(--neg)}
+.grp td{
+  background:var(--sunken); font-size:11px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600;
+}
+
+/* ── heatmap panel ── */
+.panel{
+  margin-top:22px; background:var(--panel); border:1px solid var(--panel-rule);
+  border-radius:5px; padding:18px;
+}
+.panel table{background:transparent; font-size:13px}
+.panel td,.panel th{white-space:normal}
+
+/* ── notes ── */
+.notes{
+  margin-top:22px; background:var(--sunken); border:1px solid var(--rule);
+  border-radius:4px; padding:22px 26px;
+}
+.notes h3{font-size:16px; font-weight:700; margin-bottom:12px}
+.notes ul{margin:0; padding-left:18px; color:var(--muted); font-size:14.5px}
+.notes li+li{margin-top:9px}
+.notes b{color:var(--ink); font-weight:600}
+
+footer{
+  margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+  font-size:12.5px; color:var(--faint);
+}
+@media (max-width:720px){
+  .trio{grid-template-columns:1fr}
+  .wrap{padding:0 18px 64px}
+}
+</style>
+
+<style>
+.chart{background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+       padding:20px 18px 14px; margin-top:20px; overflow-x:auto}
+.chart .cap{font-size:12.5px; color:var(--faint); margin-top:10px; text-align:center}
+.chart .sub{font-size:11.5px; color:var(--faint); margin:0 0 4px}
+.key{display:flex; flex-wrap:wrap; gap:6px 16px; margin-bottom:12px;
+     font-size:12px; color:var(--muted)}
+.key span{display:flex; align-items:center; gap:5px}
+.sw{width:11px; height:11px; border-radius:2px; display:inline-block}
+.ln{width:16px; height:2px; display:inline-block}
+.steps{counter-reset:s; margin-top:22px; display:grid; gap:12px}
+.step{display:grid; grid-template-columns:30px 1fr; gap:14px; align-items:start}
+.step .n{width:26px; height:26px; border-radius:50%; background:var(--accent-soft);
+         color:var(--accent); font-size:12px; font-weight:600;
+         display:flex; align-items:center; justify-content:center;
+         font-family:'IBM Plex Mono',monospace}
+.step .b{font-size:15px; color:var(--muted); line-height:1.65}
+.step .b b{color:var(--ink)}
+.warn{background:var(--surface); border:1px solid var(--rule);
+      border-left:3px solid var(--neg); border-radius:4px;
+      padding:22px 26px; margin-top:20px}
+.warn h3{font-size:16px; font-weight:700; margin-bottom:10px; color:var(--neg)}
+.warn p{margin:0 0 10px; color:var(--muted); font-size:14.5px}
+.warn p:last-child{margin-bottom:0}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">SOXL 만능 스위치 · 모드 판단 기준</div>
+  <h1>바닥·중간·천장은 어떻게 정해지나</h1>
+  <p class="dek">이 전략은 시장을 세 구간으로 나눠 각각 다른 규칙으로 매매합니다.
+  그 구간을 정하는 자가 세 가지 있습니다 — 중심주가, 이평선, RSI.
+  셋이 어떻게 다르고 왜 섞으면 좋은지 정리했습니다.</p>
+  <div class="setup">
+    <span>판정 종목 <b>QQQ</b></span>
+    <span>매매 종목 <b>SOXL</b></span>
+    <span>기준 <b>주봉</b></span>
+    <span>데이터 <b>2010-01-08 ~ 2026-08-28</b></span>
+  </div>
+</header>
+
+<section style="margin-top:0">
+  <div class="verdict">
+    <div class="line">로직은 하나입니다. 자가 셋일 뿐입니다.</div>
+    <p>세 기준 모두 <b>똑같은 순서</b>로 돌아갑니다 — 자로 재서 구간을 정하고,
+    그 구간에 배정된 파라미터로 SOXL을 사고팝니다.
+    다른 것은 <b>무엇을 자로 쓰느냐</b> 하나뿐입니다.
+    그런데 그 하나가 달라서 같은 날 답이 갈리고, 그래서 섞으면 낙폭이 얕아집니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">공통 흐름</div>
+  <h2>세 기준 모두 이 다섯 단계를 따른다</h2>
+  <div class="steps">
+    <div class="step"><div class="n">1</div><div class="b">
+      <b>자로 잰다.</b> QQQ 주봉 종가를 기준선과 비교하거나(중심주가·이평선),
+      최근 14주의 오르내림 비율을 계산한다(RSI).</div></div>
+    <div class="step"><div class="n">2</div><div class="b">
+      <b>구간을 정한다.</b> 그 값이 아래 경계보다 낮으면 <b>바닥</b>,
+      위 경계보다 높으면 <b>천장</b>, 사이면 <b>중간</b>.</div></div>
+    <div class="step"><div class="n">3</div><div class="b">
+      <b>한 주 늦춘다.</b> 이번 주는 <b>지난주 판정</b>을 쓴다.
+      이번 주 종가를 봐야 이번 주 판정이 나오는데 그걸 이번 주 매매에 쓰면
+      미래를 보는 셈이기 때문이다.</div></div>
+    <div class="step"><div class="n">4</div><div class="b">
+      <b>구간의 규칙으로 산다.</b> 보유가 0개면 1티어, 1개면 2티어 주문이 나간다.
+      매수 주문가 = 전일 종가 × (1 + 매수목표)이고, LOC이라
+      <b>주문가가 당일 종가 이상이면 체결</b>된다.</div></div>
+    <div class="step"><div class="n">5</div><div class="b">
+      <b>살 때 팔 조건이 정해진다.</b> 목표가 = 매수가 × (1 + 매도목표),
+      마감일 = 손절일수 뒤. 그 안에 목표를 넘으면 LOC로 팔고,
+      못 넘으면 마감일에 <b>MOC(종가)로 무조건 청산</b>한다.</div></div>
+  </div>
+  <div class="notes" style="margin-top:22px">
+    <h3>1티어가 1%뿐인 이유</h3>
+    <ul>
+      <li>티어를 <b>보유 개수 + 1</b>로 정하기 때문에, 1티어가 한 주라도 사줘야
+      2티어(99%)가 열립니다. <b>1티어는 포지션이 아니라 스위치</b>이고,
+      1%는 스위치를 켜는 데 필요한 최소한입니다.</li>
+      <li>실제로 1티어는 승률이 89~91%로 높은데 손익비가 0.17~0.32에 불과합니다.
+      자주 이기고 질 때 크게 집니다. 여기에 돈을 더 넣으면 성과가 나빠집니다.</li>
+      <li><b>손절일수가 1이면 중간에 팔 기회가 없어 항상 MOC</b>입니다.
+      매수일 다음날이 곧 마감일이라 그 사이에 거래일이 없기 때문입니다.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">한눈에</div>
+  <h2>세 기준 비교</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th></th><th>중심주가</th><th>이평선</th><th>RSI</th>
+      </tr></thead>
+      <tbody><tr><td style="color:var(--muted)">기준선</td><td class="n">2016년 고정 추세선</td><td class="n">QQQ 120일 이동평균</td><td class="n">없음 (오실레이터)</td></tr>
+<tr><td style="color:var(--muted)">재는 것</td><td class="n">장기 추세 대비 이격도</td><td class="n">최근 넉 달 평균 대비 이격도</td><td class="n">14주 상승/하락 힘의 비율</td></tr>
+<tr><td style="color:var(--muted)">바닥 경계</td><td class="n">&lt; 5.5%</td><td class="n">&lt; -1.25%</td><td class="n">&lt; 36</td></tr>
+<tr><td style="color:var(--muted)">천장 경계</td><td class="n">&gt; 17%</td><td class="n">&gt; 5.75%</td><td class="n">&gt; 60</td></tr>
+<tr><td style="color:var(--muted)">드리프트 (연)</td><td class="n"><b>+0.76%p</b></td><td class="n">+0.08%p</td><td class="n">-0.08pt</td></tr>
+<tr><td style="color:var(--muted)">바닥 비율</td><td class="n">15.5%</td><td class="n">17.0%</td><td class="n"><b>6.0%</b></td></tr>
+<tr><td style="color:var(--muted)">중간 비율</td><td class="n">38.6%</td><td class="n">41.3%</td><td class="n">44.4%</td></tr>
+<tr><td style="color:var(--muted)">천장 비율</td><td class="n">45.9%</td><td class="n">41.7%</td><td class="n">49.6%</td></tr>
+<tr><td style="color:var(--muted)">모드 지속</td><td class="n">6.6주</td><td class="n"><b>4.8주</b></td><td class="n">5.3주</td></tr>
+<tr><td style="color:var(--muted)">현재값</td><td class="n">+35.1% · 천장</td><td class="n">+5.0% · 중간</td><td class="n">49.8 · 중간</td></tr></tbody>
+    </table>
+  </div>
+  <p class="lede" style="margin-top:18px">가장 큰 차이는 <b>기준선이 움직이느냐</b>입니다.
+  중심주가는 과거에 고정한 선이라 시장이 그 선보다 빨리 자라면 이격도가 계속 커집니다.
+  이평선은 시장을 따라다니고, RSI는 0~100에 갇혀 있어 그럴 수가 없습니다.</p>
+</section>
+
+<section>
+  <div class="kicker">기준 ①</div>
+  <h2>중심주가 — 고정된 추세선에서 얼마나 벌어졌나</h2>
+  <div class="prose">
+    <p>2016년 1월 QQQ를 <b>$100.31</b>로 놓고 <b>매달 1.32%</b>씩 복리로 늘린 선입니다
+    (연 17.0%). 매년 다시 맞추지 않는 <b>고정선</b>입니다.</p>
+    <p><code>중심주가 = 100.31 × 1.0132 ^ (12 × (연도−2016) + (월−1))</code></p>
+    <p>이 값은 우리가 정한 것이 아니라 <b>원본 시트 수식에 하드코딩</b>된 상수를
+    그대로 옮긴 것입니다. 이격도 = QQQ 주봉종가 ÷ 중심주가 − 1.</p>
+  </div>
+  <div class="chart">
+    <div class="sub">위: QQQ와 추세선(로그 눈금) · 아래: 이격도</div>
+    <div class="key">
+      <span><i class="ln" style="background:#2C2C2A"></i>QQQ 실제</span>
+      <span><i class="ln" style="border-top:2px dashed #888780;height:0"></i>중심주가</span>
+      <span><i class="sw" style="background:#E6F1FB;border:1px solid #85B7EB"></i>바닥</span>
+      <span><i class="sw" style="background:#F1EFE8;border:1px solid #B4B2A9"></i>중간</span>
+      <span><i class="sw" style="background:#FCEBEB;border:1px solid #F09595"></i>천장</span>
+    </div>
+    <svg id="c1" viewBox="0 0 760 250" width="100%" role="img"
+         aria-label="QQQ와 고정 추세선, 로그 눈금" style="display:block;margin-bottom:16px"></svg>
+    <svg id="c2" viewBox="0 0 760 220" width="100%" role="img"
+         aria-label="중심주가 대비 이격도 추이" style="display:block"></svg>
+    <div class="cap">경계: 바닥 &lt; 5.5% · 천장 &gt; 17%</div>
+  </div>
+
+  <div class="warn">
+    <h3>이 기준만 드리프트가 있습니다</h3>
+    <p>QQQ의 실제 연복리는 2016년 이후 <b>19.29%</b>로, 추세선 가정(17.0%)보다 높습니다.
+    그만큼 매년 위로 벌어져, 이격도 추세가 <b>연 +0.76%p</b>씩 올라갑니다.
+    천장에 머무는 시간이 초기 33%에서 최근 57%로 늘었습니다.</p>
+    <p>다만 <b>아직 조정이 필요한 단계는 아닙니다.</b> 조정이 올 때마다 이격도가 끌려 내려와서,
+    바닥은 최근 11년 중 8년에서 여전히 도달했습니다. 바닥을 못 찍은 해는
+    드리프트 탓이라기보다 <b>큰 조정이 없던 해</b>였습니다.</p>
+    <p>그리고 <b>반사적으로 경계를 올리는 것은 위험합니다.</b> 최근 데이터로 파라미터를
+    다시 맞추면 검증 구간에서 지기 쉽다는 것을 이미 확인했습니다
+    (비중 최적화가 11개 조합 중 8개에서 균등 배분에 패배). 굳이 신호를 정한다면
+    <b>바닥이 3년 연속 한 번도 안 나올 때</b>가 구조 변화를 의심할 시점입니다.</p>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>연도</th><th>최저 이격도</th><th>평균</th><th>최고</th><th>바닥 도달</th></tr></thead>
+      <tbody><tr><td class="n">2016</td><td class="n neg">-3.6%</td><td class="n">+2.9%</td><td class="n" style="color:var(--faint)">+6.6%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2017</td><td class="n ">+3.9%</td><td class="n">+11.0%</td><td class="n" style="color:var(--faint)">+16.7%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2018</td><td class="n neg">-7.0%</td><td class="n">+15.1%</td><td class="n" style="color:var(--faint)">+24.4%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2019</td><td class="n neg">-2.9%</td><td class="n">+7.5%</td><td class="n" style="color:var(--faint)">+15.0%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2020</td><td class="n neg">-11.7%</td><td class="n">+23.1%</td><td class="n" style="color:var(--faint)">+44.3%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2021</td><td class="n ">+36.5%</td><td class="n">+48.9%</td><td class="n" style="color:var(--faint)">+60.8%</td><td class="n" style="color:var(--faint);font-weight:400">—</td></tr>
+<tr><td class="n">2022</td><td class="n neg">-10.6%</td><td class="n">+12.0%</td><td class="n" style="color:var(--faint)">+47.4%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2023</td><td class="n neg">-10.9%</td><td class="n">+6.4%</td><td class="n" style="color:var(--faint)">+17.5%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2024</td><td class="n ">+12.3%</td><td class="n">+22.3%</td><td class="n" style="color:var(--faint)">+30.0%</td><td class="n" style="color:var(--faint);font-weight:400">—</td></tr>
+<tr><td class="n">2025</td><td class="n neg">-1.7%</td><td class="n">+22.9%</td><td class="n" style="color:var(--faint)">+35.2%</td><td class="n" style="color:var(--pos);font-weight:600">도달</td></tr>
+<tr><td class="n">2026</td><td class="n ">+13.2%</td><td class="n">+30.6%</td><td class="n" style="color:var(--faint)">+44.8%</td><td class="n" style="color:var(--faint);font-weight:400">—</td></tr></tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">기준 ②</div>
+  <h2>이평선 — 움직이는 평균선에서 얼마나 벌어졌나</h2>
+  <div class="prose">
+    <p>기준선이 <b>QQQ의 120일 이동평균</b>입니다. 일봉으로 계산한 뒤 주말 값을 씁니다.
+    이격도 = 주봉종가 ÷ MA120 − 1.</p>
+    <p>고정선이 아니라 <b>시장을 따라다니는 선</b>이라 이격도가 한쪽으로 쌓이지 않습니다.
+    추세 기울기가 <b>연 +0.08%p</b>로, 중심주가형(+0.76%p)의 10분의 1 수준입니다.
+    경계가 −1.25% / +5.75%로 훨씬 좁은 것도 이 때문입니다 —
+    이동평균은 주가를 바짝 따라가서 이격도 자체가 작게 나옵니다.</p>
+  </div>
+  <div class="chart">
+    <div class="sub">위: QQQ와 MA120(로그 눈금) · 아래: 이격도</div>
+    <div class="key">
+      <span><i class="ln" style="background:#2C2C2A"></i>QQQ 실제</span>
+      <span><i class="ln" style="border-top:2px dashed #888780;height:0"></i>MA120</span>
+      <span><i class="sw" style="background:#E6F1FB;border:1px solid #85B7EB"></i>바닥</span>
+      <span><i class="sw" style="background:#F1EFE8;border:1px solid #B4B2A9"></i>중간</span>
+      <span><i class="sw" style="background:#FCEBEB;border:1px solid #F09595"></i>천장</span>
+    </div>
+    <svg id="m1" viewBox="0 0 760 250" width="100%" role="img"
+         aria-label="QQQ와 120일 이동평균, 로그 눈금" style="display:block;margin-bottom:16px"></svg>
+    <svg id="m2" viewBox="0 0 760 220" width="100%" role="img"
+         aria-label="이동평균 대비 이격도 추이" style="display:block"></svg>
+    <div class="cap">경계: 바닥 &lt; -1.25% · 천장 &gt; 5.75%</div>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>대신 <b>모드가 가장 자주 바뀝니다</b> — 평균 4.8주마다 전환합니다
+    (중심주가 6.6주 · RSI 5.3주). 이격도 범위도 좁습니다.</p>
+    <p>프리셋 이름의 <b>(4일)</b>과 <b>(1일)</b>은 이 기준을 쓰는 두 변형인데,
+    핵심 차이는 <b>중간 구간 2티어의 손절일수</b>입니다. 1일이면 중간에 팔 기회가 없어
+    무조건 MOC로 넘기고, 4일이면 그 사이 목표가를 넘길 때 LOC로 익절할 수 있습니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">기준 ③</div>
+  <h2>RSI — 오르는 힘과 내리는 힘의 비율</h2>
+  <div class="prose">
+    <p>앞의 둘과 달리 <b>기준선이 없습니다.</b> 최근 <b>14주</b> 동안 오른 주들의 평균 상승폭과
+    내린 주들의 평균 하락폭을 구해, 오른 힘이 전체의 몇 %인지를 0~100으로 나타냅니다.</p>
+    <p><code>RSI = 상승평균 ÷ (상승평균 + 하락평균) × 100</code></p>
+    <p>50이면 오르내림이 반반, 100에 가까우면 14주 내내 거의 오르기만 한 것입니다.
+    <b>14일이 아니라 14주</b>입니다 — 약 3.5개월로, 흔히 쓰는 일봉 RSI(14)보다
+    5배 넘게 긴 호흡입니다.</p>
+  </div>
+  <div class="chart">
+    <div class="sub">위: QQQ 주가, 배경색이 그때의 구간 판정 · 아래: 주봉 RSI(14)</div>
+    <div class="key">
+      <span><i class="ln" style="background:#2C2C2A"></i>QQQ / RSI</span>
+      <span><i class="sw" style="background:#E6F1FB;border:1px solid #85B7EB"></i>바닥</span>
+      <span><i class="sw" style="background:#F1EFE8;border:1px solid #B4B2A9"></i>중간</span>
+      <span><i class="sw" style="background:#FCEBEB;border:1px solid #F09595"></i>천장</span>
+    </div>
+    <svg id="r1" viewBox="0 0 760 200" width="100%" role="img"
+         aria-label="QQQ 주가와 RSI 구간 판정 배경색" style="display:block;margin-bottom:16px"></svg>
+    <svg id="r2" viewBox="0 0 760 220" width="100%" role="img"
+         aria-label="주봉 RSI 14 추이" style="display:block"></svg>
+    <div class="cap">경계: 바닥 &lt; 36 · 천장 &gt; 60</div>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>위 칸을 보면 <b>주가가 오르는 구간 내내 붉은색(천장)</b>입니다.
+    RSI는 "얼마나 비싼가"가 아니라 "얼마나 꾸준히 오르고 있나"를 재기 때문에,
+    상승 추세가 이어지면 계속 천장으로 판정합니다.</p>
+    <p>그래서 <b>바닥이 극단적으로 드뭅니다</b> — 16년간 6%뿐입니다.
+    RSI가 30 밑으로 간 주는 12주뿐이고 최저치는 2025년 4월의 22.1이었습니다.</p>
+  </div>
+
+  <div class="warn">
+    <h3>이 RSI는 증권사 앱의 RSI와 다릅니다</h3>
+    <p>원본 시트가 <b>단순평균(SMA)</b> 방식을 쓰는데, 트레이딩뷰나 증권사 앱은
+    <b>와일더 지수평활</b> 방식입니다. 같은 이름이지만 다른 계산입니다.</p>
+    <p>실제로 대조하면 상관은 0.86로 같이 움직이지만, 최대 차이가 <b>30.8pt</b>이고
+    <b>구간 판정이 갈린 주가 190 / 855 (22%)</b>입니다.
+    지금 이 순간도 시트 방식 49.8 vs 표준 방식 58.0입니다.</p>
+    <p>차트 앱에서 보시려면 <b>주봉으로 바꿔야</b> 그나마 비슷하고, 그래도 계산 방식이 달라
+    어긋납니다. <b>앱 숫자로 판단하지 마시고 주문표를 보십시오.</b>
+    우리 엔진은 원본 시트와 소수점 셋째 자리까지 일치합니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">그래서</div>
+  <h2>자가 다르니 답이 갈리고, 그래서 섞으면 낫다</h2>
+  <p class="lede">세 전략의 일간 수익률 상관입니다. 같은 QQQ를 보고 같은 SOXL을 거래하는데도
+  0.65~0.67에 그칩니다.</p>
+  <div class="scroll">
+    <table><thead><tr><th></th><th>이평4일</th><th>중심주가</th><th>RSI</th></tr></thead><tbody><tr><td><b>이평4일</b></td><td class="n" style="color:var(--faint)">—</td><td class="n">0.670</td><td class="n">0.650</td></tr><tr><td><b>중심주가</b></td><td class="n">0.670</td><td class="n" style="color:var(--faint)">—</td><td class="n">0.654</td></tr><tr><td><b>RSI</b></td><td class="n">0.650</td><td class="n">0.654</td><td class="n" style="color:var(--faint)">—</td></tr></tbody></table>
+  </div>
+  <div class="prose" style="margin-top:22px">
+    <p>하나는 "장기 추세 대비 얼마나 비싼가"를 묻고, 하나는 "최근 넉 달 평균 대비 어떤가"를 묻고,
+    하나는 "얼마나 꾸준히 오르고 있나"를 묻습니다. 답이 자주 엇갈립니다.</p>
+    <p>이 엇갈림이 <b>분산 효과</b>의 원천입니다. 이평4일 + 중심주가를 반반 섞으면
+    MDD가 −38.3% / −36.3%에서 <b>−32.7%</b>로, 최악의 하루가 −22.3% / −23.8%에서
+    <b>−15.7%</b>로 줄었습니다. 수익률은 두 전략의 중간이지만 곡선이 훨씬 편안해집니다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="kicker">읽을 때 주의</div>
+  <h2>한계</h2>
+  <div class="notes">
+    <ul>
+      <li><b>경계값과 티어 파라미터는 모두 과거 데이터로 튜닝된 것</b>입니다.
+      원본 시트의 값을 그대로 쓰고 있으며, 우리가 재추정하지 않습니다.</li>
+      <li><b>판정은 QQQ로 하고 매매는 SOXL로 합니다.</b> 둘의 관계가 과거와 달라지면
+      기준 자체가 무의미해질 수 있습니다.</li>
+      <li><b>구간 비율은 균등하지 않습니다.</b> 세 기준 모두 천장이 가장 길고 바닥이 가장 짧습니다
+      (RSI는 바닥이 6%뿐). "세 구간을 골고루 오간다"는 그림이 아닙니다.</li>
+      <li>2011~2015 센트 반올림 의존, 스프레드·수용력 미반영은
+      앞선 리포트들과 동일하게 적용됩니다.</li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  만능 스위치 백테스트 엔진 · 로컬 종가 DB(무조정) · 원본 시트 대조 검증 완료 ·
+  계산 기준일 2026-09-03 ·
+  재현: <code>python modes_data.py &amp;&amp; python mkreport_modes.py</code>
+</footer>
+
+</div>
+
+<script>
+(function(){
+  const DATA = {"center":{"series":[["201001",42.79,39.02],["201002",44.76,39.54],["201003",48.0,40.06],["201004",49.24,40.59],["201005",45.6,41.12],["201006",45.27,41.66],["201007",45.81,42.21],["201008",44.07,42.77],["201009",49.66,43.34],["201010",52.18,43.91],["201011",52.77,44.49],["201012",54.46,45.08],["201101",55.73,45.67],["201102",57.65,46.27],["201103",56.84,46.88],["201104",59.08,47.5],["201105",57.43,48.13],["201106",54.38,48.77],["201107",58.0,49.41],["201108",53.13,50.06],["201109",52.49,50.72],["201110",58.94,51.39],["201111",52.88,52.07],["201112",55.83,52.76],["201201",60.4,53.45],["201202",63.96,54.16],["201203",67.55,54.87],["201204",67.24,55.6],["201205",62.07,56.33],["201206",64.16,57.08],["201207",64.87,57.83],["201208",68.16,58.59],["201209",68.57,59.37],["201210",65.35,60.15],["201211",65.8,60.94],["201212",63.78,61.75],["201301",67.0,62.56],["201302",67.14,63.39],["201303",68.97,64.23],["201304",69.57,65.07],["201305",73.25,65.93],["201306",71.27,66.8],["201307",75.37,67.68],["201308",75.47,68.58],["201309",79.07,69.48],["201310",82.9,70.4],["201311",85.73,71.33],["201312",87.52,72.27],["201401",86.27,73.23],["201402",90.34,74.19],["201403",87.05,75.17],["201404",86.19,76.16],["201405",91.31,77.17],["201406",93.75,78.19],["201407",96.74,79.22],["201408",99.78,80.26],["201409",98.78,81.32],["201410",101.4,82.4],["201411",106.01,83.49],["201412",105.04,84.59],["201501",101.1,85.7],["201502",108.4,86.84],["201503",105.52,87.98],["201504",110.54,89.14],["201505",110.05,90.32],["201506",109.27,91.51],["201507",111.95,92.72],["201508",105.62,93.94],["201509",102.92,95.18],["201510",113.33,96.44],["201511",114.31,97.71],["201512",111.86,99.0],["201601",104.13,100.31],["201602",103.43,101.63],["201603",107.26,102.98],["201604",105.72,104.33],["201605",110.13,105.71],["201606",104.29,107.11],["201607",115.23,108.52],["201608",116.78,109.95],["201609",118.72,111.41],["201610",117.1,112.88],["201611",118.8,114.37],["201612",118.48,115.88],["201701",125.8,117.4],["201702",130.26,118.95],["201703",132.38,120.52],["201704",135.99,122.12],["201705",141.22,123.73],["201706",137.64,125.36],["201707",143.84,127.02],["201708",141.97,128.69],["201709",145.45,130.39],["201710",151.24,132.11],["201711",156.26,133.86],["201712",155.76,135.62],["201801",170.93,137.41],["201802",168.17,139.23],["201803",160.13,141.06],["201804",162.09,142.93],["201805",169.72,144.81],["201806",171.65,146.73],["201807",177.62,148.66],["201808",186.65,150.62],["201809",185.79,152.61],["201810",166.66,154.63],["201811",169.37,156.67],["201812",152.97,158.74],["201901",165.15,160.83],["201902",172.89,162.95],["201903",179.66,165.11],["201904",190.65,167.28],["201905",173.95,169.49],["201906",186.74,171.73],["201907",195.29,174.0],["201908",187.47,176.29],["201909",187.03,178.62],["201910",195.64,180.98],["201911",205.1,183.37],["201912",213.61,185.79],["202001",219.07,188.24],["202002",205.8,190.73],["202003",185.3,193.24],["202004",213.84,195.79],["202005",233.36,198.38],["202006",240.22,201.0],["202007",265.79,203.65],["202008",292.53,206.34],["202009",271.56,209.06],["202010",269.38,211.82],["202011",299.01,214.62],["202012",313.74,217.45],["202101",314.56,220.32],["202102",314.14,223.23],["202103",316.0,226.18],["202104",337.99,229.16],["202105",333.93,232.19],["202106",349.46,235.25],["202107",364.57,238.36],["202108",376.04,241.5],["202109",373.33,244.69],["202110",386.11,247.92],["202111",391.2,251.19],["202112",397.85,254.51],["202201",351.8,257.87],["202202",345.77,261.27],["202203",359.35,264.72],["202204",313.25,268.21],["202205",309.1,271.76],["202206",294.61,275.34],["202207",315.46,278.98],["202208",307.44,282.66],["202209",267.26,286.39],["202210",281.22,290.17],["202211",286.92,294.0],["202212",266.28,297.88],["202301",296.26,301.81],["202302",291.85,305.8],["202303",320.93,309.83],["202304",322.56,313.92],["202305",348.4,318.07],["202306",369.42,322.27],["202307",383.48,326.52],["202308",364.02,330.83],["202309",358.27,335.2],["202310",345.31,339.62],["202311",389.51,344.11],["202312",409.52,348.65],["202401",423.81,353.25],["202402",436.78,357.91],["202403",444.01,362.64],["202404",431.0,367.42],["202405",450.71,372.27],["202406",479.11,377.19],["202407",462.97,382.17],["202408",476.27,387.21],["202409",486.75,392.32],["202410",495.32,397.5],["202411",509.74,402.75],["202412",522.56,408.06],["202501",522.29,413.45],["202502",508.17,418.91],["202503",468.94,424.44],["202504",472.56,430.04],["202505",519.11,435.72],["202506",548.09,441.47],["202507",566.37,447.3],["202508",570.4,453.2],["202509",595.97,459.18],["202510",629.07,465.24],["202511",619.25,471.38],["202512",623.89,477.61],["202601",621.87,483.91],["202602",607.29,490.3],["202603",562.58,496.77],["202604",663.88,503.33],["202605",738.31,509.97],["202606",706.52,516.7],["202607",687.99,523.52],["202608",716.43,530.44]],"low":0.055,"high":0.17},"ma":{"series":[["201006",45.27,46.48],["201007",45.81,46.45],["201008",44.07,46.54],["201009",49.66,46.38],["201010",52.18,46.67],["201011",52.77,47.79],["201012",54.46,49.64],["201101",55.73,51.27],["201102",57.65,53.32],["201103",56.84,54.69],["201104",59.08,55.91],["201105",57.43,56.78],["201106",54.38,56.91],["201107",58.0,57.22],["201108",53.13,56.44],["201109",52.49,56.09],["201110",58.94,55.8],["201111",52.88,55.67],["201112",55.83,55.64],["201201",60.4,55.8],["201202",63.96,57.34],["201203",67.55,59.77],["201204",67.24,61.23],["201205",62.07,62.51],["201206",64.16,63.78],["201207",64.87,64.4],["201208",68.16,65.07],["201209",68.57,65.37],["201210",65.35,65.56],["201211",65.8,65.9],["201212",63.78,66.22],["201301",67.0,66.68],["201302",67.14,66.7],["201303",68.97,66.53],["201304",69.57,66.87],["201305",73.25,68.57],["201306",71.27,69.64],["201307",75.37,70.77],["201308",75.47,72.52],["201309",79.07,74.04],["201310",82.9,75.74],["201311",85.73,77.74],["201312",87.52,79.98],["201401",86.27,82.21],["201402",90.34,84.19],["201403",87.05,85.98],["201404",86.19,86.9],["201405",91.31,87.81],["201406",93.75,88.83],["201407",96.74,90.19],["201408",99.78,91.8],["201409",98.78,93.52],["201410",101.4,95.63],["201411",106.01,97.66],["201412",105.04,99.32],["201501",101.1,100.57],["201502",108.4,101.75],["201503",105.52,103.1],["201504",110.54,104.82],["201505",110.05,105.98],["201506",109.27,106.98],["201507",111.95,108.57],["201508",105.62,108.65],["201509",102.92,108.37],["201510",113.33,108.21],["201511",114.31,108.81],["201512",111.86,109.62],["201601",104.13,108.36],["201602",103.43,107.47],["201603",107.26,107.81],["201604",105.72,107.73],["201605",110.13,106.59],["201606",104.29,106.0],["201607",115.23,107.6],["201608",116.78,110.04],["201609",118.72,111.88],["201610",117.1,113.54],["201611",118.8,114.89],["201612",118.48,117.12],["201701",125.8,118.47],["201702",130.26,120.16],["201703",132.38,122.98],["201704",135.99,125.4],["201705",141.22,128.96],["201706",137.64,133.12],["201707",143.84,135.87],["201708",141.97,138.13],["201709",145.45,140.8],["201710",151.24,143.02],["201711",156.26,145.19],["201712",155.76,148.48],["201801",170.93,151.66],["201802",168.17,154.89],["201803",160.13,159.24],["201804",162.09,161.23],["201805",169.72,163.32],["201806",171.65,166.71],["201807",177.62,168.56],["201808",186.65,171.82],["201809",185.79,175.16],["201810",166.66,177.36],["201811",169.37,176.58],["201812",152.97,174.25],["201901",165.15,171.43],["201902",172.89,169.5],["201903",179.66,167.89],["201904",190.65,170.08],["201905",173.95,173.24],["201906",186.74,177.72],["201907",195.29,182.3],["201908",187.47,185.33],["201909",187.03,186.97],["201910",195.64,187.34],["201911",205.1,191.61],["201912",213.61,194.83],["202001",219.07,200.28],["202002",205.8,206.62],["202003",185.3,206.75],["202004",213.84,208.22],["202005",233.36,212.43],["202006",240.22,217.57],["202007",265.79,224.75],["202008",292.53,234.31],["202009",271.56,249.15],["202010",269.38,263.51],["202011",299.01,272.7],["202012",313.74,284.03],["202101",314.56,292.6],["202102",314.14,299.79],["202103",316.0,306.57],["202104",337.99,316.86],["202105",333.93,322.49],["202106",349.46,327.64],["202107",364.57,335.64],["202108",376.04,343.42],["202109",373.33,352.66],["202110",386.11,359.27],["202111",391.2,369.75],["202112",397.85,378.32],["202201",351.8,379.32],["202202",345.77,376.19],["202203",359.35,371.24],["202204",313.25,365.15],["202205",309.1,349.62],["202206",294.61,334.33],["202207",315.46,319.35],["202208",307.44,315.24],["202209",267.26,303.39],["202210",281.22,294.36],["202211",286.92,291.08],["202212",266.28,289.27],["202301",296.26,285.3],["202302",291.85,282.68],["202303",320.93,286.06],["202304",322.56,293.36],["202305",348.4,301.01],["202306",369.42,317.54],["202307",383.48,331.56],["202308",364.02,343.07],["202309",358.27,355.37],["202310",345.31,362.47],["202311",389.51,368.5],["202312",409.52,375.58],["202401",423.81,380.47],["202402",436.78,390.35],["202403",444.01,405.29],["202404",431.0,417.49],["202405",450.71,429.83],["202406",479.11,440.79],["202407",462.97,451.5],["202408",476.27,457.52],["202409",486.75,462.4],["202410",495.32,472.45],["202411",509.74,482.45],["202412",522.56,489.0],["202501",522.29,497.96],["202502",508.17,506.72],["202503",468.94,507.84],["202504",472.56,501.27],["202505",519.11,500.71],["202506",548.09,502.17],["202507",566.37,508.22],["202508",570.4,519.32],["202509",595.97,537.21],["202510",629.07,567.53],["202511",619.25,581.71],["202512",623.89,594.23],["202601",621.87,605.63],["202602",607.29,611.21],["202603",562.58,611.52],["202604",663.88,612.64],["202605",738.31,630.26],["202606",706.52,647.01],["202607",687.99,663.89],["202608",716.43,682.38]],"low":-0.0125,"high":0.0575},"rsi":{"series":[["201004",49.24,74.1],["201005",45.6,52.5],["201006",45.27,43.3],["201007",45.81,38.7],["201008",44.07,47.6],["201009",49.66,57.2],["201010",52.18,72.3],["201011",52.77,79.6],["201012",54.46,76.5],["201101",55.73,71.1],["201102",57.65,74.6],["201103",56.84,57.9],["201104",59.08,62.0],["201105",57.43,44.9],["201106",54.38,49.7],["201107",58.0,48.9],["201108",53.13,40.7],["201109",52.49,46.6],["201110",58.94,48.8],["201111",52.88,55.6],["201112",55.83,53.5],["201201",60.4,57.7],["201202",63.96,73.2],["201203",67.55,97.9],["201204",67.24,82.3],["201205",62.07,45.6],["201206",64.16,42.0],["201207",64.87,47.6],["201208",68.16,77.0],["201209",68.57,75.3],["201210",65.35,54.7],["201211",65.8,41.3],["201212",63.78,29.1],["201301",67.0,54.8],["201302",67.14,70.0],["201303",68.97,70.2],["201304",69.57,61.6],["201305",73.25,70.9],["201306",71.27,58.1],["201307",75.37,71.8],["201308",75.47,56.8],["201309",79.07,78.0],["201310",82.9,79.7],["201311",85.73,86.2],["201312",87.52,85.9],["201401",86.27,64.8],["201402",90.34,73.3],["201403",87.05,52.1],["201404",86.19,44.4],["201405",91.31,54.2],["201406",93.75,64.0],["201407",96.74,88.2],["201408",99.78,81.1],["201409",98.78,71.1],["201410",101.4,59.9],["201411",106.01,66.0],["201412",105.04,59.8],["201501",101.1,55.2],["201502",108.4,58.7],["201503",105.52,52.1],["201504",110.54,65.0],["201505",110.05,53.6],["201506",109.27,51.9],["201507",111.95,53.9],["201508",105.62,41.2],["201509",102.92,39.8],["201510",113.33,53.3],["201511",114.31,67.3],["201512",111.86,64.3],["201601",104.13,37.9],["201602",103.43,34.5],["201603",107.26,46.1],["201604",105.72,53.6],["201605",110.13,69.6],["201606",104.29,42.9],["201607",115.23,62.6],["201608",116.78,72.5],["201609",118.72,84.2],["201610",117.1,61.2],["201611",118.8,53.8],["201612",118.48,50.3],["201701",125.8,64.5],["201702",130.26,78.4],["201703",132.38,83.9],["201704",135.99,83.4],["201705",141.22,80.0],["201706",137.64,61.6],["201707",143.84,68.1],["201708",141.97,57.5],["201709",145.45,58.7],["201710",151.24,67.9],["201711",156.26,84.0],["201712",155.76,80.5],["201801",170.93,87.6],["201802",168.17,63.9],["201803",160.13,52.0],["201804",162.09,46.8],["201805",169.72,54.8],["201806",171.65,68.7],["201807",177.62,72.3],["201808",186.65,75.7],["201809",185.79,65.1],["201810",166.66,35.2],["201811",169.37,39.3],["201812",152.97,29.7],["201901",165.15,44.6],["201902",172.89,54.1],["201903",179.66,91.4],["201904",190.65,89.6],["201905",173.95,51.3],["201906",186.74,58.9],["201907",195.29,57.8],["201908",187.47,58.8],["201909",187.03,48.3],["201910",195.64,55.5],["201911",205.1,81.8],["201912",213.61,84.9],["202001",219.07,84.0],["202002",205.8,52.8],["202003",185.3,38.5],["202004",213.84,46.5],["202005",233.36,51.1],["202006",240.22,85.7],["202007",265.79,78.9],["202008",292.53,83.0],["202009",271.56,63.2],["202010",269.38,56.7],["202011",299.01,57.4],["202012",313.74,71.7],["202101",314.56,63.1],["202102",314.14,60.5],["202103",316.0,52.9],["202104",337.99,56.1],["202105",333.93,51.7],["202106",349.46,76.9],["202107",364.57,69.3],["202108",376.04,87.5],["202109",373.33,74.2],["202110",386.11,62.8],["202111",391.2,61.8],["202112",397.85,59.7],["202201",351.8,42.4],["202202",345.77,28.5],["202203",359.35,41.1],["202204",313.25,35.7],["202205",309.1,39.7],["202206",294.61,32.0],["202207",315.46,47.0],["202208",307.44,55.7],["202209",267.26,41.2],["202210",281.22,42.9],["202211",286.92,38.4],["202212",266.28,46.0],["202301",296.26,59.2],["202302",291.85,53.9],["202303",320.93,74.4],["202304",322.56,69.3],["202305",348.4,74.2],["202306",369.42,86.9],["202307",383.48,86.7],["202308",364.02,63.4],["202309",358.27,47.8],["202310",345.31,34.8],["202311",389.51,64.2],["202312",409.52,78.2],["202401",423.81,80.5],["202402",436.78,78.4],["202403",444.01,67.4],["202404",431.0,54.5],["202405",450.71,56.0],["202406",479.11,64.5],["202407",462.97,68.4],["202408",476.27,56.7],["202409",486.75,52.0],["202410",495.32,57.4],["202411",509.74,60.4],["202412",522.56,67.5],["202501",522.29,59.2],["202502",508.17,50.9],["202503",468.94,31.8],["202504",472.56,38.8],["202505",519.11,48.6],["202506",548.09,64.2],["202507",566.37,88.5],["202508",570.4,77.7],["202509",595.97,79.1],["202510",629.07,73.1],["202511",619.25,64.5],["202512",623.89,57.7],["202601",621.87,51.7],["202602",607.29,57.3],["202603",562.58,25.7],["202604",663.88,62.1],["202605",738.31,78.6],["202606",706.52,70.6],["202607",687.99,54.9],["202608",716.43,49.8]],"low":36.0,"high":60.0}};
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (n,a) => { const e=document.createElementNS(NS,n);
+    for(const k in a) e.setAttribute(k,a[k]); return e; };
+  const txt = (x,y,t,o={}) => { const e=el("text",
+    {x:x,y:y,"font-size":o.fs||11,fill:o.fill||"#888780",
+     "text-anchor":o.anchor||"start","font-family":"IBM Plex Mono,ui-monospace,monospace"});
+    e.textContent=t; return e; };
+  const BG=["#E6F1FB","#F1EFE8","#FCEBEB"];
+  const yrTicks=(D)=>{const m={};D.forEach((d,i)=>{const y=d[0].slice(0,4);
+    if(!(y in m))m[y]=i;});return m;};
+  const XT=["2011","2014","2017","2020","2023","2026"];
+
+  // 기준선 + 밴드형 (중심주가 · 이평선)
+  function bandChart(id1,id2,D,LOW,HIGH,refName){
+    (function(){
+      const S=document.getElementById(id1),W=760,H=250,L=52,R=14,T=12,B=26;
+      const iw=W-L-R,ih=H-T-B, yi=yrTicks(D);
+      const vals=[];D.forEach(d=>{vals.push(d[1],d[2]*(1+HIGH),d[2]*(1+LOW));});
+      const lo=Math.log10(Math.min(...vals)*0.92),hi=Math.log10(Math.max(...vals)*1.06);
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(Math.log10(v)-lo)/(hi-lo));
+      const mid=(f1,f2)=>{
+        const up=D.map((d,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(d[2]*f1).toFixed(1)}`).join("");
+        const dn=D.slice().reverse().map((d,i)=>{const j=D.length-1-i;
+          return `L${X(j).toFixed(1)},${Y(d[2]*f2).toFixed(1)}`;}).join("");
+        return up+dn+"Z";};
+      const edge=(f,ey)=>{
+        const up=D.map((d,i)=>`${i?"L":"M"}${X(i).toFixed(1)},${Y(d[2]*f).toFixed(1)}`).join("");
+        return `${up}L${X(D.length-1).toFixed(1)},${ey}L${X(0).toFixed(1)},${ey}Z`;};
+      S.appendChild(el("path",{d:edge(1+HIGH,T),fill:BG[2],opacity:.55}));
+      S.appendChild(el("path",{d:mid(1+HIGH,1+LOW),fill:BG[1],opacity:.75}));
+      S.appendChild(el("path",{d:edge(1+LOW,T+ih),fill:BG[0],opacity:.6}));
+      [50,100,200,400,800].forEach(v=>{if(Math.log10(v)<lo||Math.log10(v)>hi)return;
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.7}));
+        S.appendChild(txt(L-8,Y(v)+4,"$"+v,{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      const ln=(f,st,dash)=>{const d=D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[2]*f).toFixed(1)}`).join("");
+        const p=el("path",{d:d,fill:"none",stroke:st,"stroke-width":dash?1.5:2,
+          "stroke-linejoin":"round"});if(dash)p.setAttribute("stroke-dasharray",dash);
+        S.appendChild(p);};
+      ln(1+HIGH,"#F09595","4 3");ln(1+LOW,"#85B7EB","4 3");ln(1,"#888780","6 4");
+      S.appendChild(el("path",{d:D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[1]).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=D.length-1;
+      S.appendChild(el("circle",{cx:X(li),cy:Y(D[li][1]),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+      S.appendChild(txt(L+6,Y(D[li][2]*1.03),refName,{fs:11,fill:"#5F5E5A"}));
+    })();
+    (function(){
+      const S=document.getElementById(id2),W=760,H=220,L=52,R=14,T=12,B=26;
+      const iw=W-L-R,ih=H-T-B, yi=yrTicks(D);
+      const g=D.map(d=>d[1]/d[2]-1);
+      const lo=Math.min(...g)-0.04,hi=Math.max(...g)+0.05;
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(v-lo)/(hi-lo));
+      S.appendChild(el("rect",{x:L,y:T,width:iw,height:Y(HIGH)-T,fill:BG[2],opacity:.6}));
+      S.appendChild(el("rect",{x:L,y:Y(HIGH),width:iw,height:Y(LOW)-Y(HIGH),
+        fill:BG[1],opacity:.8}));
+      S.appendChild(el("rect",{x:L,y:Y(LOW),width:iw,height:T+ih-Y(LOW),
+        fill:BG[0],opacity:.65}));
+      [-0.2,-0.1,0,0.1,0.2,0.3,0.4,0.5,0.6].forEach(v=>{if(v<lo||v>hi)return;
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.6}));
+        S.appendChild(txt(L-8,Y(v)+4,(v*100).toFixed(0)+"%",{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      [[HIGH,"#E24B4A","#A32D2D","천장 "+(HIGH*100).toFixed(2).replace(/0$/,"")+"%"],
+       [LOW,"#378ADD","#185FA5","바닥 "+(LOW*100).toFixed(2).replace(/0$/,"")+"%"]]
+       .forEach(([v,c,tc,t])=>{
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:c,
+          "stroke-width":1.5,"stroke-dasharray":"5 3"}));
+        S.appendChild(txt(L+iw-4,Y(v)-6,t,{anchor:"end",fs:11,fill:tc}));});
+      S.appendChild(el("path",{d:g.map((v,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=g.length-1,m=g[li]<LOW?0:(g[li]<=HIGH?1:2);
+      S.appendChild(el("circle",{cx:X(li),cy:Y(g[li]),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+      S.appendChild(txt(X(li)-6,Y(g[li])-10,
+        "지금 "+(g[li]>=0?"+":"")+(g[li]*100).toFixed(1)+"% · "+["바닥","중간","천장"][m],
+        {anchor:"end",fs:12,fill:["#185FA5","#5F5E5A","#A32D2D"][m]}));
+    })();
+  }
+
+  // 오실레이터형 (RSI)
+  function rsiChart(id1,id2,D,LOW,HIGH){
+    const mo=v=>v<LOW?0:(v<=HIGH?1:2), yi=yrTicks(D);
+    (function(){
+      const S=document.getElementById(id1),W=760,H=200,L=52,R=14,T=10,B=26;
+      const iw=W-L-R,ih=H-T-B,px=D.map(d=>d[1]);
+      const lo=Math.log10(Math.min(...px)*0.9),hi=Math.log10(Math.max(...px)*1.08);
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(Math.log10(v)-lo)/(hi-lo));
+      let s0=0;
+      for(let i=1;i<=D.length;i++){
+        if(i===D.length||mo(D[i][2])!==mo(D[s0][2])){
+          const x1=X(s0),x2=X(Math.min(i,D.length-1));
+          S.appendChild(el("rect",{x:x1,y:T,width:Math.max(x2-x1,1),height:ih,
+            fill:BG[mo(D[s0][2])],opacity:.75}));
+          s0=i;}}
+      [50,100,200,400,800].forEach(v=>{if(Math.log10(v)<lo||Math.log10(v)>hi)return;
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.6}));
+        S.appendChild(txt(L-8,Y(v)+4,"$"+v,{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      S.appendChild(el("path",{d:D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[1]).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=D.length-1;
+      S.appendChild(el("circle",{cx:X(li),cy:Y(D[li][1]),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+    })();
+    (function(){
+      const S=document.getElementById(id2),W=760,H=220,L=52,R=14,T=12,B=26;
+      const iw=W-L-R,ih=H-T-B,lo=15,hi=100;
+      const X=i=>L+iw*i/(D.length-1),Y=v=>T+ih*(1-(v-lo)/(hi-lo));
+      S.appendChild(el("rect",{x:L,y:T,width:iw,height:Y(HIGH)-T,fill:BG[2],opacity:.6}));
+      S.appendChild(el("rect",{x:L,y:Y(HIGH),width:iw,height:Y(LOW)-Y(HIGH),
+        fill:BG[1],opacity:.8}));
+      S.appendChild(el("rect",{x:L,y:Y(LOW),width:iw,height:T+ih-Y(LOW),
+        fill:BG[0],opacity:.65}));
+      [20,40,60,80,100].forEach(v=>{
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:"#D3D1C7",
+          "stroke-width":1,opacity:.6}));
+        S.appendChild(txt(L-8,Y(v)+4,String(v),{anchor:"end"}));});
+      XT.forEach(y=>{if(y in yi)S.appendChild(txt(X(yi[y]),H-8,y,{anchor:"middle"}));});
+      [[HIGH,"#E24B4A","#A32D2D","천장 경계 "+HIGH],
+       [LOW,"#378ADD","#185FA5","바닥 경계 "+LOW]].forEach(([v,c,tc,t])=>{
+        S.appendChild(el("line",{x1:L,y1:Y(v),x2:L+iw,y2:Y(v),stroke:c,
+          "stroke-width":1.5,"stroke-dasharray":"5 3"}));
+        S.appendChild(txt(L+iw-4,Y(v)-6,t,{anchor:"end",fs:11,fill:tc}));});
+      S.appendChild(el("path",{d:D.map((x,i)=>
+        `${i?"L":"M"}${X(i).toFixed(1)},${Y(x[2]).toFixed(1)}`).join(""),
+        fill:"none",stroke:"#2C2C2A","stroke-width":2,"stroke-linejoin":"round",
+        "stroke-linecap":"round"}));
+      const li=D.length-1,v=D[li][2],m=mo(v);
+      S.appendChild(el("circle",{cx:X(li),cy:Y(v),r:4.5,fill:"#E24B4A",
+        stroke:"#FFFFFF","stroke-width":2}));
+      S.appendChild(txt(X(li)-6,Y(v)-10,"지금 "+v.toFixed(1)+" · "+["바닥","중간","천장"][m],
+        {anchor:"end",fs:12,fill:["#185FA5","#5F5E5A","#A32D2D"][m]}));
+    })();
+  }
+
+  bandChart("c1","c2",DATA.center.series,DATA.center.low,DATA.center.high,"중심주가");
+  bandChart("m1","m2",DATA.ma.series,DATA.ma.low,DATA.ma.high,"MA120");
+  rsiChart("r1","r2",DATA.rsi.series,DATA.rsi.low,DATA.rsi.high);
+})();
+</script>
