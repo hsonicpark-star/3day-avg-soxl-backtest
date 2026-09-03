@@ -40,6 +40,7 @@ from manse_engine import (  # noqa: E402
     ManseParams, LevelParam, TierParam,
     default_params, params_to_dict, params_from_dict,
     build_mode_frame, run_backtest, build_order_plan, center_price,
+    build_weekly_closes, simple_rsi,
 )
 from common.config import (  # noqa: E402
     _IS_CLOUD, _CONFIG, load_config, save_config, _get_gspread_client,
@@ -3063,6 +3064,212 @@ MDD 는 −38.3% / −36.3% → **−32.7%**, 최악의 하루는 −22.3% / −
 """)
 
 
+# ══════════════════════════════════════════════════════════
+# 모드 판단 기준 해설 (중심주가 · 이평선 · RSI)
+#   reports/260903_만능스위치_모드판단기준_해설.html 의 앱 버전.
+#   최신 종가로 매번 다시 계산하므로 값이 리포트와 조금씩 다를 수 있다.
+# ══════════════════════════════════════════════════════════
+
+_BASIS_INFO = {
+    "중심주가": {
+        "ref": "2016년 1월을 기준으로 한 **월복리 추세선** (고정선)",
+        "how": "이격도 = 지표종목 주봉종가 ÷ 중심주가 − 1",
+        "note": "매년 다시 맞추지 않는 고정선입니다. 상수는 원본 시트 수식에 "
+                "하드코딩된 값을 그대로 씁니다 (QQQ: 100.31 × 1.0132^개월).",
+    },
+    "이평선": {
+        "ref": "지표종목의 **N일 이동평균** (시장을 따라 움직이는 선)",
+        "how": "이격도 = 지표종목 주봉종가 ÷ MA − 1",
+        "note": "기준선이 주가를 따라다니므로 이격도가 한쪽으로 쌓이지 않습니다. "
+                "대신 모드가 가장 자주 바뀝니다.",
+    },
+    "RSI": {
+        "ref": "**없음** — 기준선 대신 오르내림의 비율을 봅니다",
+        "how": "RSI = 상승평균 ÷ (상승평균 + 하락평균) × 100",
+        "note": "최근 N**주**(일이 아님) 동안 오른 힘이 전체의 몇 %인지를 0~100 으로 "
+                "나타냅니다. 0~100 에 갇힌 값이라 드리프트가 구조적으로 불가능합니다.",
+    },
+}
+
+
+def _basis_stats(mf: pd.DataFrame, gapcol: str) -> dict:
+    """구간 비율 · 드리프트 기울기 · 모드 지속 주기."""
+    g = mf[gapcol]
+    t = (mf.index - mf.index[0]).days / 365.25
+    slope = float(np.polyfit(t, g, 1)[0]) if len(g) > 2 else float("nan")
+    m = mf["판정"]
+    sw = int((m != m.shift()).sum() - 1)
+    vc = m.value_counts(normalize=True)
+    return {"slope": slope, "switches": sw,
+            "run": len(m) / max(sw, 1),
+            "ratio": {k: float(vc.get(k, 0)) for k in LEVELS},
+            "now": float(g.iloc[-1]), "mode": str(m.iloc[-1]),
+            "min": float(g.min()), "max": float(g.max()), "n": len(mf)}
+
+
+def render_mode_basis_section(params: dict):
+    """모드 판단 기준을 라이브 데이터로 보여준다."""
+    p: ManseParams = params["mp"]
+    st.markdown("---")
+    st.subheader("🔍 모드 판단 기준 자세히 보기")
+    st.caption("바닥·중간·천장을 정하는 세 가지 기준을 최신 종가로 계산해 보여줍니다. "
+               "로직은 셋 다 같고 **무엇을 자로 쓰느냐**만 다릅니다.")
+
+    basis = st.radio("기준 선택", MODE_BASES, horizontal=True, key="ms_basis_view",
+                     index=MODE_BASES.index(p.mode_basis)
+                     if p.mode_basis in MODE_BASES else 0)
+    info = _BASIS_INFO[basis]
+    st.markdown(f"- **기준선** — {info['ref']}\n"
+                f"- **계산** — `{info['how']}`\n"
+                f"- {info['note']}")
+
+    q = copy.deepcopy(p)
+    q.mode_basis = basis
+    try:
+        prices = _load_prices(q.needed_tickers(), DATA_SOURCES[0])
+        mf = build_mode_frame(q, prices)
+    except Exception as e:
+        st.error(f"데이터 로드 실패: {type(e).__name__}: {e}")
+        return
+    if mf is None or not len(mf):
+        st.warning("지표를 계산할 데이터가 부족합니다.")
+        return
+
+    gapcol = mf.attrs.get("gap_name", "이격도")
+    refcol = mf.attrs.get("ref_name", "-")
+    mf = mf.dropna(subset=[gapcol])
+    if not len(mf):
+        st.warning("지표를 계산할 데이터가 부족합니다.")
+        return
+    is_rsi = (basis == "RSI")
+    low, high = ((q.rsi_low, q.rsi_high) if is_rsi else
+                 (q.center_low, q.center_high) if basis == "중심주가" else
+                 (q.ma_low, q.ma_high))
+    st_ = _basis_stats(mf, gapcol)
+    fmt = (lambda v: f"{v:.1f}") if is_rsi else (lambda v: f"{v*100:+.1f}%")
+
+    _cards([
+        {"label": "현재 구간", "value": st_["mode"] or "-",
+         "fg": _MODE_COLOR.get(st_["mode"], _DIM),
+         "sub": f"{gapcol} {fmt(st_['now'])}"},
+        {"label": "바닥 / 천장 경계",
+         "value": f"{fmt(low)} / {fmt(high)}"},
+        {"label": "구간 비율",
+         "value": " · ".join(f"{k[0]}{st_['ratio'][k]*100:.0f}%" for k in LEVELS),
+         "sub": f"주봉 {st_['n']:,}개"},
+        {"label": "모드 지속", "value": f"{st_['run']:.1f}주",
+         "sub": f"{st_['switches']}회 전환"},
+        {"label": "드리프트 (연)",
+         "value": (f"{st_['slope']:+.2f}pt" if is_rsi
+                   else f"{st_['slope']*100:+.2f}%p"),
+         "fg": (_NEG if (not is_rsi and st_["slope"] * 100 > 0.3) else _DIM),
+         "sub": "한쪽으로 쏠리는 속도"},
+    ])
+
+    # ── 차트 ──
+    d = mf.resample("ME").last().dropna(subset=[gapcol])
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        row_heights=[0.5, 0.5], vertical_spacing=0.06,
+                        subplot_titles=(f"{q.indicator_ticker()} 주가"
+                                        + ("" if is_rsi else f" & {refcol}"),
+                                        gapcol))
+    if is_rsi:
+        fig.add_trace(go.Scatter(x=d.index, y=d["주봉종가"], name="주가",
+                                 line=dict(color="#2C2C2A", width=1.8)), row=1, col=1)
+    else:
+        for f, nm, col, dash in ((1 + high, "천장 경계", "#E24B4A", "dot"),
+                                 (1 + low, "바닥 경계", "#378ADD", "dot"),
+                                 (1.0, refcol, "#888780", "dash")):
+            fig.add_trace(go.Scatter(x=d.index, y=d[refcol] * f, name=nm,
+                                     line=dict(color=col, width=1.3, dash=dash)),
+                          row=1, col=1)
+        fig.add_trace(go.Scatter(x=d.index, y=d["주봉종가"], name="주가",
+                                 line=dict(color="#2C2C2A", width=1.8)), row=1, col=1)
+        fig.update_yaxes(type="log", row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=d.index, y=d[gapcol], name=gapcol,
+                             line=dict(color="#2C2C2A", width=1.8)), row=2, col=1)
+    for v, col, nm in ((high, "#E24B4A", "천장 경계"), (low, "#378ADD", "바닥 경계")):
+        fig.add_hline(y=v, line=dict(color=col, width=1.2, dash="dot"),
+                      annotation_text=f"{nm} {fmt(v)}", annotation_position="top right",
+                      row=2, col=1)
+    fig.add_hrect(y0=high, y1=max(st_["max"], high) * 1.05 if is_rsi else st_["max"] + 0.05,
+                  fillcolor="#E74C3C", opacity=0.07, line_width=0, row=2, col=1)
+    fig.add_hrect(y0=min(st_["min"], low) * 0.95 if is_rsi else st_["min"] - 0.03,
+                  y1=low, fillcolor="#2E86DE", opacity=0.07, line_width=0, row=2, col=1)
+    fig.update_layout(height=560, hovermode="x unified", margin=dict(t=40, b=30),
+                      legend=dict(orientation="h", y=1.06, x=0))
+    if not is_rsi:
+        fig.update_yaxes(tickformat=".0%", row=2, col=1)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── 기준별 주의 ──
+    if basis == "중심주가":
+        try:
+            src = prices.get(q.center_ticker.upper())
+            c = src["Close"]
+            yrs = (c.index[-1] - c.index[0]).days / 365.25
+            real = (float(c.iloc[-1]) / float(c.iloc[0])) ** (1 / yrs) - 1
+            rate = CENTER_PRESETS.get(q.center_ticker.upper(), (None, None))[1]
+            assumed = (rate ** 12 - 1) if rate else float("nan")
+            st.warning(
+                f"⚠️ **셋 중 이 기준만 드리프트가 있습니다.** 고정선이라, 시장이 그 선보다 "
+                f"빨리 자라면 이격도가 계속 커집니다. "
+                f"{q.center_ticker} 실제 연복리 **{real*100:.1f}%** vs 추세선 가정 "
+                f"**{assumed*100:.1f}%**, 이격도 추세 **연 {st_['slope']*100:+.2f}%p**.\n\n"
+                f"다만 조정이 올 때마다 이격도가 끌려 내려오므로 아직 경계를 손댈 단계는 "
+                f"아닙니다. **최근 데이터로 반사적으로 재튜닝하면 오히려 손해**라는 것을 "
+                f"이미 확인했습니다 (비중 최적화가 11개 조합 중 8개에서 균등 배분에 패배). "
+                f"굳이 신호를 정한다면 **바닥이 3년 연속 한 번도 안 나올 때**입니다.")
+        except Exception:
+            pass
+    elif is_rsi:
+        try:
+            wk = build_weekly_closes(prices[q.rsi_ticker.upper()]["Close"])
+            dd = wk.diff()
+            au = dd.clip(lower=0).ewm(alpha=1 / q.rsi_period, adjust=False).mean()
+            ad = (-dd).clip(lower=0).ewm(alpha=1 / q.rsi_period, adjust=False).mean()
+            wil = 100 - 100 / (1 + au / ad.replace(0, np.nan))
+            cc = pd.DataFrame({"s": simple_rsi(wk, q.rsi_period), "w": wil}).dropna()
+            cls = lambda v: ("바닥" if v < low else ("중간" if v <= high else "천장"))
+            dis = sum(1 for a, b in zip(cc["s"], cc["w"]) if cls(a) != cls(b))
+            st.warning(
+                f"⚠️ **이 RSI 는 증권사 앱의 RSI 와 다릅니다.** 원본 시트가 "
+                f"**단순평균(SMA)** 방식을 쓰는데 트레이딩뷰·증권사 앱은 "
+                f"**와일더 지수평활** 방식입니다.\n\n"
+                f"대조 결과 최대 차이 **{(cc['s']-cc['w']).abs().max():.1f}pt**, "
+                f"**구간 판정이 갈린 주 {dis:,}/{len(cc):,} ({dis/len(cc)*100:.0f}%)**. "
+                f"지금도 시트 방식 **{cc['s'].iloc[-1]:.1f}** vs 표준 방식 "
+                f"**{cc['w'].iloc[-1]:.1f}** 입니다.\n\n"
+                f"게다가 기간이 **{q.rsi_period}일이 아니라 {q.rsi_period}주**"
+                f"(약 {q.rsi_period*7//30}개월)입니다. "
+                f"**앱 숫자로 판단하지 마시고 주문표를 보십시오.**")
+        except Exception:
+            pass
+    else:
+        st.info("ℹ️ 기준선이 시장을 따라 움직이므로 **드리프트가 거의 없습니다.** "
+                "대신 세 기준 중 **모드가 가장 자주 바뀝니다.** "
+                "프리셋의 **(4일)/(1일)** 차이는 중간 구간 2티어의 **손절일수**이고, "
+                "1일이면 중간에 팔 기회가 없어 항상 MOC 로 청산됩니다.")
+
+    with st.expander("📚 왜 세 기준을 섞으면 좋은가", expanded=False):
+        st.markdown("""
+세 기준은 같은 QQQ 를 보고 같은 SOXL 을 거래하는데도 **일간 수익률 상관이 0.65~0.67**에
+그칩니다. 하나는 "장기 추세 대비 얼마나 비싼가"를 묻고, 하나는 "최근 넉 달 평균 대비
+어떤가"를 묻고, 하나는 "얼마나 꾸준히 오르고 있나"를 묻기 때문입니다.
+
+이 엇갈림이 **분산 효과**의 원천입니다. 이평선형(4일) + 중심주가형을 반반 섞으면
+MDD 가 −38.3% / −36.3% 에서 **−32.7%** 로, 최악의 하루가 −22.3% / −23.8% 에서
+**−15.7%** 로 줄었습니다. 수익률은 두 전략의 중간이지만 곡선이 훨씬 편안해집니다.
+
+직접 조합해 보시려면 이 탭 아래의 **🧩 포트폴리오 합산 분석**을 쓰시면 됩니다.
+
+**주의** — 경계값과 티어 파라미터는 모두 과거 데이터로 튜닝된 값이고, 원본 시트의 값을
+그대로 씁니다. 또 세 기준 모두 **구간이 균등하지 않습니다** — 천장이 가장 길고
+바닥이 가장 짧습니다 (RSI 는 바닥이 6% 뿐).
+""")
+
+
 def render_intro_tab(params: dict):
     p: ManseParams = params["mp"]
     st.markdown("""
@@ -3131,6 +3338,8 @@ def render_intro_tab(params: dict):
 ```
 투자금(갱신)은 다음 날 **1회 시드**의 기준이 됩니다. 예수금과는 별개입니다.
 """)
+
+    render_mode_basis_section(params)
 
     st.markdown("---")
     st.markdown("#### 📌 현재 설정 요약")
