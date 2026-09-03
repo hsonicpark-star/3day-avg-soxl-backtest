@@ -748,6 +748,13 @@ def run_backtest(params: DSSParams,
 
         seed_per_trade = capital / divisions
 
+        # 당일 시작(전일 마감) 시점 보유 수 — 매수 주문 존재 여부의 기준.
+        # 주문표는 전일 마감 상태로 생성되므로, 풀매수 상태에서 당일
+        # 매도(MOC 손절/익절)로 비워진 슬롯을 같은 날 재매수하면 안 됨.
+        # (2026-09-02 사고: 7/7 풀매수 날 MOC 손절 → 엔진이 당일 재매수
+        #  → 실계좌엔 없는 유령 티어7 생성. 새 매수는 다음 날 주문부터)
+        n_pos_at_open = len(positions)
+
         # ── 매도 처리 ──
         sold_positions = []
         daily_realized = 0.0
@@ -815,7 +822,7 @@ def run_backtest(params: DSSParams,
         buy_order_price = None
         buy_qty = 0
 
-        if prev_close is not None and len(positions) < divisions:
+        if prev_close is not None and n_pos_at_open < divisions and len(positions) < divisions:
             buy_order_price = math.floor(prev_close * (1 + buy_pct) * 100) / 100  # ROUNDDOWN 2자리
 
             if close <= buy_order_price:
@@ -1026,6 +1033,9 @@ def run_backtest_fast(params: DSSParams,
         seed = capital / divisions
         cur_idx = date_to_idx.get(trade_dates[i])
 
+        # 당일 시작 보유 수 — 당일 매도로 빈 슬롯의 같은 날 재매수 금지
+        n_pos_at_open = len(positions)
+
         # ── 매도 처리 ──
         new_pos = []
         for pos in positions:
@@ -1050,7 +1060,7 @@ def run_backtest_fast(params: DSSParams,
             pnl_since_renew = []
 
         # ── 매수 처리 ──
-        if prev_close is not None and len(positions) < divisions:
+        if prev_close is not None and n_pos_at_open < divisions and len(positions) < divisions:
             buy_order = math.floor(prev_close * (1 + buy_pct) * 100) / 100
             if close <= buy_order:
                 buy_qty = int(seed / buy_order)
