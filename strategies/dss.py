@@ -138,7 +138,13 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         _tdays = _raw_idx.append(_extra_bdays)
     except Exception:
         _tdays = None
-    _today_ts = pd.Timestamp(datetime.today().date())
+    # MOC/잔여일 판정 기준일 = 주문 적용일(다음 거래일) — 주말/휴장일에
+    # 조회해도 실제 장 날짜 기준으로 판정 (예: 토요일 조회 시 9/8 손절분 MOC)
+    try:
+        from common.data import next_trading_date as _ntd
+        _today_ts = pd.Timestamp(_ntd())
+    except Exception:
+        _today_ts = pd.Timestamp(datetime.today().date())
 
     # ── 포지션별 데이터 수집 ──
     _pos_data = []  # (pos, idx, is_stop, remain, reserve_date_str)
@@ -249,10 +255,16 @@ def _write_dss_orders_to_sheet(gs_url: str, gs_sheet: str, os_result: dict,
     ws.batch_clear(["L4:O13"])
     # 공통 rows 생성 — dss_engine 재사용 (스크립트와 SSOT)
     from dss_engine import build_order_rows, build_order_rows_tungchigi
+    # MOC 판정 기준일 = 주문 적용일(다음 거래일)
+    try:
+        from common.data import next_trading_date as _ntd
+        _apply_d = _ntd()
+    except Exception:
+        _apply_d = None
     if use_tungchigi:
-        rows = build_order_rows_tungchigi(os_result)
+        rows = build_order_rows_tungchigi(os_result, today=_apply_d)
     else:
-        rows = build_order_rows(os_result)
+        rows = build_order_rows(os_result, today=_apply_d)
     if rows:
         ws.update(range_name="L4", values=rows)
     # B11 업데이트 시각 (KST) — 주문표 갱신 시점 확인용
@@ -2084,7 +2096,13 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             _trading_days_idx = _raw_idx.append(_extra_bdays)
         except Exception:
             _trading_days_idx = None
-        _today_ts = pd.Timestamp(datetime.today().date())
+        # MOC/잔여일 판정 기준일 = 주문 적용일(다음 거래일) — 주말/휴장일에
+        # 조회해도 실제 장 날짜 기준 (예: 토요일 조회 시 9/8 손절분 MOC 표시)
+        try:
+            from common.data import next_trading_date as _ntd
+            _today_ts = pd.Timestamp(_ntd())
+        except Exception:
+            _today_ts = pd.Timestamp(datetime.today().date())
 
         # ── 포지션별 공통 데이터 계산 ──
         _pos_info = []  # (pos, idx, is_stop_today, remain_days, reserve_date_str)
@@ -2275,7 +2293,12 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 importlib.reload(_de)
                 _bor = _de.build_order_rows
                 _bto = _de.build_tungchigi_orders
-            _raw_orders = _bor(_os)
+            try:
+                from common.data import next_trading_date as _ntd_t3
+                _apply_d_t3 = _ntd_t3()
+            except Exception:
+                _apply_d_t3 = None
+            _raw_orders = _bor(_os, today=_apply_d_t3)
 
             if not _raw_orders:
                 st.info("오늘 주문이 없습니다.")
