@@ -2061,7 +2061,12 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 
         # ── 오늘의 LOC 주문 ──
         st.divider()
-        _today_date_str = datetime.today().strftime('%Y-%m-%d')
+        # 주문 적용일 = 다음 거래일 (주말/미국 휴장일 건너뜀 — 타 전략과 동일)
+        try:
+            from common.data import next_trading_date
+            _today_date_str = next_trading_date().strftime('%Y-%m-%d')
+        except Exception:
+            _today_date_str = datetime.today().strftime('%Y-%m-%d')
         st.subheader(f"📑 오늘의 주문  ({_today_date_str})")
         st.markdown(
             f"<div style='font-size:0.85em;color:#888;margin-bottom:8px'>"
@@ -2610,7 +2615,12 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
 def render_ordersheet_tab(params):
     """주문표 & 계좌관리 탭."""
     p = params
-    _today_str_title = datetime.today().strftime("%Y-%m-%d")
+    # 주문 적용일 = 다음 거래일 (주말/미국 휴장일 건너뜀 — 타 전략과 동일)
+    try:
+        from common.data import next_trading_date
+        _today_str_title = next_trading_date().strftime("%Y-%m-%d")
+    except Exception:
+        _today_str_title = datetime.today().strftime("%Y-%m-%d")
     st.subheader(f"📋 오늘의 주문표  ({_today_str_title})")
     st.caption("종목별 포트폴리오를 추적하여 현황과 내일 LOC 주문을 표시합니다.")
 
