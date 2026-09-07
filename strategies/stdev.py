@@ -1182,6 +1182,12 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.rerun()
 
     # -- 시작일 / 자본금 -----
+    # 로드 시 시트 최신값과 다름이 감지되면 예약된 위젯 갱신 적용
+    # (위젯 생성 전에만 세션값을 바꿀 수 있어 이 위치에서 처리)
+    for _pk, _wk in ((f"sd_os_start_pending_{key_sfx}", f"sd_os_start_{key_sfx}"),
+                     (f"sd_os_cap_pending_{key_sfx}", f"sd_os_cap_{key_sfx}")):
+        if _pk in st.session_state:
+            st.session_state[_wk] = st.session_state.pop(_pk)
     _sc1, _sc2 = st.columns(2)
     _os_start = _sc1.date_input("시작일", value=_def_start,
                                  min_value=datetime(2000, 1, 1).date(),
@@ -1561,7 +1567,41 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     # -- 주문표 로드 ------
     _sd_lbl = "새로고침" if st.session_state.get(_sd_ss) else "주문표 로드"
     if st.button(_sd_lbl, type="primary", key=f"sd_run_os_{key_sfx}"):
-        _save_sd_ticker_setting(tk, {"os_start": str(_os_start), "os_capital": _os_cap})
+        # 다른 기기/탭의 낡은 세션이 시작일·자본을 예전 값으로 되돌리는 사고 방지:
+        # ① 이 세션에서 사용자가 직접 바꾼 칸(또는 아직 저장된 적 없는 칸)만 저장
+        # ② 시트 최신값을 읽어, 안 바꾼 칸이 시트와 다르면(=이 화면이 낡음)
+        #    화면을 최신값으로 갱신하고 재로드를 요청 (낡은 값 저장 차단)
+        _edited = {}
+        if str(_os_start) != str(_def_start) or "os_start" not in tk_cfg:
+            _edited["os_start"] = str(_os_start)
+        if abs(float(_os_cap) - float(_def_cap)) > 1e-9 or "os_capital" not in tk_cfg:
+            _edited["os_capital"] = float(_os_cap)
+        from common.config import refresh_user_settings_from_sheet as _refresh_us
+        if _refresh_us():
+            _fresh_cfg = _get_sd_ticker_settings().get(tk, {})
+            _stale_hit = False
+            if "os_start" not in _edited:
+                try:
+                    _fs = datetime.strptime(str(_fresh_cfg.get("os_start", "")), "%Y-%m-%d").date()
+                    if _fs != _os_start:
+                        st.session_state[f"sd_os_start_pending_{key_sfx}"] = _fs
+                        _stale_hit = True
+                except Exception:
+                    pass
+            if "os_capital" not in _edited:
+                try:
+                    _fc = float(_fresh_cfg.get("os_capital"))
+                    if abs(_fc - float(_os_cap)) > 1e-9:
+                        st.session_state[f"sd_os_cap_pending_{key_sfx}"] = _fc
+                        _stale_hit = True
+                except Exception:
+                    pass
+            if _stale_hit:
+                st.warning("🔄 다른 기기/탭에서 변경된 시작일·시작자본을 이 화면에 반영했습니다. "
+                           "값을 확인한 뒤 '주문표 로드'를 다시 눌러주세요.")
+                st.rerun()
+        if _edited:
+            _save_sd_ticker_setting(tk, _edited)
         with st.spinner("데이터 로드 및 시뮬레이션 중..."):
             _buf_start = (_os_start - timedelta(days=90))
             _pdf = load_price_data(_sd_symbol(tk), str(_buf_start), str(datetime.today().date()),

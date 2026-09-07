@@ -1153,6 +1153,11 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.rerun()
 
     # ── 시작일 / 자본금 ──
+    # 로드 시 시트 최신값과 다름이 감지되면 예약된 위젯 갱신 적용
+    for _pk, _wk in ((f"os_start_pending_{key_sfx}", f"os_start_{key_sfx}"),
+                     (f"os_capital_pending_{key_sfx}", f"os_capital_{key_sfx}")):
+        if _pk in st.session_state:
+            st.session_state[_wk] = st.session_state.pop(_pk)
     c1, c2 = st.columns(2)
     os_start   = c1.date_input("시작일", value=_default_start,
                                 min_value=datetime(2000, 1, 1).date(),
@@ -1460,8 +1465,40 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     # ── 주문표 로드 ──
     _btn_label = "🔄 새로고침" if st.session_state.get(_ss_key) else "📋 주문표 로드"
     if st.button(_btn_label, type="primary", key=f"run_os_{key_sfx}"):
-        save_ticker_setting(tk, {"os_start": str(os_start), "os_capital": os_capital},
-                            prefix="", settings_key="ticker_settings")
+        # 다른 기기/탭의 낡은 세션이 시작일·자본을 되돌리는 사고 방지 (표준편차와 동일):
+        # 직접 바꾼 칸만 저장 + 시트 최신값과 다르면 화면 갱신 후 재로드 요청
+        _edited = {}
+        if str(os_start) != str(_default_start) or "os_start" not in tk_cfg:
+            _edited["os_start"] = str(os_start)
+        if abs(float(os_capital) - float(_default_capital)) > 1e-9 or "os_capital" not in tk_cfg:
+            _edited["os_capital"] = float(os_capital)
+        from common.config import refresh_user_settings_from_sheet as _refresh_us
+        if _refresh_us():
+            _fresh_cfg = get_ticker_settings(prefix="", settings_key="ticker_settings",
+                                             exclude_prefix="sd_").get(tk, {})
+            _stale_hit = False
+            if "os_start" not in _edited:
+                try:
+                    _fs = datetime.strptime(str(_fresh_cfg.get("os_start", "")), "%Y-%m-%d").date()
+                    if _fs != os_start:
+                        st.session_state[f"os_start_pending_{key_sfx}"] = _fs
+                        _stale_hit = True
+                except Exception:
+                    pass
+            if "os_capital" not in _edited:
+                try:
+                    _fc = float(_fresh_cfg.get("os_capital"))
+                    if abs(_fc - float(os_capital)) > 1e-9:
+                        st.session_state[f"os_capital_pending_{key_sfx}"] = _fc
+                        _stale_hit = True
+                except Exception:
+                    pass
+            if _stale_hit:
+                st.warning("🔄 다른 기기/탭에서 변경된 시작일·시작자본을 이 화면에 반영했습니다. "
+                           "값을 확인한 뒤 '주문표 로드'를 다시 눌러주세요.")
+                st.rerun()
+        if _edited:
+            save_ticker_setting(tk, _edited, prefix="", settings_key="ticker_settings")
         today = datetime.today().date()
         with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
             price_df_os = load_price_data(tk, os_start, today, "야후파이낸스 (yfinance)", None)

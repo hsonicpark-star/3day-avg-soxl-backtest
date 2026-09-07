@@ -34,6 +34,19 @@ def _authenticate(username: str, password: str):
     return None
 
 
+def _load_user_settings_from_sheet(username: str) -> dict | None:
+    """users 시트에서 해당 유저 행을 새로 읽어 dict로 반환 (없으면 None).
+
+    로그인 시 세션에 캐시된 설정은 다른 기기/탭에서 바뀐 뒤엔 낡아진다.
+    저장 직전에 이 함수로 최신값을 기준 삼아야 낡은 캐시가 시트를 되덮는
+    사고(설정이 예전 값으로 '되돌아오는' 현상)를 막을 수 있다."""
+    ws = _get_users_ws()
+    for row in ws.get_all_records():
+        if row.get("username") == username:
+            return dict(row)
+    return None
+
+
 def _save_user_settings_to_sheet(username: str, settings: dict):
     """users 시트에서 해당 유저 행의 설정 컬럼 업데이트. 없는 컬럼은 자동 추가.
 

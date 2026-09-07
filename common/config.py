@@ -377,6 +377,27 @@ def get_ticker_settings(prefix: str = "", settings_key: str = "ticker_settings",
             return result
 
 
+def refresh_user_settings_from_sheet() -> bool:
+    """클라우드: users 시트에서 현재 로그인 사용자의 설정을 다시 읽어 세션 캐시 갱신.
+
+    세션 캐시는 로그인 시점의 스냅샷이라, 다른 기기/탭에서 바꾼 뒤엔 낡아진다.
+    낡은 캐시를 기준으로 저장하면 전체 JSON을 되써넣어 최신값이 '되돌아오는'
+    사고가 나므로, 저장 직전·설정 확인 직전에 호출한다. 성공 시 True."""
+    if not (_IS_CLOUD and st.session_state.get("logged_in")):
+        return False
+    try:
+        from common.auth import _load_user_settings_from_sheet
+        fresh = _load_user_settings_from_sheet(st.session_state.username)
+        if fresh:
+            cur = dict(st.session_state.get("user_settings", {}) or {})
+            cur.update(fresh)
+            st.session_state.user_settings = cur
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def save_ticker_setting(tk: str, data: dict, prefix: str = "",
                         settings_key: str = "ticker_settings") -> str:
     """ticker별 설정 저장 (로컬 config.json + 클라우드 Google Sheets 동기).
@@ -384,6 +405,9 @@ def save_ticker_setting(tk: str, data: dict, prefix: str = "",
     save_config(data, f"{prefix}{tk}")  # 로컬
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
+            # 낡은 세션 캐시가 시트를 되덮지 않도록 시트 최신 JSON을 병합 기준으로 사용
+            # (다른 기기/탭에서 바꾼 다른 계좌·키의 값이 보존됨)
+            refresh_user_settings_from_sheet()
             raw = st.session_state.get("user_settings", {}).get(settings_key, "") or ""
             ts  = _parse_ticker_settings_json(raw)
             ts[tk] = {**ts.get(tk, {}), **data}
@@ -428,7 +452,8 @@ def delete_ticker_setting(tk: str, prefix: str = "",
     # Cloud: GSheets 워크시트 + 설정 제거
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
-            # 설정 제거
+            # 설정 제거 (시트 최신 JSON 기준 — 낡은 캐시 되써넣기 방지)
+            refresh_user_settings_from_sheet()
             raw = st.session_state.get("user_settings", {}).get(settings_key, "") or ""
             ts  = _parse_ticker_settings_json(raw)
             ts.pop(tk, None)
