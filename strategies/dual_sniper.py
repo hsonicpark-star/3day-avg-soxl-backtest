@@ -2177,14 +2177,15 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None, use
                        showlegend=False)
     ca2.plotly_chart(figY, use_container_width=True)
 
-    # ── 월별 히트맵 ──
-    st.markdown("##### 🗓️ 월별 수익률 (%)")
+    # ── 월별 히트맵 (표준편차와 동일 스타일 — 공용 monthly_perf_table) ──
+    st.markdown("##### 🗓️ 월별 수익률 히트맵")
     try:
-        pivot = compute_monthly_pivot(hist, cap)
-        figM = px.imshow(pivot, text_auto=".1f", aspect="auto",
-                         color_continuous_scale="RdYlGn", color_continuous_midpoint=0)
-        figM.update_layout(height=min(60+30*len(pivot), 480), margin=dict(l=0, r=0, t=10, b=0))
-        st.plotly_chart(figM, use_container_width=True)
+        from common.analysis import monthly_perf_table
+        _eq = log.set_index('날짜')['총자산'].astype(float)
+        _md = log.set_index('날짜')['모드']
+        st.markdown(monthly_perf_table(_eq, mode=_md,
+                                       mode_short={'공격': '공', '방어': '방'}),
+                    unsafe_allow_html=True)
     except Exception:
         st.caption("월별 데이터 부족")
 
