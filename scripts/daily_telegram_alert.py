@@ -225,19 +225,28 @@ def _apply_capital_adj(r: dict, cfg: dict) -> float:
     return _adj_total
 
 
-def _gs_retry(fn, tries: int = 3, base_delay: int = 5):
+def _gs_retry(fn, tries: int = 4, base_delay: int = 5):
     """gspread 호출 재시도 — 레이트리밋(429) 등 일시 오류 대비.
 
     자동발송은 여러 사용자×전략이 같은 시각에 GSheets API를 두드려
     쿼터에 걸리기 쉬움. 원장 읽기가 한 번 실패하면 시뮬 fallback으로
-    잘못된 수량이 발송되므로, 지수 백오프로 재시도해 성공률을 높인다."""
+    잘못된 수량이 발송되므로 재시도해 성공률을 높인다.
+
+    구글 Sheets API 쿼터는 '분당 60회(서비스계정 기준)'라 429에 걸리면
+    분 경계를 넘길 때까지는 재시도해도 계속 실패한다. 이전 5s/10s 백오프는
+    한 분 안에 끝나 소용이 없었음(2026-09-08 와이프 계좌 원장 실패).
+    → 5s→15s→40s(누적 60s)로 반드시 다음 분에 재시도."""
+    _delays = [5, 15, 40, 60]
     for _i in range(tries):
         try:
             return fn()
-        except Exception:
+        except Exception as _e:
             if _i == tries - 1:
                 raise
-            time.sleep(base_delay * (_i + 1))
+            _d = _delays[min(_i, len(_delays) - 1)]
+            print(f"      ⏳ GSheets 호출 실패 → {_d}s 후 재시도 "
+                  f"({_i + 1}/{tries - 1}): {str(_e)[:90]}")
+            time.sleep(_d)
 
 
 def _sum_adj_between(cfg: dict, after_date: str, upto_date: str) -> float:
@@ -2327,17 +2336,20 @@ def main():
                                 _chg = settle_avg_pending_rows(_rows_rec, _closes_conf)
                                 _n_cols = len(_hdr_rec)
                                 _col_end = chr(ord('A') + _n_cols - 1)
+                                _batch_avg = []
                                 for _ci in _chg:
                                     _rw_out = [str(_rows_rec[_ci].get(c, ""))
                                                for c in _hdr_rec]
-                                    _ws_hist.update(
-                                        values=[_rw_out],
-                                        range_name=f"A{_ci + 2}:{_col_end}{_ci + 2}",
-                                        value_input_option="RAW")
+                                    _batch_avg.append({
+                                        "range": f"A{_ci + 2}:{_col_end}{_ci + 2}",
+                                        "values": [_rw_out]})
                                     print(f"      🧾 [종가평균/{tk}] "
                                           f"{_rows_rec[_ci].get('날짜')} 예정 정산 → "
                                           f"{_rows_rec[_ci].get('매매')} "
                                           f"{_rows_rec[_ci].get('거래주수')}주")
+                                if _batch_avg:   # API 호출 N회 → 1회 (쿼터 절약) + 재시도
+                                    _gs_retry(lambda: _ws_hist.batch_update(
+                                        _batch_avg, value_input_option="RAW"))
                                 # ── 2) 원장 상태 → 오늘 주문 수량 (엔진 룰) ──
                                 _prev_rows = sorted(
                                     [r0 for r0 in _rows_rec
@@ -2429,9 +2441,9 @@ def main():
                                 float(res.get("tb", 0)), float(res.get("ts", 0)),
                                 int(res.get("buy_qty", 0)), int(res.get("sell_qty", 0)),
                                 int(res.get("shares", 0)), float(res.get("cash", 0)))
-                            _ws_hist.append_row(
+                            _gs_retry(lambda: _ws_hist.append_row(
                                 [str(_prow.get(c, "")) for c in AVG_HIST_COLS],
-                                value_input_option="RAW")
+                                value_input_option="RAW"))
                             print(f"      💾 [종가평균/{tk}] 원장 예정 저장 "
                                   f"(매수 {res.get('buy_qty', 0)}주 / 매도 {res.get('sell_qty', 0)}주)")
                         except Exception as _hist_err:
@@ -2538,13 +2550,16 @@ def main():
                                                    if d < _today_str_sd}
                                 _chg_sd = settle_sd_pending_rows(_rows_sd, _closes_conf_sd)
                                 _cend_sd = chr(ord('A') + len(_hdr_sd) - 1)
+                                _batch_sd = []
                                 for _ci in _chg_sd:
-                                    _ws_hist_sd.update(
-                                        values=[[str(_rows_sd[_ci].get(c, "")) for c in _hdr_sd]],
-                                        range_name=f"A{_ci + 2}:{_cend_sd}{_ci + 2}",
-                                        value_input_option="RAW")
+                                    _batch_sd.append({
+                                        "range": f"A{_ci + 2}:{_cend_sd}{_ci + 2}",
+                                        "values": [[str(_rows_sd[_ci].get(c, "")) for c in _hdr_sd]]})
                                     print(f"      🧾 [표준편차/{tk}] {_rows_sd[_ci].get('날짜')} 정산 → "
                                           f"매수 {_rows_sd[_ci].get('매수량')} / 매도 {_rows_sd[_ci].get('매도량')}")
+                                if _batch_sd:   # API 호출 N회 → 1회 (쿼터 절약) + 재시도
+                                    _gs_retry(lambda: _ws_hist_sd.batch_update(
+                                        _batch_sd, value_input_option="RAW"))
                                 # 2) 원장 상태 → 오늘 주문 (엔진 룰)
                                 _prev_sd = sorted([r0 for r0 in _rows_sd
                                                    if str(r0.get("날짜", "")).strip() < _today_str_sd],
@@ -2639,9 +2654,9 @@ def main():
                                 int(r.get("holdings", 0)), float(r.get("cash", 0)),
                                 float(r.get("avg_cost", 0)), float(r.get("_ledger_cum", 0)),
                                 float(r.get("last_close", 0)))
-                            _ws_hist_sd.append_row(
+                            _gs_retry(lambda: _ws_hist_sd.append_row(
                                 [str(_prow_sd.get(c, "")) for c in SD_HIST_COLS],
-                                value_input_option="RAW")
+                                value_input_option="RAW"))
                             print(f"      💾 [표준편차/{tk}] 원장 예정 저장 "
                                   f"(매수 {r.get('est_buy_qty', 0)} / 매도 {r.get('est_sell_qty', 0)})")
                         except Exception as _hist_err_sd:
