@@ -1208,6 +1208,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _cur_adj_sum = sum(float(it.get("조정금액", 0)) for it in _sd_adj_hist)
         _cur_total = _def_cap + _cur_adj_sum
 
+        # 직전 적용 성공 메시지 표시 + 입력칸 초기화
+        # (rerun 전 st.success는 사라지고, 입력값이 남아 있으면 '같은 날짜·금액
+        #  이력이 이미 있습니다' 중복 가드가 오탐처럼 보여 사용자가 혼란)
+        if f"sd_adj_done_{key_sfx}" in st.session_state:
+            st.success(st.session_state.pop(f"sd_adj_done_{key_sfx}"))
+            for _rk in (f"sd_adj_inp_{key_sfx}", f"sd_adj_memo_{key_sfx}"):
+                st.session_state.pop(_rk, None)
         _sadj_c1, _sadj_c2 = st.columns([2, 1])
         _sadj_date = _sadj_c1.date_input("적용 날짜", value=datetime.today().date(),
                                           key=f"sd_adj_date_{key_sfx}",
@@ -1259,12 +1266,15 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "capital_adj_history": json.dumps(_sd_adj_hist, ensure_ascii=False),
                 })
                 st.session_state.pop(f"sd_os_res_{key_sfx}", None)  # 캐시 갱신
+                # 성공 메시지는 rerun 후 위젯 위에서 표시 (입력칸도 그때 초기화)
                 if _baked:
-                    st.success(f"✅ {_sadj_date} 자본 조정 완료 — **원장에 즉시 반영**되었습니다. "
-                               f"다음 주문부터 1회매수금·매수량에 적용됩니다. "
-                               f"(오늘 이미 발송된 주문 수량은 그대로)")
+                    st.session_state[f"sd_adj_done_{key_sfx}"] = (
+                        f"✅ {_sadj_date} 자본 조정 ${float(_sadj_amt):+,.0f} 완료 — "
+                        f"**원장에 즉시 반영**되었습니다. 다음 주문부터 1회매수금·매수량에 "
+                        f"적용됩니다. (오늘 이미 발송된 주문 수량은 그대로)")
                 else:
-                    st.success(f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
+                    st.session_state[f"sd_adj_done_{key_sfx}"] = (
+                        f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
                 st.rerun()
 
         if _sd_adj_hist:
