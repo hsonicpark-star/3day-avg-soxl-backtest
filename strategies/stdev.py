@@ -118,7 +118,8 @@ def _load_sd_ledger(tk: str):
                 return pd.DataFrame(), "ok"    # 진짜 없음 → 빈 원장 (시드 가능)
             records = ws.get_all_records()
             return (pd.DataFrame(records) if records else pd.DataFrame()), "ok"
-        except Exception:
+        except Exception as _e:
+            st.session_state[f"sd_led_err_{tk}"] = str(_e)[:300]   # 배너에 사유 표시용
             return pd.DataFrame(), "error"     # 접근 실패 — CSV fallback 금지
     # 로컬 모드: CSV가 원본 (영구 저장이므로 원장 사용 가능)
     f = _get_sd_history_file(tk)
@@ -1685,9 +1686,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                             "실제 매매를 운용하시면 설정 탭에서 스프레드시트 URL을 등록하세요 — "
                             "실제 체결 기준으로 수량이 관리되어 훨씬 정확합니다.")
                 elif _led_st == "error":
+                    from common.config import ledger_error_hint as _leh
+                    _led_reason = st.session_state.get(f"sd_led_err_{tk}", "")
                     st.error("⛔ 원장(매매기록 GSheets) 접근 실패 — 이번 로드는 시뮬 참고값만 "
                              "표시하며 **원장 기록/정산/주문 수량 반영을 하지 않습니다.** "
-                             "잠시 후 '새로고침'을 다시 눌러주세요. (주문은 원장 반영된 값으로만!)")
+                             "(주문은 원장 반영된 값으로만!)  \n\n"
+                             f"{_leh(_led_reason)}  \n\n"
+                             f"사유: `{_led_reason or '-'}`")
                 if _led_ok and _df_led0.empty and _hist_sd is not None and not _hist_sd.empty:
                     # 원장 신규 시작 — 과거 시뮬 이력 시드 (오늘 제외)
                     # (엄격 로드 성공 + 진짜 빈 원장일 때만)

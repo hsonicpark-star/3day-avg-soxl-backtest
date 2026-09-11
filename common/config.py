@@ -104,6 +104,24 @@ def _get_ticker_history_file(tk: str) -> Path:
         return Path(__file__).parent.parent / f"history_{tk}.csv"
     return Path.home() / ".usd-avg" / f"history_{tk}.csv"
 
+def ledger_error_hint(err: str) -> str:
+    """GSheets 접근 실패 사유를 사용자 행동 안내로 변환.
+    원격 사용자가 '원장 접근 실패'만 보고는 원인을 알 수 없어 진단이 막힘 →
+    권한/URL/쿼터를 구분해 무엇을 고쳐야 하는지 알려준다."""
+    e = (err or "").lower()
+    if "403" in e or "permission" in e or "forbidden" in e:
+        return ("🔑 **시트 공유 권한 문제** — 스프레드시트를 서비스 계정 이메일에 "
+                "'편집자'로 공유했는지 확인하세요 (개인 설정 탭의 '❓ 구글 스프레드시트 "
+                "URL 확인 & 권한 부여' 안내 참조).")
+    if "404" in e or "not found" in e or "notfound" in e or "spreadsheet" in e and "found" in e:
+        return "🔗 **URL 문제** — 개인 설정의 스프레드시트 URL이 잘못되었거나 시트가 삭제되었습니다."
+    if "429" in e or "quota" in e or "rate" in e:
+        return "⏳ **구글 API 한도 초과(일시)** — 1분 뒤 '새로고침'을 다시 눌러주세요."
+    if "invalid" in e and "url" in e or "no key" in e:
+        return "🔗 **URL 형식 오류** — 브라우저 주소창의 전체 URL(https://docs.google.com/spreadsheets/d/...)을 붙여넣으세요."
+    return "❔ 원인 불명 — 아래 사유를 관리자에게 전달해주세요."
+
+
 def _load_ticker_ledger(tk: str):
     """원장 로드 (엄격 모드): (df, status) 반환. status:
       "ok"     — 원장 정상 (빈 원장 포함 → 시드 가능)
@@ -126,7 +144,8 @@ def _load_ticker_ledger(tk: str):
                 return pd.DataFrame(), "ok"
             records = ws.get_all_records()
             return (pd.DataFrame(records) if records else pd.DataFrame()), "ok"
-        except Exception:
+        except Exception as _e:
+            st.session_state[f"led_err_{tk}"] = str(_e)[:300]   # 배너에 사유 표시용
             return pd.DataFrame(), "error"
     f = _get_ticker_history_file(tk)
     if f.exists():
