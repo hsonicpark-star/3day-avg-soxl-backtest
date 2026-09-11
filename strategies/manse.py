@@ -2788,15 +2788,52 @@ def _pf_yearly(eq, cap: float) -> dict:
     return out
 
 
+def _ext_sources() -> dict:
+    """만능 외 전략(종가평균·표준편차·DSS·듀얼스나이퍼)의 '전략·프리셋' 목록.
+
+    strategies/portfolio.py 의 프리셋표와 엔진 래퍼를 그대로 재사용한다.
+    무거운 엔진들을 끌어오므로 **호출 시점에 lazy import** 한다.
+    실패하면 빈 dict 를 돌려 만능 전용으로 동작한다.
+    """
+    try:
+        import strategies.portfolio as _pf
+    except Exception:
+        return {}
+    out = {}
+    for strat, table in (("종가평균", getattr(_pf, "AVG_PRESETS", {})),
+                         ("표준편차", getattr(_pf, "STDEV_PRESETS", {})),
+                         ("DSS", getattr(_pf, "DSS_PRESETS", {})),
+                         ("듀얼스나이퍼", getattr(_pf, "DUAL_PRESETS", {}))):
+        for key in table:
+            out[f"{strat} · {key}"] = ("ext", (strat, key))
+    return out
+
+
+def _ext_curve(strat: str, key: str, start, end, dual_mode: str):
+    """외부 전략의 자산곡선 (기준자본 기준). 실패 시 예외를 그대로 올린다."""
+    import strategies.portfolio as _pf
+    soxl_C, qqq_C, soxl_l = _pf._load_market_data()
+    if strat == "종가평균":
+        return _pf._equity_avg(soxl_C, _pf.AVG_PRESETS[key], start, end)
+    if strat == "표준편차":
+        return _pf._equity_stdev(soxl_C, _pf.STDEV_PRESETS[key], start, end)
+    if strat == "DSS":
+        return _pf._equity_dss(soxl_C, qqq_C, _pf.DSS_PRESETS[key], start, end)
+    if strat == "듀얼스나이퍼":
+        return _pf._equity_dual(soxl_l, _pf.DUAL_PRESETS[key], dual_mode, start, end)
+    raise ValueError(f"알 수 없는 전략: {strat}")
+
+
 def render_portfolio_section(params: dict):
     """여러 전략을 동시에 굴렸을 때의 합산 성과."""
     st.markdown("---")
     st.subheader("🧩 포트폴리오 합산 분석")
-    st.caption("여러 프리셋을 각각 다른 계좌로 동시에 굴렸을 때의 합산 성과입니다. "
-               "배분한 자본으로 **실제로 다시 백테스트**해 합치므로 "
-               "정수 주식수 반올림까지 반영됩니다.")
+    st.caption("여러 전략을 각각 다른 계좌로 동시에 굴렸을 때의 합산 성과입니다. "
+               "만능 스위치 프리셋·계좌뿐 아니라 **종가평균 · 표준편차 · DSS · "
+               "듀얼스나이퍼**도 함께 고를 수 있습니다.")
 
     _srcs = {f"프리셋 · {x['label']}": ("preset", x) for x in _MANSE_PRESETS}
+    _srcs.update(_ext_sources())          # 종가평균 · 표준편차 · DSS · 듀얼스나이퍼
     _accts = (_load_cfg().get("accounts", {}) or {})
     for _an, _ai in _accts.items():
         _srcs[f"계좌 · {_an}"] = ("acct", _ai)
@@ -2825,6 +2862,12 @@ def render_portfolio_section(params: dict):
         pf_fee = st.number_input("수수료 (편도 %)", value=0.07, step=0.01,
                                  format="%.3f", key="ms_pf_fee") / 100.0
 
+    _has_dual = any(str(n).startswith("듀얼스나이퍼") for n in picked)
+    dual_mode = "원본시트 자동"
+    if _has_dual:
+        dual_mode = st.radio("듀얼스나이퍼 모드 소스", ["원본시트 자동", "자동 하이브리드"],
+                             horizontal=True, key="ms_pf_dualmode")
+
     eq_w = st.checkbox("균등 배분", value=True, key="ms_pf_eq",
                        help="끄면 전략별 비중을 직접 지정합니다. "
                             "분석 결과 균등 배분이 대체로 유리합니다 (아래 참고).")
@@ -2852,9 +2895,26 @@ def render_portfolio_section(params: dict):
         with st.spinner("전략별 백테스트 중..."):
             try:
                 curves, indiv, tickers = {}, {}, set()
+                mode_col = None
                 for nm in picked:
                     kind, obj = _srcs[nm]
                     cap = total_cap * weights[nm] / 100.0
+
+                    if kind == "ext":
+                        # 외부 전략은 기준자본으로 돌린 뒤 배분액에 비례 확대한다
+                        # (portfolio.py 와 동일한 선형 스케일 가정)
+                        strat, key = obj
+                        raw = _ext_curve(strat, key, pf_start, pf_end, dual_mode)
+                        raw = pd.Series(raw).dropna()
+                        if len(raw) < 2:
+                            st.error(f"{nm}: 곡선을 만들지 못했습니다.")
+                            return
+                        eq = raw / float(raw.iloc[0]) * cap
+                        tickers.add("SOXL")
+                        curves[nm] = eq
+                        indiv[nm] = (_pf_stats(eq, cap), cap, None)
+                        continue
+
                     if kind == "preset":
                         tk = (params or {}).get("ticker") or "SOXL"
                         p = preset_to_params(obj, tk, cap)
@@ -2873,6 +2933,8 @@ def render_portfolio_section(params: dict):
                     curves[nm] = r["df"]["총자산"]
                     indiv[nm] = (_pf_stats(r["df"]["총자산"], cap), cap,
                                  r["df"]["모드"])
+                    if mode_col is None:
+                        mode_col = r["df"]["모드"]
                 if len(tickers) > 1:
                     st.warning(f"⚠️ 종목이 서로 다릅니다 ({', '.join(sorted(tickers))}) "
                                f"— 합산 결과 해석에 주의하세요.")
@@ -2883,11 +2945,18 @@ def render_portfolio_section(params: dict):
                 st.session_state["ms_pf_res"] = {
                     "curves": curves, "indiv": indiv, "total": total_cap,
                     "weights": dict(weights),
-                    "mode": indiv[picked[0]][2].reindex(idx),
+                    "mode": (mode_col.reindex(idx)
+                             if mode_col is not None else None),
                 }
             except Exception as e:
                 st.error(f"계산 실패: {type(e).__name__}: {e}")
                 return
+
+    if any(_srcs.get(n, ("", ""))[0] == "ext" for n in picked):
+        st.caption("ℹ️ 만능 외 전략은 각 엔진의 **자체 수수료 가정**을 쓰며 "
+                   "(위 수수료 입력은 만능 스위치에만 적용됩니다), 배분액에 "
+                   "**비례 확대**해 합산합니다. 만능 스위치는 배분액으로 "
+                   "실제 재백테스트합니다.")
 
     res = st.session_state.get("ms_pf_res")
     if not res:
@@ -2977,9 +3046,11 @@ def render_portfolio_section(params: dict):
     # ── 월별 히트맵 ──
     st.markdown("#### 🗓️ 월별 수익률 히트맵 (합산)")
     try:
+        _md = res.get("mode")
         st.markdown(monthly_perf_table(
-            comb, res.get("mode"),
-            mode_short={"바닥": "바", "중간": "중", "천장": "천"}),
+            comb, _md,
+            mode_short=({"바닥": "바", "중간": "중", "천장": "천"}
+                        if _md is not None else None)),
             unsafe_allow_html=True)
         st.caption("각 칸은 월수익률 / 월 MDD / 그달의 구간 비율입니다. "
                    "구간 비율은 첫 번째 전략 기준입니다.")
