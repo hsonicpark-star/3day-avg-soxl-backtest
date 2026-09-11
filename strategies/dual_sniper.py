@@ -1183,7 +1183,39 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
     ds_p, mode_rule = _acct_params(acct_data, p)
 
     # ── 1) 파라미터 표시 + 수정 ──
+    # 현재 파라미터가 프리셋과 일치하면 배지 표시 (DSS/표준편차와 동일 스타일)
+    def _preset_of(dp):
+        _map = {"ag_div": dp.ag_divisions, "ag_buy": dp.ag_buy_pct,
+                "ag_sell_alpha": dp.ag_sell_alpha, "ag_hold_alpha": dp.ag_hold_alpha,
+                "sf_div": dp.sf_divisions, "sf_hold": dp.sf_hold,
+                "sf_buy1": dp.sf_buy_pct1, "sf_buy2": dp.sf_buy_pct2,
+                "sf_sell": dp.sf_sell_pct, "sf_ma_base": dp.sf_ma_base}
+        for _pc in _DS_PRESETS:
+            if not all(abs(float(_map[_k]) - float(_pc[_k])) < 1e-9 for _k in _map):
+                continue
+            try:
+                _pw = tuple(float(x.strip()) for x in str(_pc["sf_weights"]).split(",") if x.strip())
+            except Exception:
+                _pw = ()
+            if tuple(float(w) for w in dp.sf_tier_weights) == _pw:
+                return _pc["label"]
+        return None
+    _cur_preset_ds = _preset_of(ds_p)
+
     with st.container(border=True):
+        if _cur_preset_ds:
+            st.markdown(
+                f'<div style="margin-bottom:8px"><span style="display:inline-block;'
+                f'background:linear-gradient(90deg,#FFF3E0,#FFE0B2);color:#E65100;'
+                f'border:1px solid #FFB74D;border-radius:14px;padding:3px 14px;'
+                f'font-size:0.9em;font-weight:700">🏷️ {_cur_preset_ds} 프리셋 적용 중'
+                f'</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div style="margin-bottom:8px"><span style="display:inline-block;'
+                'background:#ECEFF1;color:#546E7A;border:1px solid #B0BEC5;'
+                'border-radius:14px;padding:3px 14px;font-size:0.9em;font-weight:700">'
+                '🛠️ 커스텀 파라미터</span></div>', unsafe_allow_html=True)
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("공격(분할/매수%)", f"{ds_p.ag_divisions} / {ds_p.ag_buy_pct:g}%")
         m2.metric("공격(매도α/보유α)", f"{ds_p.ag_sell_alpha} / {ds_p.ag_hold_alpha}")
