@@ -114,7 +114,12 @@ def ledger_error_hint(err: str) -> str:
                 "'편집자'로 공유했는지 확인하세요 (개인 설정 탭의 '❓ 구글 스프레드시트 "
                 "URL 확인 & 권한 부여' 안내 참조).")
     if "404" in e or "not found" in e or "notfound" in e or "spreadsheet" in e and "found" in e:
-        return "🔗 **URL 문제** — 개인 설정의 스프레드시트 URL이 잘못되었거나 시트가 삭제되었습니다."
+        # 구글은 권한 없는 문서도 존재를 숨기려 404로 응답 → 공유 누락도 여기 포함
+        return ("🔗 **시트를 찾을 수 없음(404)** — 다음 순서로 확인하세요: "
+                "① 본인 계정으로 그 URL을 브라우저에서 열어보기 (안 열리면 삭제/오타 → "
+                "드라이브 휴지통 확인·복원) → ② 열리면 **서비스 계정 이메일에 '편집자'로 "
+                "공유**했는지 확인 (공유 안 되면 404가 납니다) → ③ 개인 설정의 URL이 "
+                "그 시트와 같은지 확인.")
     if "429" in e or "quota" in e or "rate" in e:
         return "⏳ **구글 API 한도 초과(일시)** — 1분 뒤 '새로고침'을 다시 눌러주세요."
     if "invalid" in e and "url" in e or "no key" in e:
