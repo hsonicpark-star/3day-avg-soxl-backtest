@@ -344,6 +344,76 @@ def _bake_adj_into_sd_ledger(tk: str, amount: float):
 # ══════════════════════════════════════════════
 # Telegram text builder
 # ══════════════════════════════════════════════
+def _apply_sd_ledger_override(ticker_name: str, res: dict, divisions: int,
+                              sell_ratio: float, renewal: int,
+                              capital_adj_history=None) -> bool:
+    """원장(매매기록) 기준으로 res의 보유/현금/수량/평단/총자산을 덮어씀 (조회만, 쓰기 없음).
+
+    웹 주문표·텔레그램·개인설정의 수동 '주문 시트 전송'이 모두 이 함수를 거쳐야
+    수량이 일치한다 (2026-09-15 제보: 수동 시트 전송이 시뮬 수량을 기록하던 버그).
+    원장이 없거나(no_url/error) 비어 있으면 res를 시뮬 그대로 두고 False.
+    """
+    today = datetime.today().date()
+    res.pop("_ledger_applied", None)
+    # ── 원장(매매기록) 기준 override — 표시 일관성 (조회만, 쓰기 없음) ──
+    # 웹 주문표·자동발송과 동일하게 실제 보유/체결 기준 수량 표시
+    try:
+        _today_led = today.strftime("%Y-%m-%d")
+        _closes_led = {}
+        _h_led = res.get("hist")
+        if _h_led is not None and not _h_led.empty:
+            for _, _hr in _h_led.iterrows():
+                _closes_led[str(_hr["날짜"])] = float(_hr["종가"])
+        _df_led, _led_st_txt = _load_sd_ledger(ticker_name)
+        if _led_st_txt == "ok" and not _df_led.empty:
+            _rows_led = _df_led.to_dict("records")
+            settle_sd_pending_rows(
+                _rows_led, {d: c for d, c in _closes_led.items() if d < _today_led})
+            _prev_led = sorted(
+                [r0 for r0 in _rows_led if str(r0.get("날짜", "")).strip() < _today_led],
+                key=lambda r0: str(r0.get("날짜", "")))
+            _stg_led = calc_sd_record_state(_prev_led)
+            if _stg_led:
+                # 마지막 기록 이후 입출금만 현금에 가산
+                _extra_led = 0.0
+                if capital_adj_history:
+                    try:
+                        _al = (json.loads(capital_adj_history)
+                               if isinstance(capital_adj_history, str) else capital_adj_history)
+                        for _it in (_al if isinstance(_al, list) else []):
+                            if _it.get("원장반영"):
+                                continue   # 이미 원장에 가산됨
+                            _da = str(pd.Timestamp(_it.get("날짜")).date())
+                            if _stg_led["last_date"] < _da <= _today_led:
+                                _extra_led += float(_it.get("조정금액", 0))
+                    except Exception:
+                        pass
+                _stg_led["cash"] += _extra_led
+                _og_led = calc_sd_order_from_state(
+                    _stg_led, float(res.get("next_buy_loc", 0)),
+                    float(res.get("next_sell_loc", 0)),
+                    divisions, sell_ratio, renewal, 1.0, 1.0)
+                _tr_led = next((r0 for r0 in _rows_led
+                                if str(r0.get("날짜", "")).strip() == _today_led), None)
+                if _tr_led is not None and sd_row_is_pending(_tr_led):
+                    _og_led["buy_qty"] = int(float(_tr_led.get("매수량", 0) or 0))
+                    _og_led["sell_qty"] = int(float(_tr_led.get("매도량", 0) or 0))
+                res["holdings"]     = _stg_led["holdings"]
+                res["cash"]         = round(_stg_led["cash"], 2)
+                res["est_buy_qty"]  = _og_led["buy_qty"]
+                res["est_sell_qty"] = _og_led["sell_qty"]
+                if _stg_led["avg_cost"] > 0:
+                    res["avg_cost"] = round(_stg_led["avg_cost"], 4)
+                # 총자산도 원장 기준 (시뮬 final_asset이 표시되지 않도록)
+                res["final_asset"] = round(
+                    _stg_led["cash"] + _stg_led["holdings"]
+                    * float(res.get("last_close", 0)), 2)
+                res["_ledger_applied"] = True
+    except Exception:
+        pass
+    return bool(res.get("_ledger_applied"))
+
+
 def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                          sigma_period: int, sell_ratio: float, divisions: int,
                          renewal: int, _os_start=None, _os_capital: float = 20000.0,
@@ -401,61 +471,9 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
             except Exception:
                 pass
 
-        # ── 원장(매매기록) 기준 override — 표시 일관성 (조회만, 쓰기 없음) ──
-        # 웹 주문표·자동발송과 동일하게 실제 보유/체결 기준 수량 표시
-        try:
-            _today_led = today.strftime("%Y-%m-%d")
-            _closes_led = {}
-            _h_led = res.get("hist")
-            if _h_led is not None and not _h_led.empty:
-                for _, _hr in _h_led.iterrows():
-                    _closes_led[str(_hr["날짜"])] = float(_hr["종가"])
-            _df_led, _led_st_txt = _load_sd_ledger(ticker_name)
-            if _led_st_txt == "ok" and not _df_led.empty:
-                _rows_led = _df_led.to_dict("records")
-                settle_sd_pending_rows(
-                    _rows_led, {d: c for d, c in _closes_led.items() if d < _today_led})
-                _prev_led = sorted(
-                    [r0 for r0 in _rows_led if str(r0.get("날짜", "")).strip() < _today_led],
-                    key=lambda r0: str(r0.get("날짜", "")))
-                _stg_led = calc_sd_record_state(_prev_led)
-                if _stg_led:
-                    # 마지막 기록 이후 입출금만 현금에 가산
-                    _extra_led = 0.0
-                    if capital_adj_history:
-                        try:
-                            _al = (json.loads(capital_adj_history)
-                                   if isinstance(capital_adj_history, str) else capital_adj_history)
-                            for _it in (_al if isinstance(_al, list) else []):
-                                if _it.get("원장반영"):
-                                    continue   # 이미 원장에 가산됨
-                                _da = str(pd.Timestamp(_it.get("날짜")).date())
-                                if _stg_led["last_date"] < _da <= _today_led:
-                                    _extra_led += float(_it.get("조정금액", 0))
-                        except Exception:
-                            pass
-                    _stg_led["cash"] += _extra_led
-                    _og_led = calc_sd_order_from_state(
-                        _stg_led, float(res.get("next_buy_loc", 0)),
-                        float(res.get("next_sell_loc", 0)),
-                        divisions, sell_ratio, renewal, 1.0, 1.0)
-                    _tr_led = next((r0 for r0 in _rows_led
-                                    if str(r0.get("날짜", "")).strip() == _today_led), None)
-                    if _tr_led is not None and sd_row_is_pending(_tr_led):
-                        _og_led["buy_qty"] = int(float(_tr_led.get("매수량", 0) or 0))
-                        _og_led["sell_qty"] = int(float(_tr_led.get("매도량", 0) or 0))
-                    res["holdings"]     = _stg_led["holdings"]
-                    res["cash"]         = round(_stg_led["cash"], 2)
-                    res["est_buy_qty"]  = _og_led["buy_qty"]
-                    res["est_sell_qty"] = _og_led["sell_qty"]
-                    if _stg_led["avg_cost"] > 0:
-                        res["avg_cost"] = round(_stg_led["avg_cost"], 4)
-                    # 총자산도 원장 기준 (시뮬 final_asset이 표시되지 않도록)
-                    res["final_asset"] = round(
-                        _stg_led["cash"] + _stg_led["holdings"]
-                        * float(res.get("last_close", 0)), 2)
-        except Exception:
-            pass
+        # ── 원장(매매기록) 기준 override — 공용 헬퍼 (웹·텔레그램·시트 전송 일관) ──
+        _apply_sd_ledger_override(ticker_name, res, divisions, sell_ratio, renewal,
+                                  capital_adj_history)
 
         lp        = res["last_close"]
         sigma     = res["sigma_next"]
@@ -3179,7 +3197,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         _cmp_e = str(datetime.today().date())
         _cmp_cap = 10000.0
 
-        _pdf_cmp = load_price_data(_act_tk, _cmp_s, _cmp_e, "야후파이낸스 (yfinance)", None)
+        _pdf_cmp = load_price_data(_sd_symbol(_act_tk), _cmp_s, _cmp_e, "야후파이낸스 (yfinance)", None)
         if _pdf_cmp is None or _pdf_cmp.empty:
             st.warning(f"{_act_tk} 가격 데이터를 불러오지 못해 비교 분석을 생략합니다.")
         else:
@@ -3505,7 +3523,7 @@ def render_settings_tab():
                                 except: _gs_sd_start = datetime(2024, 1, 1).date()
                                 _gs_sd_cap = float(_gs_sd_cfg.get("os_capital", 20000.0))
                                 _buf = (pd.to_datetime(str(_gs_sd_start)) - pd.DateOffset(days=90)).strftime("%Y-%m-%d")
-                                _pdf_gs = load_price_data(_gs_sd_tk, _buf, str(datetime.today().date()), "야후파이낸스 (yfinance)", None)
+                                _pdf_gs = load_price_data(_sd_symbol(_gs_sd_tk), _buf, str(datetime.today().date()), "야후파이낸스 (yfinance)", None)
                                 _res_gs = run_stdev_ordersheet(
                                     _pdf_gs, str(_gs_sd_start),
                                     sigma_period = int  (_gs_sd_cfg.get("sigma_period", 2)),
@@ -3519,6 +3537,13 @@ def render_settings_tab():
                                 if _res_gs is None:
                                     st.error(f"{_gs_sd_tk}: 시뮬레이션 데이터가 없습니다.")
                                 else:
+                                    # 원장 기준 수량으로 덮어쓰기 (자동발송·웹 주문표와 동일)
+                                    _apply_sd_ledger_override(
+                                        _gs_sd_tk, _res_gs,
+                                        int(_gs_sd_cfg.get("divisions", 5)),
+                                        float(_gs_sd_cfg.get("sell_ratio", 75.0)),
+                                        int(_gs_sd_cfg.get("renewal", 5)),
+                                        _gs_sd_cfg.get("capital_adj_history"))
                                     gc = _get_gspread_client()
                                     sh = gc.open_by_url(gs_url_sd)
                                     ws = sh.worksheet(_sheet_nm)
