@@ -385,10 +385,57 @@ def import_pairs_from_csv(csv_path: str, date_col: int, close_col: int,
 GSHEET_TAB_PREFIX = "pricedb_"
 
 # 원본 만능시트 DB 탭의 티커별 (날짜열, 종가열) — backup_close.BACKUP_SHEET_URL
+# ⚠️ 원본 시트는 '티커' 설정을 바꾸면 같은 열에 다른 종목이 들어온다
+#    (2026-09 에 QQQ 자리가 TQQQ 로 바뀐 채 폴백이 발동해 QQQ 에 $80 대가 섞였다).
+#    그래서 열 위치만 믿지 않고 _source_label_ok() 로 2행 제목을 반드시 확인한다.
 SOURCE_DB_COLS = {
     "SOXL": ("E", "F"),
     "QQQ": ("N", "O"),
 }
+
+# 이어붙일 때 허용하는 1거래일 가격 비율 — 이 밖이면 다른 종목/깨진 값으로 본다.
+# 실측 최대: SOXL +54.8% (2025-04-09, ×1.55) · −38.6% (2020-03-16, ×0.61),
+#            QQQ ±12%. 오염 사례 QQQ→TQQQ 는 ×0.11 이다.
+_STEP_MIN, _STEP_MAX = 0.5, 2.0
+
+
+def _col_index(col: str) -> int:
+    """'A'→1, 'N'→14, 'AA'→27"""
+    n = 0
+    for ch in col.upper():
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
+def _source_label_ok(ws, ticker: str, date_col: str):
+    """원본 시트 DB 탭 2행의 구역 제목이 이 티커의 '일별' 데이터인지 확인.
+
+    제목 셀은 병합돼 있어 날짜열보다 왼쪽에 있을 수 있으므로,
+    D열부터 날짜열까지 중 **마지막으로 채워진 제목**을 그 구역의 제목으로 본다.
+    반환: (통과 여부, 확인한 제목)
+    """
+    try:
+        row = ws.get_values(f"D2:{date_col}2")
+        cells = row[0] if row else []
+    except Exception as e:
+        return False, f"제목 조회 실패({type(e).__name__})"
+    label = next((str(c).strip() for c in reversed(cells) if str(c).strip()), "")
+    tk = re.escape(ticker.strip().upper())
+    # 앞뒤가 영문이면 다른 티커 (예: 'TQQQ' 안의 'QQQ', 'SOXX' 와 'SOXL')
+    word = re.search(rf"(?<![A-Z]){tk}(?![A-Z])", label.upper()) is not None
+    return (word and "일별" in label), label
+
+
+def _jump_ok(prev_close, new_closes) -> tuple:
+    """직전 종가에서 이어지는 값들이 1거래일 비율 범위 안인가. (ok, 첫 위반 설명)"""
+    seq = [float(prev_close)] + [float(x) for x in new_closes]
+    for a, b in zip(seq, seq[1:]):
+        if a <= 0 or b <= 0:
+            return False, f"0 이하 값 ({a} → {b})"
+        r = b / a
+        if not (_STEP_MIN <= r <= _STEP_MAX):
+            return False, f"{a:,.2f} → {b:,.2f} (×{r:.2f})"
+    return True, ""
 
 
 def gsheet_tab(ticker: str) -> str:
@@ -476,24 +523,85 @@ def push_to_gsheet(gs_url: str, ticker: str, df: pd.DataFrame = None,
     return len(rows)
 
 
+# 원본 만능시트 후보 (앞에서부터 시도, 제목 검증을 통과한 첫 시트를 쓴다).
+#   v2.1 시트들은 운용 설정(SOXL/QQQ)과 같아 QQQ 일별이 N:O 에 있다.
+#   v1.8 원본은 티커 설정이 SOXX/TQQQ 로 바뀌어 QQQ 는 제목 검증에서 거부된다.
+SOURCE_SHEET_KEYS = [
+    "1XzJRgjhmJfidhI-mUIN7DyLTnK-G9y0ATCj5CfVIqNQ",   # 쪼꼬야옹 만능 스위치 v2.1_이평-pjh
+    "1stIs66YbtEvkzdxXp_Yb3BLTBvGR3u2FyA07D5IyA4U",   # 쪼꼬야옹 만능 스위치 v2.1_중심-pjh
+    "1GY1LvAPrqvHEC47Flt-atcikwx1gd8wH-mMnnnFwciM",   # 쪼꼬야옹 만능 스위치 v1.8의 원본
+]
+
+# 같은 실행에서 계좌·사용자가 여러 번 불러도 시트는 티커당 1번만 읽는다
+# (크론이 분당 읽기 한도 429 에 걸려 폴백이 조용히 무력화된 적이 있다)
+_SRC_CACHE: dict = {}
+_SRC_TTL_SEC = 600
+
+
+def _with_retry(fn, tries: int = 4):
+    """구글 API 429(할당량)·5xx 는 잠시 기다렸다 재시도한다."""
+    import time as _t
+    delay = 5
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            msg = str(e)
+            transient = ("429" in msg or "Quota" in msg or "503" in msg
+                         or "500" in msg or "backendError" in msg)
+            if not transient or i == tries - 1:
+                raise
+            _t.sleep(delay)
+            delay = min(delay * 2, 40)
+
+
 def fetch_from_source_sheet(ticker: str, gc=None) -> pd.DataFrame:
     """원본 만능시트 DB 탭에서 종가 로드 (읽기 전용).
 
-    backup_close.BACKUP_SHEET_URL / BACKUP_DB_TAB 을 재사용한다.
-    지원 티커는 SOURCE_DB_COLS 에 정의된 것만.
+    SOURCE_SHEET_KEYS 를 차례로 열어, 2행 구역 제목이 이 티커의 '일별' 데이터인
+    첫 시트를 쓴다. 전부 실패하면 빈 DataFrame 을 돌려주되, attrs['reject'] 에
+    시트별 사유를 남긴다 (예전처럼 조용히 삼키지 않는다).
     """
+    import time as _t
     tk = ticker.strip().upper()
     cols = SOURCE_DB_COLS.get(tk)
     if not cols:
         return pd.DataFrame()
+
+    hit = _SRC_CACHE.get(tk)
+    if hit and _t.time() - hit[0] < _SRC_TTL_SEC:
+        return hit[1].copy()
+
+    reasons = []
     try:
-        from backup_close import BACKUP_SHEET_URL, BACKUP_DB_TAB
         gc = _resolve_gc(gc)
-        ws = gc.open_by_url(BACKUP_SHEET_URL).worksheet(BACKUP_DB_TAB)
-        rng = f"{cols[0]}5:{cols[1]}"
-        return _rows_to_df(ws.get_values(rng))
-    except Exception:
-        return pd.DataFrame()
+    except Exception as e:
+        out = pd.DataFrame()
+        out.attrs["reject"] = f"인증 실패({type(e).__name__})"
+        return out
+
+    for key in SOURCE_SHEET_KEYS:
+        try:
+            ws = _with_retry(lambda: gc.open_by_key(key).worksheet("DB"))
+            ok, label = _source_label_ok(ws, tk, cols[0])
+            if not ok:
+                reasons.append(f"{key[:6]}…:'{label}'")
+                continue
+            df = _rows_to_df(_with_retry(
+                lambda: ws.get_values(f"{cols[0]}5:{cols[1]}")))
+            if df.empty:
+                reasons.append(f"{key[:6]}…:빈 데이터")
+                continue
+            df.attrs["source_sheet"] = key
+            _SRC_CACHE[tk] = (_t.time(), df)
+            return df.copy()
+        except Exception as e:
+            reasons.append(f"{key[:6]}…:{type(e).__name__}")
+            continue
+
+    out = pd.DataFrame()
+    out.attrs["reject"] = " / ".join(reasons) or "후보 없음"
+    return out
 
 
 def sync_all(ticker: str, gs_url: str = "", gc=None) -> dict:
@@ -546,17 +654,30 @@ def load_prices_resilient(ticker: str, gs_url: str = "", gc=None,
             except Exception:
                 sheet_df = pd.DataFrame()
             if sheet_df is None or sheet_df.empty:
+                why = getattr(sheet_df, "attrs", {}).get("reject") if sheet_df is not None else None
+                if why:
+                    used.append(f"{label} 거부({why})")
                 continue
             if df.empty:
+                # 이어붙일 기준이 없으면 시트 자체의 최근 구간만이라도 점검
+                tail = sheet_df["Close"].tail(60)
+                ok, why = _jump_ok(tail.iloc[0], tail.iloc[1:]) if len(tail) > 1 else (True, "")
+                if not ok:
+                    used.append(f"{label} 거부(급변 {why})")
+                    continue
                 df = sheet_df
                 used.append(label)
             else:
                 add = sheet_df[sheet_df.index > df.index[-1]]
-                if not add.empty:
-                    df = pd.concat([df, add]).sort_index()
-                    used.append(f"{label}+{len(add)}행")
-                else:
+                if add.empty:
                     continue
+                ok, why = _jump_ok(df["Close"].iloc[-1], add["Close"])
+                if not ok:
+                    # 다른 종목이 섞였을 가능성 — 이 소스는 버리고 다음 소스로
+                    used.append(f"{label} 거부(급변 {why})")
+                    continue
+                df = pd.concat([df, add]).sort_index()
+                used.append(f"{label}+{len(add)}행")
             break
 
     if df is None or df.empty:
