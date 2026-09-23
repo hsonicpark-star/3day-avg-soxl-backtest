@@ -1911,8 +1911,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _nxt_t    = _sd_res["next_tier"]
 
     st.subheader(f"오늘의 LOC 주문  ({next_trading_date().strftime('%Y-%m-%d')})")
+    # '티어'는 회차가 아니라 분할수 길이의 날짜 카운터 — 1 진입일에 복리(총투자금) 갱신.
+    # 오해 방지를 위해 화면 라벨만 '갱신 사이클 N/분할수'로 표시 (저장 키 '티어'는 유지)
+    _cyc_txt = f"{_nxt_t}/{_div}" + (" 🔄 갱신일" if int(_nxt_t) == 1 else "")
     st.caption(f"최근 종가: **${_lc:.2f}**  |  sigma(오늘 예상): **{_sd_res['sigma_next']*100:.4f}%**  |  "
-               f"다음 티어: **T{_nxt_t}**")
+               f"갱신 사이클: **{_cyc_txt}**",
+               help="분할수 길이의 거래일 카운터입니다. 1/N 진입일에 최근 실현손익이 "
+                    "총투자금에 편입(복리 갱신)됩니다. 매수·매도 수량과는 무관합니다.")
 
     _orders = []
     # 매도: 보유량 + 매도수량 둘 다 > 0일 때만 표시 (0주 노이즈 제거)
@@ -1935,7 +1940,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             "예상수량":      f"{_buy_qty:,}주",
             "예상금액":      f"${_buy_qty * _buy_loc:,.0f}",
             "전일종가 대비": f"{(_buy_loc/_lc-1)*100:+.2f}%" if _lc > 0 else "-",
-            "비고": f"T{_nxt_t} / 1회 매수금 ${_sd_res['total_invest']/_div:,.0f}",
+            "비고": f"사이클 {_nxt_t}/{_div} / 1회 매수금 ${_sd_res['total_invest']/_div:,.0f}",
         })
 
     def _sd_style(row):
@@ -2203,9 +2208,15 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             return "color:#999"
 
         # 표시 컬럼 순서 정리
+        # '티어' → 표시용 '갱신 사이클 N/분할수' (1/N = 복리 갱신일 🔄). 저장 키는 '티어' 유지
+        if "티어" in _sd_show.columns:
+            _tier_num = pd.to_numeric(_sd_show["티어"], errors="coerce")
+            _sd_show["갱신 사이클"] = _tier_num.apply(
+                lambda v: (f"{int(v)}/{_div}" + (" 🔄" if int(v) == 1 else ""))
+                if pd.notna(v) else "-")
         _display_cols = ["날짜", "매매", "종가", "σ(%)", "매수LOC", "매도LOC",
                          "매수량", "매도량", "보유량", "평단가", "실현손익",
-                         "총투자금", "예수금", "총자산", "티어"]
+                         "총투자금", "예수금", "총자산", "갱신 사이클"]
         _display_cols = [c for c in _display_cols if c in _sd_show.columns]
 
         st.dataframe(
