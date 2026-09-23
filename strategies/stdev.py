@@ -396,8 +396,22 @@ def _apply_sd_ledger_override(ticker_name: str, res: dict, divisions: int,
                 _tr_led = next((r0 for r0 in _rows_led
                                 if str(r0.get("날짜", "")).strip() == _today_led), None)
                 if _tr_led is not None and sd_row_is_pending(_tr_led):
+                    # 오늘 예정 행 = 오늘 주문의 진실: 수량뿐 아니라 LOC 가격·σ도 고정
+                    # (시각차 데이터로 σ가 달라져 같은 날 두 가격이 나오는 사고 방지)
                     _og_led["buy_qty"] = int(float(_tr_led.get("매수량", 0) or 0))
                     _og_led["sell_qty"] = int(float(_tr_led.get("매도량", 0) or 0))
+                    try:
+                        _lk_b = float(_tr_led.get("매수LOC", 0) or 0)
+                        _lk_s = float(_tr_led.get("매도LOC", 0) or 0)
+                        _lk_sig = float(_tr_led.get("σ(%)", 0) or 0)
+                        if _lk_b > 0:
+                            res["next_buy_loc"] = _lk_b
+                        if _lk_s > 0:
+                            res["next_sell_loc"] = _lk_s
+                        if _lk_sig > 0:
+                            res["sigma_next"] = _lk_sig / 100.0
+                    except Exception:
+                        pass
                 res["holdings"]     = _stg_led["holdings"]
                 res["cash"]         = round(_stg_led["cash"], 2)
                 res["est_buy_qty"]  = _og_led["buy_qty"]
@@ -1771,6 +1785,16 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     try:
                         _sd_ledger["buy_qty"] = int(float(_today_row_led.get("매수량", 0)))
                         _sd_ledger["sell_qty"] = int(float(_today_row_led.get("매도량", 0)))
+                        # 예정 행의 LOC 가격·σ도 고정 (수량만 맞추고 가격이 어긋나던 문제)
+                        _lk_b = float(_today_row_led.get("매수LOC", 0) or 0)
+                        _lk_s = float(_today_row_led.get("매도LOC", 0) or 0)
+                        _lk_sig = float(_today_row_led.get("σ(%)", 0) or 0)
+                        if _lk_b > 0:
+                            _sd_r["next_buy_loc"] = _lk_b
+                        if _lk_s > 0:
+                            _sd_r["next_sell_loc"] = _lk_s
+                        if _lk_sig > 0:
+                            _sd_r["sigma_next"] = _lk_sig / 100.0
                     except Exception:
                         pass
 

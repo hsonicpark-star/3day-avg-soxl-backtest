@@ -2592,6 +2592,30 @@ def main():
                                     r["total_asset"]  = round(
                                         _st_sd["cash"] + _st_sd["holdings"]
                                         * float(r.get("last_close", 0)), 2)
+                                    # 오늘 예정 행이 이미 있으면(웹 로드 선행 등) 그 행이 오늘
+                                    # 주문의 진실 — 수량뿐 아니라 LOC 가격·σ도 고정.
+                                    # (2026-09-23: 웹 155.17 vs 텔레그램 155.14 — 시각차로 σ가
+                                    #  달라져 같은 날 두 가격이 발송된 사고. 정산은 예정 행의
+                                    #  LOC로 판정하므로 발송 가격도 반드시 그 값이어야 함)
+                                    _tr_sd = next((r0 for r0 in _rows_sd
+                                                   if str(r0.get("날짜", "")).strip() == _today_str_sd), None)
+                                    if _tr_sd is not None and sd_row_is_pending(_tr_sd):
+                                        try:
+                                            _lk_b = float(_tr_sd.get("매수LOC", 0) or 0)
+                                            _lk_s = float(_tr_sd.get("매도LOC", 0) or 0)
+                                            _lk_sig = float(_tr_sd.get("σ(%)", 0) or 0)
+                                            r["est_buy_qty"]  = int(float(_tr_sd.get("매수량", 0) or 0))
+                                            r["est_sell_qty"] = int(float(_tr_sd.get("매도량", 0) or 0))
+                                            if _lk_b > 0:
+                                                r["next_buy_loc"] = _lk_b
+                                            if _lk_s > 0:
+                                                r["next_sell_loc"] = _lk_s
+                                            if _lk_sig > 0:
+                                                r["sigma_next"] = _lk_sig / 100.0
+                                            print(f"      📎 [표준편차/{tk}] 오늘 예정 행 고정: "
+                                                  f"매수 {r['est_buy_qty']}@{_lk_b} / 매도 {r['est_sell_qty']}@{_lk_s}")
+                                        except Exception:
+                                            pass
                                     _sd_ledger_on = True
                             else:
                                 _sd_ledger_on = True

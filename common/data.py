@@ -132,7 +132,10 @@ def _maybe_patch_soxl_backup(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+# ttl: 무기한 캐시면 앱 재시작 전까지 낡은 종가(야후 사후 수정 전 값)를 계속 써서
+# 자동발송(매번 새로 조회)과 σ·LOC가 어긋남 (2026-09-23: 155.17 vs 155.14).
+# 10분이면 같은 세션 내 반복 로드는 캐시로, 시간이 지나면 최신 데이터로.
+@st.cache_data(show_spinner=False, ttl=600)
 def _download_price(ticker: str, start_str: str, end_str: str) -> pd.DataFrame:
     start = pd.to_datetime(start_str).date()
     end   = pd.to_datetime(end_str).date()
