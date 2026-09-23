@@ -1603,7 +1603,7 @@ def parse_manse_config(user: dict) -> dict:
 
 
 def manse_load_prices(tickers, data_source: str = "", gs_url: str = "",
-                      gc=None) -> dict:
+                      gc=None, indicator: str = "") -> dict:
     """만능 스위치용 가격 로드 (로컬 DB → 야후 → 구글시트 폴백).
 
     웹앱과 결과를 맞추기 위해 소스 선택을 그대로 따른다.
@@ -1615,6 +1615,14 @@ def manse_load_prices(tickers, data_source: str = "", gs_url: str = "",
        (야후 조정종가로 돌리면 과거 구간이 밀려 웹과 수량이 어긋난다.)
     ⚠️ Actions 러너의 pricedb 는 리포지토리 커밋 상태(정적)이고 파일 쓰기는
        휘발된다 → 영구 누적은 구글시트(push_to_gsheet)가 담당한다.
+
+    최신성 검증
+      · 매매 종목(SOXL): 마지막 거래일까지 빠짐없이 있어야 한다 (엄격).
+      · 모드 지표 종목(indicator, 예: QQQ): 주문일이 속한 주의 모드는 '직전 주'
+        판정으로 정해지므로, 직전 주 마지막 거래일까지만 있으면 된다.
+        그 뒤(주문 주 안)의 빈 날은 직전 종가로 채워 주봉 행만 유지한다
+        (그 주가 통째로 비면 백테스트가 그 주 모드를 못 찾는다).
+        채운 날짜는 attrs['ffill_dates'] 에 남겨 시트 백업에서 제외한다.
     """
     from common.pricedb import load_prices_resilient
 
@@ -1622,16 +1630,22 @@ def manse_load_prices(tickers, data_source: str = "", gs_url: str = "",
     out = {}
     for tk in tickers:
         tk = str(tk).strip().upper()
+        adjusted = False
         if use_yahoo_only:
             df = fetch_prices(tk, "2009-01-01", auto_adjust=True)
+            adjusted = True
         else:
             df = load_prices_resilient(tk, gs_url=gs_url, gc=gc)
             if df is None or df.empty:
                 df = fetch_prices(tk, "2009-01-01", auto_adjust=True)
+                adjusted = True
             elif df.attrs.get("source"):
                 print(f"    📂 {tk} 가격 소스: {df.attrs['source']}")
         if df is None or df.empty:
             raise RuntimeError(f"⛔ {tk} 가격 데이터를 불러오지 못했습니다.")
+        # 지표 종목이 매매 종목과 다를 때만 완화 (같으면 매매 기준으로 엄격)
+        relaxed = (bool(indicator) and len(set(map(str, tickers))) > 1
+                   and tk == str(indicator).strip().upper())
 
         # 최신성 검증 — 마지막 거래일 종가가 없으면 발송 차단
         try:
@@ -1640,16 +1654,39 @@ def manse_load_prices(tickers, data_source: str = "", gs_url: str = "",
             _cands = [d for d in pd.bdate_range(_last, datetime.today())
                       if _is_us_trading_day(d)]
             _have = {pd.Timestamp(d).normalize() for d in df.index}
-            _holes = [d.strftime("%m/%d") for d in _cands if d not in _have
-                      and d < pd.Timestamp(datetime.today().date())]
-            if _holes:
+            _today = pd.Timestamp(datetime.today().date())
+            _miss = [d for d in _cands if d not in _have and d < _today]
+            _filled = []
+            if _miss and relaxed:
+                # 주문일 = 마지막 거래일 다음 거래일 → 그 주 월요일 이전까지는 필수
+                _last_td = max(d for d in _cands if d < _today)
+                _nxt = _last_td + pd.Timedelta(days=1)
+                while not _is_us_trading_day(_nxt):
+                    _nxt += pd.Timedelta(days=1)
+                _week_start = _nxt - pd.Timedelta(days=_nxt.weekday())
+                _filled = [d for d in _miss if d >= _week_start]
+                _miss = [d for d in _miss if d < _week_start]
+            if _miss:
                 raise RuntimeError(
-                    f"⛔ {tk} 최신 종가 누락({', '.join(_holes[:5])}) — "
+                    f"⛔ {tk} 최신 종가 누락"
+                    f"({', '.join(d.strftime('%m/%d') for d in _miss[:5])}) — "
                     f"낡은 데이터로 주문표를 만들지 않습니다.")
+            if _filled:
+                _attrs = dict(df.attrs)
+                _pad = pd.DataFrame({"Close": float(df["Close"].iloc[-1])},
+                                    index=pd.DatetimeIndex(_filled, name=df.index.name))
+                df = pd.concat([df[["Close"]], _pad]).sort_index()
+                df.attrs.update(_attrs)
+                df.attrs["ffill_dates"] = list(_filled)
+                print(f"    ⚠️ {tk} 이번 주 종가 누락"
+                      f"({', '.join(d.strftime('%m/%d') for d in _filled)}) — "
+                      f"모드는 직전 주 판정이라 영향 없음, 직전 종가로 채워 진행")
         except RuntimeError:
             raise
         except Exception:
             pass
+        if adjusted:
+            df.attrs["adjusted"] = True
         out[tk] = df
     return out
 
@@ -1686,7 +1723,8 @@ def calc_manse_order(ticker: str, tk_cfg: dict, gs_url: str = "", gc=None):
             continue
 
     prices = manse_load_prices(p.needed_tickers(), data_source,
-                               gs_url=gs_url, gc=gc)
+                               gs_url=gs_url, gc=gc,
+                               indicator=p.indicator_ticker())
     res = run_backtest(prices, p, start=bt_start,
                        end=str(datetime.today().date()),
                        cash_flows=cash_flows)
@@ -1713,6 +1751,12 @@ def record_manse_prices(gs_url: str, prices: dict, gc=None) -> dict:
         return out
     from common.pricedb import push_to_gsheet
     for tk, df in prices.items():
+        # 야후 조정종가 · 직전 종가로 채운 날은 영구 백업에 넣지 않는다
+        if df is None or df.empty or df.attrs.get("adjusted"):
+            continue
+        fill = df.attrs.get("ffill_dates") or []
+        if fill:
+            df = df.drop(index=fill, errors="ignore")
         try:
             out[tk] = push_to_gsheet(gs_url, tk, df, gc=gc)
         except Exception as e:

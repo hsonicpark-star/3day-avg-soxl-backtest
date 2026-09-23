@@ -479,6 +479,21 @@ def _rows_to_df(rows) -> pd.DataFrame:
     return df[~df.index.duplicated(keep="last")].sort_index()
 
 
+def _data_rows(ws) -> list:
+    """헤더를 뺀 A:B 데이터 행.
+
+    get_values("A2:B") 는 탭이 1행짜리(헤더만)일 때 'exceeds grid limits' 400 을
+    낸다 → push 가 매번 실패해 시트 백업이 한 번도 쌓이지 않았다 (2026-09-23 발견).
+    전체를 읽고 헤더만 잘라내면 행 수와 무관하게 동작한다.
+    """
+    return [r[:2] for r in ws.get_all_values()[1:]]
+
+
+# 한 실행(프로세스) 안에서 같은 시트·티커를 여러 번 push 하지 않는다
+# (같은 사용자의 계좌 2개가 같은 시트를 공유 → 중복 읽기로 429 유발 방지)
+_PUSHED: set = set()
+
+
 def pull_from_gsheet(gs_url: str, ticker: str, gc=None) -> pd.DataFrame:
     """사용자 스프레드시트의 pricedb_{TICKER} 탭에서 종가 로드. 없으면 빈 DF."""
     if not gs_url:
@@ -486,7 +501,7 @@ def pull_from_gsheet(gs_url: str, ticker: str, gc=None) -> pd.DataFrame:
     try:
         gc = _resolve_gc(gc)
         ws = gc.open_by_url(gs_url).worksheet(gsheet_tab(ticker))
-        return _rows_to_df(ws.get_values("A2:B"))
+        return _rows_to_df(_data_rows(ws))
     except Exception:
         return pd.DataFrame()
 
@@ -504,22 +519,31 @@ def push_to_gsheet(gs_url: str, ticker: str, df: pd.DataFrame = None,
     if src is None or src.empty:
         return 0
 
-    gc = _resolve_gc(gc)
-    sh = gc.open_by_url(gs_url)
     tab = gsheet_tab(ticker)
+    key = (gs_url, tab)
+    if key in _PUSHED:
+        return 0
+
+    gc = _resolve_gc(gc)
+    sh = _with_retry(lambda: gc.open_by_url(gs_url))
     try:
         ws = sh.worksheet(tab)
     except Exception:
-        ws = sh.add_worksheet(title=tab, rows=1, cols=2)
+        ws = sh.add_worksheet(title=tab, rows=100, cols=2)
         ws.update(range_name="A1", values=[["Date", "Close"]])
 
-    have = _rows_to_df(ws.get_values("A2:B"))
+    have = _rows_to_df(_with_retry(lambda: _data_rows(ws)))
     fresh = src if have.empty else src[~src.index.isin(have.index)]
+    # B방식: 이미 있는 날짜보다 과거는 추가하지 않는다 (순서 뒤섞임 방지)
+    if not have.empty:
+        fresh = fresh[fresh.index > have.index.max()]
     if fresh.empty:
+        _PUSHED.add(key)
         return 0
     rows = [[d.strftime("%Y-%m-%d"), float(round(c, 4))]
             for d, c in fresh["Close"].items()]
-    ws.append_rows(rows, value_input_option="USER_ENTERED")
+    _with_retry(lambda: ws.append_rows(rows, value_input_option="RAW"))
+    _PUSHED.add(key)
     return len(rows)
 
 

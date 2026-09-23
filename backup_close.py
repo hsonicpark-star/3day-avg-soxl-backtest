@@ -60,7 +60,17 @@ _CACHE_TTL_SEC = 300  # 5분 — 같은 실행 내 계좌 여러 개가 연속 �
 
 
 def fetch_backup_soxl_closes(gc=None) -> pd.Series:
-    """백업 시트 DB 탭에서 SOXL 일별 종가 시리즈 반환 (index=날짜). 5분 캐시."""
+    """백업 시트 DB 탭에서 SOXL 일별 종가 시리즈 반환 (index=날짜). 5분 캐시.
+
+    예전엔 v1.8 원본 한 곳의 E:F 열을 제목 확인 없이 읽었다. 그 시트의 '티커'
+    설정이 바뀌면 다른 종목 종가가 SOXL 로 조용히 섞일 수 있었다
+    (2026-09 에 같은 시트의 QQQ 자리가 TQQQ 로 바뀐 채 만능 스위치에 섞인 사고).
+    지금은 common.pricedb.fetch_from_source_sheet 를 쓴다:
+      · 후보 시트 여러 개(v2.1 이평/중심 → v1.8 원본)를 차례로 시도
+      · 2행 구역 제목이 'SOXL 일별' 인 시트만 채택
+      · 429 할당량 초과는 잠시 기다렸다 재시도
+    전부 실패하면 RuntimeError — 호출부의 기존 예외 처리(경고만 남김)가 그대로 동작한다.
+    """
     import time as _time
     now = _time.time()
     if (_BACKUP_CACHE["series"] is not None and _BACKUP_CACHE["ts"] is not None
@@ -68,24 +78,13 @@ def fetch_backup_soxl_closes(gc=None) -> pd.Series:
         return _BACKUP_CACHE["series"]
     if gc is None:
         gc = _default_gspread_client()
-    sh = gc.open_by_url(BACKUP_SHEET_URL)
-    ws = sh.worksheet(BACKUP_DB_TAB)
-    # E열(5)=날짜, F열(6)=종가 — 행5부터 데이터
-    vals = ws.get_values("E5:F")
-    dates, closes = [], []
-    for row in vals:
-        if len(row) < 2:
-            continue
-        d = _parse_db_date(row[0])
-        if d is None:
-            continue
-        c = str(row[1]).replace("$", "").replace(",", "").strip()
-        try:
-            closes.append(float(c))
-            dates.append(d)
-        except Exception:
-            continue
-    series = pd.Series(closes, index=pd.DatetimeIndex(dates), name="Close")
+    from common.pricedb import fetch_from_source_sheet
+    df = fetch_from_source_sheet("SOXL", gc=gc)
+    if df is None or df.empty:
+        why = (df.attrs.get("reject") if df is not None else "") or "데이터 없음"
+        raise RuntimeError(f"SOXL 백업 시트 사용 불가: {why}")
+    series = df["Close"].astype(float).copy()
+    series.name = "Close"
     _BACKUP_CACHE["series"] = series
     _BACKUP_CACHE["ts"] = now
     return series
