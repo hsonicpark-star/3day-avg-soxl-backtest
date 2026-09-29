@@ -340,6 +340,18 @@ def render_sidebar() -> dict:
         p.rsi_high = c2.number_input("천장 RSI", value=float(p.rsi_high),
                                      step=1.0, key="ms_rhi")
         st.caption("주봉 종가 기준 단순평균 RSI (시트와 동일)")
+    elif p.mode_basis == "모멘텀":
+        p.mom_ticker = st.text_input("모멘텀 종목", value=p.mom_ticker,
+                                     key="ms_otk").strip().upper() or "QQQ"
+        p.mom_days = int(st.number_input("ROC 기간 (거래일)", value=int(p.mom_days),
+                                         min_value=5, max_value=400, step=5,
+                                         key="ms_oday"))
+        c1, c2 = st.columns(2)
+        p.mom_low = c1.number_input("바닥 경계 (%)", value=p.mom_low * 100,
+                                    step=0.25, format="%.2f", key="ms_olo") / 100
+        p.mom_high = c2.number_input("천장 경계 (%)", value=p.mom_high * 100,
+                                     step=0.25, format="%.2f", key="ms_ohi") / 100
+        st.caption("직전 완료 주 종가 ÷ N거래일 전 종가 − 1 = ROC")
     else:
         p.ma_ticker = st.text_input("이평선 종목", value=p.ma_ticker,
                                     key="ms_mtk").strip().upper() or "QQQ"
@@ -624,12 +636,7 @@ def render_backtest_tab(params: dict):
         f2 = go.Figure()
         f2.add_trace(go.Scatter(x=mf.index, y=mf[gap_name], name=gap_name,
                                 line=dict(color="#333", width=1.2)))
-        if p.mode_basis == "RSI":
-            lo, hi = p.rsi_low, p.rsi_high
-        elif p.mode_basis == "중심주가":
-            lo, hi = p.center_low, p.center_high
-        else:
-            lo, hi = p.ma_low, p.ma_high
+        lo, hi = p.mode_bounds()
         f2.add_hline(y=lo, line_dash="dash", line_color=_MODE_COLOR["바닥"],
                      annotation_text=f"바닥 경계 {lo}")
         f2.add_hline(y=hi, line_dash="dash", line_color=_MODE_COLOR["천장"],
@@ -759,6 +766,7 @@ def _dim_bool(box, label, key, cur):
 # ── 샘플 → ManseParams ───────────────────────────────────────
 _SCALAR_KEYS = ("center_low", "center_high", "ma_low", "ma_high",
                 "rsi_low", "rsi_high", "ma_days", "rsi_period",
+                "mom_days", "mom_low", "mom_high",
                 "profit_comp", "loss_comp", "renew_cycle",
                 "extra_range", "extra_count", "extra_step", "tier_method")
 
@@ -809,7 +817,8 @@ def _apply_sample(p0: ManseParams, s: dict) -> ManseParams:
 def _mf_key(q: ManseParams):
     return (q.mode_basis, q.center_ticker, q.center_low, q.center_high,
             q.ma_ticker, q.ma_days, q.ma_low, q.ma_high,
-            q.rsi_ticker, q.rsi_period, q.rsi_low, q.rsi_high)
+            q.rsi_ticker, q.rsi_period, q.rsi_low, q.rsi_high,
+            q.mom_ticker, q.mom_days, q.mom_low, q.mom_high)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1297,6 +1306,17 @@ def render_optimization_tab(params: dict):
             put("rsi_high", _dim_num(st, "천장 RSI", "rhi", p.rsi_high,
                                      p.rsi_high - 8, p.rsi_high + 8, 2.0, "%.1f"),
                 "RSI_천장")
+        if "모멘텀" in bases:
+            st.markdown("**모멘텀 경계** (ROC %)")
+            put("mom_days", _dim_int(st, "ROC 기간(거래일)", "oday", p.mom_days,
+                                     max(5, p.mom_days - 40), p.mom_days + 40, 10),
+                "ROC기간")
+            put("mom_low", _dim_num(st, "바닥 경계", "olo", p.mom_low * 100,
+                                    p.mom_low * 100 - 2, p.mom_low * 100 + 2,
+                                    0.25, "%.2f", 0.01), "ROC_바닥%")
+            put("mom_high", _dim_num(st, "천장 경계", "ohi", p.mom_high * 100,
+                                     p.mom_high * 100 - 3, p.mom_high * 100 + 3,
+                                     0.5, "%.2f", 0.01), "ROC_천장%")
 
         tms = st.multiselect("티어계산 방식", list(TIER_METHODS),
                              default=[p.tier_method], key="o_tm")
@@ -1439,7 +1459,7 @@ def render_optimization_tab(params: dict):
         need = {p.ticker.upper()}
         for b in (dims.get("mode_basis") or [p.mode_basis]):
             need.add({"중심주가": p.center_ticker, "이평선": p.ma_ticker,
-                      "RSI": p.rsi_ticker}[b].upper())
+                      "RSI": p.rsi_ticker, "모멘텀": p.mom_ticker}[b].upper())
         prices = _load_prices(sorted(need), params["data_source"])
         _show_health(_data_health(prices))
 
@@ -1702,6 +1722,30 @@ _MANSE_PRESETS = [
                     [(0.01, 0.051, -0.053, 20), (0.99, 0.069, 0.065, 1)]),
         },
     },
+    {
+        "label": "🚀 TQ 모멘텀 5T (TQQQ)",
+        "help": ("원본 시트 'BT 버전 v2.1_TQ모멘텀-5T' 그대로 — **TQQQ 전용**\n"
+                 "TQQQ 2015-01-02 ~ 2026-08-20 시트 대조 완료 (연도별 수익률·누적실현 일치)\n"
+                 "CAGR 96.7% | MDD -28.17% | Calmar 3.43 | 승률 92.3% | 거래 396"),
+        "ticker": "TQQQ",
+        "mode_basis": "모멘텀",
+        "profit_comp": 1.0, "loss_comp": 1.0, "renew_cycle": 1,
+        "extra_range": -0.20, "order_type": "추가 주문 건수 고정",
+        "extra_step": 2, "extra_count": 4,
+        "mom_ticker": "QQQ", "mom_days": 80, "mom_low": 0.011, "mom_high": 0.09,
+        "ma_ticker": "QQQ", "ma_days": 120, "ma_low": -0.0125, "ma_high": 0.0575,
+        "center_ticker": "QQQ", "center_low": 0.055, "center_high": 0.17,
+        "rsi_ticker": "QQQ", "rsi_period": 14, "rsi_low": 40.0, "rsi_high": 65.0,
+        "tier_method": "보유",
+        "levels": {
+            "바닥": (5, False, False, True,
+                    [(0.05, 0.1, 0.16, 85), (0.167, -0.08, 0.09, 70), (0.167, -0.08, 0.09, 70), (0.167, -0.08, 0.09, 70), (0.45, 0.03, 0.1, 55)]),
+            "중간": (5, False, False, True,
+                    [(0.45, 0, 0.135, 90), (0.05, -0.09, 0.09, 50), (0.05, -0.09, 0.09, 50), (0.05, -0.09, 0.09, 50), (0.4, 0.07, 0.17, 55)]),
+            "천장": (5, False, False, True,
+                    [(0.05, -0.035, 0.11, 65), (0.275, -0.005, 0.055, 80), (0.275, -0.005, 0.055, 80), (0.275, -0.005, 0.055, 80), (0.125, -0.065, 0.135, 170)]),
+        },
+    },
 ]
 
 
@@ -1714,6 +1758,7 @@ def preset_to_params(pre: dict, ticker: str = "SOXL",
               "ma_ticker", "ma_days", "ma_low", "ma_high",
               "center_ticker", "center_low", "center_high",
               "rsi_ticker", "rsi_period", "rsi_low", "rsi_high",
+              "mom_ticker", "mom_days", "mom_low", "mom_high",
               "tier_method"):
         if k in pre:
             setattr(p, k, pre[k])
@@ -2217,6 +2262,10 @@ def render_ordersheet_tab(params: dict):
                           format_func=lambda i: labels[i], index=0,
                           key="ms_new_acct_preset")
         st.caption(_MANSE_PRESETS[pi]["help"])
+        _pre_tk = _MANSE_PRESETS[pi].get("ticker")
+        if _pre_tk and _pre_tk != (new_tk or "SOXL"):
+            st.warning(f"이 프리셋은 **{_pre_tk}** 기준으로 검증된 값입니다. "
+                       f"종목을 {_pre_tk} 로 입력하세요 (지금: {new_tk or 'SOXL'}).")
         if st.button("✅ 계좌 등록", type="primary", key="ms_add_acct",
                      use_container_width=True):
             nm = new_name.strip()
@@ -2268,6 +2317,8 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
         _basis_sub = f"{p.ma_ticker} MA{p.ma_days}"
     elif p.mode_basis == "중심주가":
         _basis_sub = f"{p.center_ticker} 추세선"
+    elif p.mode_basis == "모멘텀":
+        _basis_sub = f"{p.mom_ticker} ROC{p.mom_days}"
     else:
         _basis_sub = f"{p.rsi_ticker} {p.rsi_period}주 RSI"
     _cards([
@@ -2334,6 +2385,19 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
             p.center_high = m2.number_input("천장 경계 (%)", value=p.center_high * 100,
                                             step=0.25, format="%.2f",
                                             key=f"ms_{sfx}_chi") / 100
+        elif p.mode_basis == "모멘텀":
+            p.mom_ticker = s3.text_input("모멘텀 종목", p.mom_ticker,
+                                         key=f"ms_{sfx}_otk").upper()
+            m1, m2, m3 = st.columns(3)
+            p.mom_days = int(m1.number_input("ROC 기간(거래일)", value=int(p.mom_days),
+                                             min_value=5, step=5,
+                                             key=f"ms_{sfx}_oday"))
+            p.mom_low = m2.number_input("바닥 경계 (%)", value=p.mom_low * 100,
+                                        step=0.25, format="%.2f",
+                                        key=f"ms_{sfx}_olo") / 100
+            p.mom_high = m3.number_input("천장 경계 (%)", value=p.mom_high * 100,
+                                         step=0.25, format="%.2f",
+                                         key=f"ms_{sfx}_ohi") / 100
         else:
             p.rsi_ticker = s3.text_input("RSI 종목", p.rsi_ticker,
                                          key=f"ms_{sfx}_rtk").upper()
@@ -2517,15 +2581,9 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
     mode = plan["모드"] or ""
     mfr = res["mode_frame"]
     gap_name = mfr.attrs.get("gap_name", "이격도")
-    if p.mode_basis == "RSI":
-        _lo, _hi = p.rsi_low, p.rsi_high
-        _fv = lambda v: f"{v:.1f}"
-    elif p.mode_basis == "중심주가":
-        _lo, _hi = p.center_low, p.center_high
-        _fv = lambda v: f"{v*100:+.2f}%"
-    else:
-        _lo, _hi = p.ma_low, p.ma_high
-        _fv = lambda v: f"{v*100:+.2f}%"
+    _lo, _hi = p.mode_bounds()
+    _fv = ((lambda v: f"{v:.1f}") if p.mode_basis == "RSI"
+           else (lambda v: f"{v*100:+.2f}%"))
     _gv = mfr[gap_name].dropna() if gap_name in mfr.columns else pd.Series(dtype=float)
     _gnow = float(_gv.iloc[-1]) if len(_gv) else None
     _gprev = float(_gv.iloc[-2]) if len(_gv) > 1 else None
@@ -2916,7 +2974,8 @@ def render_portfolio_section(params: dict):
                         continue
 
                     if kind == "preset":
-                        tk = (params or {}).get("ticker") or "SOXL"
+                        tk = (obj.get("ticker") or (params or {}).get("ticker")
+                              or "SOXL")
                         p = preset_to_params(obj, tk, cap)
                     else:
                         p = _acct_params(obj)
@@ -3160,6 +3219,12 @@ _BASIS_INFO = {
         "note": "최근 N**주**(일이 아님) 동안 오른 힘이 전체의 몇 %인지를 0~100 으로 "
                 "나타냅니다. 0~100 에 갇힌 값이라 드리프트가 구조적으로 불가능합니다.",
     },
+    "모멘텀": {
+        "ref": "지표종목의 **N거래일 전 종가** (자기 자신의 과거 가격)",
+        "how": "ROC = 직전 완료 주 종가 ÷ N거래일 전 종가 − 1",
+        "note": "추세선이나 평균선 대신 '최근 N거래일 동안 얼마나 올랐나'를 봅니다. "
+                "이평선보다 방향 전환에 빠르게 반응합니다 (원본 시트 TQ모멘텀-5T).",
+    },
 }
 
 
@@ -3183,8 +3248,8 @@ def render_mode_basis_section(params: dict):
     p: ManseParams = params["mp"]
     st.markdown("---")
     st.subheader("🔍 모드 판단 기준 자세히 보기")
-    st.caption("바닥·중간·천장을 정하는 세 가지 기준을 최신 종가로 계산해 보여줍니다. "
-               "로직은 셋 다 같고 **무엇을 자로 쓰느냐**만 다릅니다.")
+    st.caption("바닥·중간·천장을 정하는 네 가지 기준을 최신 종가로 계산해 보여줍니다. "
+               "로직은 모두 같고 **무엇을 자로 쓰느냐**만 다릅니다.")
 
     basis = st.radio("기준 선택", MODE_BASES, horizontal=True, key="ms_basis_view",
                      index=MODE_BASES.index(p.mode_basis)
@@ -3213,9 +3278,7 @@ def render_mode_basis_section(params: dict):
         st.warning("지표를 계산할 데이터가 부족합니다.")
         return
     is_rsi = (basis == "RSI")
-    low, high = ((q.rsi_low, q.rsi_high) if is_rsi else
-                 (q.center_low, q.center_high) if basis == "중심주가" else
-                 (q.ma_low, q.ma_high))
+    low, high = q.mode_bounds()
     st_ = _basis_stats(mf, gapcol)
     fmt = (lambda v: f"{v:.1f}") if is_rsi else (lambda v: f"{v*100:+.1f}%")
 
@@ -3353,13 +3416,14 @@ def render_intro_tab(params: dict):
 
 ---
 
-#### 1️⃣ 모드 판정 — 3가지 기준 중 택1
+#### 1️⃣ 모드 판정 — 4가지 기준 중 택1
 
 | 기준 | 지표 | 구간 판정 |
 |---|---|---|
 | **중심주가** | 지표종목 주봉종가 ÷ 중심주가(월복리 추세선) − 1 | 이격도 < 바닥범위 → 바닥 |
 | **이평선** | 지표종목 주봉종가 ÷ N일 이동평균 − 1 | 바닥범위 ≤ 이격도 ≤ 천장범위 → 중간 |
 | **RSI** | 지표종목 주봉 N기간 단순 RSI | 이격도 > 천장범위 → 천장 |
+| **모멘텀** | 지표종목 주봉종가 ÷ N거래일 전 종가 − 1 (ROC) | (경계 규칙 동일) |
 
 > **N주차의 모드는 N−1주차 지표로 결정**됩니다. 미래 데이터를 쓰지 않습니다.
 > 중심주가는 2016년 1월을 기준으로 한 월복리 추세선입니다
@@ -3451,10 +3515,11 @@ def render_intro_tab(params: dict):
 | **이평선 모드 (1일)** | 원본 시트(이평-2티어_1일) 전 구간 대조 | 동일 구간 **3,931 거래일** 전부 일치 (최종자산 $2,872,676,172) |
 | **중심주가 모드** | 원본 시트(중심주가-2티어) 전 구간 대조 | 동일 구간 **3,932 거래일 전부 일치** |
 | **RSI 모드** | 원본 시트(RSI-2티어) 전 구간 대조 | 2011-01-03 ~ 2026-08-20 **3,931 거래일** 모드·티어·주문가·수량·보유 **0 오차**, 예수금·총자산·투자금 최대오차 $0.5(시트 정수 표시 한계) |
+| **모멘텀 모드 (TQ 5T)** | 원본 시트(BT v2.1_TQ모멘텀-5T) 대조 · TQQQ | 2015-01-02 ~ 2026-08-20 연도별 수익률 11개년 **소수 2자리까지 일치**, 누적실현 $139,685,998 · 최종자산 $131,424,866 **1달러까지 일치**, 구간별 거래 82/98/216 일치 |
 | **RSI 지표** | 시트 DB탭이 계산해 둔 `WRSI` 열과 대조 | **855주** 비교, 최대오차 0.005 (= 시트 표시 소수 2자리 반올림 한계) |
 
 매매 로직(티어 결정·주문가·체결·사다리 수량·MOC 청산·복리 갱신)은 **모드와 무관하게 공통**이며,
-세 가지 모드 기준(이평선·중심주가·RSI) 모두 원본 시트로 전 구간 검증되었습니다.
+네 가지 모드 기준(이평선·중심주가·RSI·모멘텀) 모두 원본 시트로 전 구간 검증되었습니다.
 """)
 
     st.markdown("#### 📦 내장 프리셋 성과")
@@ -3469,6 +3534,13 @@ def render_intro_tab(params: dict):
 | 🌀 RSI형 | RSI | $1,124,382,119 | 110.48% | -38.99% | 2.83 | 55.4% | 2,782 | **1.40** |
 
 **4종 모두 원본 시트로 전 구간(3,931 거래일) 검증 완료**되었습니다.
+
+| 프리셋 (다른 조건) | 모드 | 최종자산 | CAGR | MDD | Calmar | 승률 | 거래 |
+|---|---|---|---|---|---|---|---|
+| 🚀 TQ 모멘텀 5T | 모멘텀 (QQQ ROC80) | $131,424,866 | 96.7% | -28.17% | 3.43 | 92.3% | 396 |
+
+> TQ 모멘텀 5T 는 **TQQQ · 원금 $50,000 · 2015-01-02 ~ 2026-08-20 · 복리 100%/100%** 기준
+> (원본 시트 BT v2.1_TQ모멘텀-5T 와 동일 조건). 위 SOXL 표와 직접 비교하지 마세요.
 
 > ⚠️ 이 수치는 **거래비용 0% 가정**입니다. 보유기간이 짧아 비용에 민감하니
 > 사이드바에서 실제 수수료를 넣고 다시 확인하세요.
@@ -3516,6 +3588,9 @@ def render_perf_analysis(params: dict):
         elif up.mode_basis == "중심주가":
             sw = (f"중심주가 {up.center_ticker} · "
                   f"바닥 &lt; {up.center_low*100:+.2f}% · 천장 &gt; {up.center_high*100:+.2f}%")
+        elif up.mode_basis == "모멘텀":
+            sw = (f"모멘텀 {up.mom_ticker} ROC{up.mom_days} · "
+                  f"바닥 &lt; {up.mom_low*100:+.2f}% · 천장 &gt; {up.mom_high*100:+.2f}%")
         else:
             sw = (f"RSI {up.rsi_ticker} {up.rsi_period}주 · "
                   f"바닥 &lt; {up.rsi_low:.0f} · 천장 &gt; {up.rsi_high:.0f}")
@@ -3644,12 +3719,7 @@ def render_perf_analysis(params: dict):
     mfr = res["mode_frame"]
     gap_name = mfr.attrs.get("gap_name", "이격도")
     st.markdown(f"#### 🔄 {up.indicator_ticker()} 주봉 {gap_name} & 구간 변화")
-    if up.mode_basis == "RSI":
-        lo, hi = up.rsi_low, up.rsi_high
-    elif up.mode_basis == "중심주가":
-        lo, hi = up.center_low, up.center_high
-    else:
-        lo, hi = up.ma_low, up.ma_high
+    lo, hi = up.mode_bounds()
     f2 = go.Figure()
     f2.add_trace(go.Scatter(x=mfr.index, y=mfr[gap_name], name=gap_name,
                             line=dict(color="#555", width=1.3)))

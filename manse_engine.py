@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 
 LEVELS = ("바닥", "중간", "천장")
-MODE_BASES = ("중심주가", "이평선", "RSI")
+MODE_BASES = ("중심주가", "이평선", "RSI", "모멘텀")
 TIER_METHODS = ("보유", "빈자리")
 ORDER_TYPES = ("추가 주문 건수 고정", "추가 매수 갯수 고정")
 
@@ -134,7 +134,7 @@ class ManseParams:
     extra_count: int = 4           # 추가 주문 건수 (건수 고정 방식)
 
     # ── 스위치 세팅 ──
-    mode_basis: str = "이평선"     # 중심주가 / 이평선 / RSI
+    mode_basis: str = "이평선"     # 중심주가 / 이평선 / RSI / 모멘텀
     center_ticker: str = "QQQ"     # 중심주가 종목
     center_low: float = 0.055      # 바닥 범위
     center_high: float = 0.17      # 천장 범위
@@ -146,6 +146,10 @@ class ManseParams:
     rsi_period: int = 14
     rsi_low: float = 40.0          # 바닥 RSI
     rsi_high: float = 65.0         # 천장 RSI
+    mom_ticker: str = "QQQ"        # 모멘텀(ROC) 종목
+    mom_days: int = 80             # ROC 기간 (거래일)
+    mom_low: float = 0.011         # 바닥 경계 (ROC < 이 값 → 바닥)
+    mom_high: float = 0.09         # 천장 경계 (ROC > 이 값 → 천장)
     tier_method: str = "보유"      # 티어계산 방식: 보유 / 빈자리
 
     # ── 구간별 파라미터 ──
@@ -158,7 +162,15 @@ class ManseParams:
     def indicator_ticker(self) -> str:
         return {"중심주가": self.center_ticker,
                 "이평선": self.ma_ticker,
-                "RSI": self.rsi_ticker}.get(self.mode_basis, self.ma_ticker)
+                "RSI": self.rsi_ticker,
+                "모멘텀": self.mom_ticker}.get(self.mode_basis, self.ma_ticker)
+
+    def mode_bounds(self) -> tuple:
+        """현재 모드 기준의 (바닥 경계, 천장 경계)."""
+        return {"중심주가": (self.center_low, self.center_high),
+                "RSI": (self.rsi_low, self.rsi_high),
+                "모멘텀": (self.mom_low, self.mom_high)}.get(
+                    self.mode_basis, (self.ma_low, self.ma_high))
 
     def needed_tickers(self) -> list:
         tks = {self.ticker.upper(), self.indicator_ticker().upper()}
@@ -308,6 +320,14 @@ def build_mode_frame(p: ManseParams, prices: dict) -> pd.DataFrame:
         gap = simple_rsi(wk, p.rsi_period)
         low, high = p.rsi_low, p.rsi_high
         ref_name, gap_name = "-", "wRSI"
+    elif p.mode_basis == "모멘텀":
+        # ROC = 주봉종가 / N거래일 전 종가 - 1   (시트 TQ모멘텀: RECORD V·W·X)
+        # 시트는 주문일 기준 '직전 완료 주 마지막 종가'와 그로부터 N행 전 DB 종가를
+        # 비교한다 → 여기서는 그 주의 판정으로 계산하고 '모드'에서 1주 shift 한다.
+        ref = close.dropna().shift(int(p.mom_days)).round(2).reindex(wk.index)
+        gap = out["주봉종가"] / ref - 1.0
+        low, high = p.mom_low, p.mom_high
+        ref_name, gap_name = f"{p.mom_days}일전", "ROC"
     else:  # 이평선
         ma_daily = close.rolling(p.ma_days).mean().round(2)
         ref = ma_daily.reindex(wk.index)
@@ -781,6 +801,50 @@ def _next_trading_day(last_date) -> pd.Timestamp:
 
 
 
+def ladder_orders(seed: float, bid: float, tier: int, lp: LevelParam,
+                  p: ManseParams, cash: float = None) -> list:
+    """당일 추가(사다리) 매수 주문 [(가격, 수량), ...] — 시트 EXTRA 탭 Q:R / T:U.
+
+    원본 시트 ORDER·BOARD 탭은 본 주문(1회시드÷주문가) 아래에 이 주문들을 깐다.
+      · 없음 : 최대 티어(=시드분할수) · 정량매수 · 1회시드가 예수금으로 제한된 날
+      · 건수 고정 : 간격 = INT((시드/하단가 − 시드/주문가) / 건수)
+                   가격k = ROUNDDOWN(시드 / (본수량 + k×간격), 2),  k = 1..건수
+      · 갯수 고정 : 가격k = ROUNDDOWN(시드 / (본수량 + k×간격), 2) 가 하단가 이상인 동안
+    ※ 체결 시뮬레이션(calc_qty)은 시트 RECORD 를 따르므로 건수 고정에서 마지막
+      한 칸을 세지 않는다 — 주문표(시트 ORDER)와 백테스트(시트 RECORD)의 원본 차이.
+    """
+    if bid is None or bid <= 0 or seed <= 0:
+        return []
+    if tier >= lp.split or lp.fixed_qty:
+        return []
+    if cash is not None and seed >= cash - 1e-9:
+        return []
+    q0 = sheet_int(seed / bid)
+    bot = floor2(bid * (1.0 + p.extra_range))
+    if q0 <= 0 or bot <= 0:
+        return []
+    out = []
+    if p.order_type == "추가 주문 건수 고정":
+        n = int(p.extra_count)
+        if n <= 0:
+            return []
+        step = sheet_int((seed / bot - seed / bid) / n)
+        if step <= 0:
+            return []
+        for k in range(1, n + 1):
+            out.append((floor2(seed / (q0 + k * step)), step))
+    else:
+        step = int(p.extra_step)
+        if step <= 0:
+            return []
+        for k in range(1, 51):
+            px = floor2(seed / (q0 + k * step))
+            if px < bot:
+                break
+            out.append((px, step))
+    return out
+
+
 def build_order_plan(prices: dict, p: ManseParams, bt_result: dict = None,
                      capital: float = None, held: list = None) -> dict:
     """다음 거래일 주문 계산.
@@ -927,5 +991,10 @@ def build_order_plan(prices: dict, p: ManseParams, bt_result: dict = None,
             "수량": est_qty, "금액": round(bid * est_qty, 2),
             "손절예정": None,
         })
+        for k, (px, q) in enumerate(ladder_orders(seed, bid, tier, lp, p, cash), 1):
+            out["orders"].append({
+                "구분": f"매수 LOC (티어{tier}·추가{k})", "티어": tier, "주문가": px,
+                "수량": q, "금액": round(px * q, 2), "손절예정": None,
+            })
     _add_sell_orders()
     return out

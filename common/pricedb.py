@@ -391,6 +391,7 @@ GSHEET_TAB_PREFIX = "pricedb_"
 SOURCE_DB_COLS = {
     "SOXL": ("E", "F"),
     "QQQ": ("N", "O"),
+    "TQQQ": ("E", "F"),   # TQ모멘텀 시트들 (투자 종목=TQQQ) — 제목 검증으로 SOXL 과 구분
 }
 
 # 이어붙일 때 허용하는 1거래일 가격 비율 — 이 밖이면 다른 종목/깨진 값으로 본다.
@@ -554,6 +555,8 @@ SOURCE_SHEET_KEYS = [
     "1XzJRgjhmJfidhI-mUIN7DyLTnK-G9y0ATCj5CfVIqNQ",   # 쪼꼬야옹 만능 스위치 v2.1_이평-pjh
     "1stIs66YbtEvkzdxXp_Yb3BLTBvGR3u2FyA07D5IyA4U",   # 쪼꼬야옹 만능 스위치 v2.1_중심-pjh
     "1GY1LvAPrqvHEC47Flt-atcikwx1gd8wH-mMnnnFwciM",   # 쪼꼬야옹 만능 스위치 v1.8의 원본
+    # TQQQ 용 (E:F = TQQQ 일별). SOXL 요청은 제목 검증에서 거부되어 위 시트로 간다.
+    "1OeKUbACxK5H69QeoYCyew7SvANW3P9RgUZblfj7FsZ4",   # v2.1_TQ모멘텀-5T (주문표, 매일 갱신)
 ]
 
 # 같은 실행에서 계좌·사용자가 여러 번 불러도 시트는 티커당 1번만 읽는다

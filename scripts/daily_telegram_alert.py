@@ -1856,7 +1856,18 @@ def sanity_check_manse(plan: dict, ticker: str, p) -> list:
         tier = o.get("티어")
         if tier is not None and "티어" not in label:
             label = f"{label}(T{tier})"
-        if o.get("주문가") is not None:      # MOC 는 지정가가 없다
+        if o.get("주문가") is not None and "·추가" in label:
+            # 추가(사다리) 매수는 설계상 본 주문가에서 '추가 매수 범위'(예 -20%)까지
+            # 내려간다 → 전일종가 ±20% 대신 [하단가, 본 주문가] 안인지 본다.
+            try:
+                _bid = float(plan.get("매수주문가") or 0)
+                _bot = _bid * (1.0 + float(getattr(p, "extra_range", -0.2))) - 0.01
+                if _bid > 0 and not (_bot <= float(o["주문가"]) <= _bid):
+                    issues.append(f"⚠️ {label} ${float(o['주문가']):.2f} 가 "
+                                  f"추가매수 범위(${_bot:.2f}~${_bid:.2f}) 밖")
+            except Exception:
+                pass
+        elif o.get("주문가") is not None:    # MOC 는 지정가가 없다
             issues.extend(_check_price_sanity(o.get("주문가"), prev_close, label))
 
         qty = o.get("수량")
