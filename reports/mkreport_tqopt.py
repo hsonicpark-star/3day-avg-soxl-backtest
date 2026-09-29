@@ -98,7 +98,9 @@ TW = "\n".join(w_rows)
 n_changed = 43
 
 head_css = io.open(J("_css.txt"), encoding="utf-8").read().replace(
-    "<title>반반 투자 성과 분석</title>", "<title>TQ 모멘텀 최적화 검증</title>")
+    "<title>반반 투자 성과 분석</title>", "<title>TQ 모멘텀 최적화 검증</title>").replace(
+    "--panel:#0B1118; --panel-rule:#26303C;",
+    "--panel:#0B1118; --panel-rule:#26303C; color-scheme:dark;")   # 다크에서 스크롤바도 어둡게
 
 body = f"""
 <div class="wrap">
