@@ -151,6 +151,7 @@ class ManseParams:
     mom_low: float = 0.011         # 바닥 경계 (ROC < 이 값 → 바닥)
     mom_high: float = 0.09         # 천장 경계 (ROC > 이 값 → 천장)
     tier_method: str = "보유"      # 티어계산 방식: 보유 / 빈자리
+    min_one_share: bool = False    # 1회시드로 1주도 못 사면 1주는 산다 (예수금 한도 · 앱 전용 옵션)
 
     # ── 구간별 파라미터 ──
     levels: dict = field(default_factory=dict)   # {"바닥": LevelParam, ...}
@@ -503,6 +504,11 @@ def run_backtest(prices: dict, p: ManseParams, start=None, end=None,
         seed = None
         if tp is not None and not over_split:
             seed = min(seed_base * tp.seed_w, cash)
+            if p.min_one_share and seed > 0:
+                # 비중이 아주 작은 '스위치' 티어가 계좌 크기와 무관하게 넘어가도록
+                one = floor2(c_prev * (1.0 + tp.buy_gap))
+                if seed < one <= cash:
+                    seed = one
 
         # ── 매수 주문가 (AC) ──
         bid = None
@@ -963,6 +969,8 @@ def build_order_plan(prices: dict, p: ManseParams, bt_result: dict = None,
 
     seed = min(seed_base * tp.seed_w, cash)
     odp = floor2(last_close * (1.0 + tp.buy_gap))
+    if p.min_one_share and 0 < seed < odp <= cash:
+        seed = odp            # 백테스트와 같은 규칙: 1주는 산다
     bid = odp
     note = ""
     if odp > seed:

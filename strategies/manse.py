@@ -370,6 +370,10 @@ def render_sidebar() -> dict:
                                  key="ms_tmeth",
                                  help="보유 = 현재 보유 건수 + 1 / "
                                       "빈자리 = 비어 있는 가장 낮은 티어")
+    p.min_one_share = st.checkbox(
+        "최소 1주 매수", value=bool(p.min_one_share), key="ms_min1",
+        help="1회 시드로 1주도 못 사면 (예수금 안에서) 1주는 산다. 비중이 아주 작은 "
+             "'스위치' 티어가 계좌 크기와 무관하게 다음 티어로 넘어가게 한다.")
 
     st.markdown("---")
 
@@ -1760,7 +1764,7 @@ _MANSE_PRESETS = [
         "ma_ticker": "QQQ", "ma_days": 120, "ma_low": -0.0125, "ma_high": 0.0575,
         "center_ticker": "QQQ", "center_low": 0.055, "center_high": 0.17,
         "rsi_ticker": "QQQ", "rsi_period": 14, "rsi_low": 40.0, "rsi_high": 65.0,
-        "tier_method": "보유",
+        "tier_method": "보유", "min_one_share": True,
         "levels": {
             "바닥": (5, True, False, False,
                     [(0.00026055280440593313, 0.2025, 0.145, 98),
@@ -1794,7 +1798,7 @@ def preset_to_params(pre: dict, ticker: str = "SOXL",
               "ma_ticker", "ma_days", "ma_low", "ma_high",
               "center_ticker", "center_low", "center_high",
               "rsi_ticker", "rsi_period", "rsi_low", "rsi_high",
-              "mom_ticker", "mom_days", "mom_low", "mom_high",
+              "mom_ticker", "mom_days", "mom_low", "mom_high", "min_one_share",
               "tier_method"):
         if k in pre:
             setattr(p, k, pre[k])
@@ -2395,6 +2399,9 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
         p.tier_method = s2.selectbox("티어계산", TIER_METHODS,
                                      index=TIER_METHODS.index(p.tier_method),
                                      key=f"ms_{sfx}_tm")
+        p.min_one_share = s2.checkbox("최소 1주 매수", value=bool(p.min_one_share),
+                                      key=f"ms_{sfx}_min1",
+                                      help="시드로 1주도 못 사면 1주는 산다 (작은 비중 티어용)")
         if p.mode_basis == "이평선":
             p.ma_ticker = s3.text_input("이평선 종목", p.ma_ticker,
                                         key=f"ms_{sfx}_mtk").upper()
