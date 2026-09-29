@@ -1,0 +1,146 @@
+{
+ "ticker": "TQQQ",
+ "principal": 50000.0,
+ "profit_comp": 1.0,
+ "loss_comp": 1.0,
+ "renew_cycle": 1,
+ "fee": 0.0,
+ "sec_fee": 2.78e-05,
+ "extra_range": -0.2,
+ "order_type": "추가 주문 건수 고정",
+ "extra_step": 2,
+ "extra_count": 4,
+ "mode_basis": "모멘텀",
+ "center_ticker": "QQQ",
+ "center_low": 0.055,
+ "center_high": 0.17,
+ "ma_ticker": "QQQ",
+ "ma_days": 120,
+ "ma_low": -0.0125,
+ "ma_high": 0.0575,
+ "rsi_ticker": "QQQ",
+ "rsi_period": 14,
+ "rsi_low": 40.0,
+ "rsi_high": 65.0,
+ "mom_ticker": "QQQ",
+ "mom_days": 80,
+ "mom_low": 0.011,
+ "mom_high": 0.09,
+ "tier_method": "보유",
+ "levels": {
+  "바닥": {
+   "split": 5,
+   "fixed_qty": true,
+   "no_buy_on_sell_day": false,
+   "moc_day_buy": true,
+   "tiers": [
+    {
+     "seed_w": 0.05,
+     "buy_gap": 0.1,
+     "sell_gap": 0.16,
+     "stop_days": 85
+    },
+    {
+     "seed_w": 0.167,
+     "buy_gap": -0.08,
+     "sell_gap": 0.09,
+     "stop_days": 70
+    },
+    {
+     "seed_w": 0.167,
+     "buy_gap": -0.08,
+     "sell_gap": 0.09,
+     "stop_days": 70
+    },
+    {
+     "seed_w": 0.167,
+     "buy_gap": -0.08,
+     "sell_gap": 0.09,
+     "stop_days": 70
+    },
+    {
+     "seed_w": 0.45,
+     "buy_gap": 0.03,
+     "sell_gap": 0.1,
+     "stop_days": 55
+    }
+   ]
+  },
+  "중간": {
+   "split": 5,
+   "fixed_qty": true,
+   "no_buy_on_sell_day": false,
+   "moc_day_buy": true,
+   "tiers": [
+    {
+     "seed_w": 0.45,
+     "buy_gap": 0,
+     "sell_gap": 0.135,
+     "stop_days": 90
+    },
+    {
+     "seed_w": 0.05,
+     "buy_gap": -0.09,
+     "sell_gap": 0.09,
+     "stop_days": 50
+    },
+    {
+     "seed_w": 0.05,
+     "buy_gap": -0.09,
+     "sell_gap": 0.09,
+     "stop_days": 50
+    },
+    {
+     "seed_w": 0.05,
+     "buy_gap": -0.09,
+     "sell_gap": 0.09,
+     "stop_days": 50
+    },
+    {
+     "seed_w": 0.4,
+     "buy_gap": 0.07,
+     "sell_gap": 0.17,
+     "stop_days": 55
+    }
+   ]
+  },
+  "천장": {
+   "split": 5,
+   "fixed_qty": true,
+   "no_buy_on_sell_day": false,
+   "moc_day_buy": true,
+   "tiers": [
+    {
+     "seed_w": 0.05,
+     "buy_gap": -0.035,
+     "sell_gap": 0.11,
+     "stop_days": 65
+    },
+    {
+     "seed_w": 0.275,
+     "buy_gap": -0.005,
+     "sell_gap": 0.055,
+     "stop_days": 80
+    },
+    {
+     "seed_w": 0.275,
+     "buy_gap": -0.005,
+     "sell_gap": 0.055,
+     "stop_days": 80
+    },
+    {
+     "seed_w": 0.275,
+     "buy_gap": -0.005,
+     "sell_gap": 0.055,
+     "stop_days": 80
+    },
+    {
+     "seed_w": 0.125,
+     "buy_gap": -0.065,
+     "sell_gap": 0.135,
+     "stop_days": 170
+    }
+   ]
+  }
+ }
+}
