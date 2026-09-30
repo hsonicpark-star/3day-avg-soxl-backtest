@@ -452,7 +452,15 @@ def run_backtest(prices: dict, p: ManseParams, start=None, end=None,
         sel = sel & (full_idx <= pd.Timestamp(end))
     idx_positions = np.flatnonzero(sel)
     if len(idx_positions) == 0:
-        return {"error": "선택한 기간에 거래일이 없습니다."}
+        # 시작일이 마지막 확정 종가 뒤 (예: 오늘 시작한 새 계좌) → 아직 거래가 없다.
+        # 시작 직전 거래일에 '원금 전액 현금 · 보유 0' 인 1행짜리 결과를 돌려주면
+        # 주문표(build_order_plan)가 그 상태에서 다음 거래일 주문을 만든다.
+        before = (np.flatnonzero(full_idx < pd.Timestamp(start))
+                  if start is not None else np.array([], dtype=int))
+        if light or not len(before):
+            return {"error": "선택한 기간에 거래일이 없습니다."}
+        return _prestart_result(close_s, int(before[-1]), p, mode_frame,
+                                mode_by_week, pd.Timestamp(start), cash_flows)
 
     first_pos = int(idx_positions[0])
     dates = full_idx[idx_positions]
@@ -670,6 +678,37 @@ def run_backtest(prices: dict, p: ManseParams, start=None, end=None,
     return {"df": df, "trades": trades, "metrics": metrics,
             "by_level": by_level, "by_tier": by_tier,
             "mode_frame": mode_frame, "params": p}
+
+
+_TRADE_COLS = ["매수일", "구간", "티어", "매수가", "수량", "매수대금", "매도목표가",
+               "손절예정", "매도일", "매도가", "청산", "보유일", "실현손익", "수익률"]
+
+
+def _prestart_result(close_s, pos: int, p: ManseParams, mode_frame, mode_by_week,
+                     start: pd.Timestamp, cash_flows=None) -> dict:
+    """거래 시작 전 상태 (원금 현금 · 보유 0) — 시작 직전 거래일 1행."""
+    d0 = close_s.index[pos]
+    c0 = float(close_s.values[pos])
+    cp = float(close_s.values[pos - 1]) if pos > 0 else None
+    cash = float(p.principal)
+    for d, f in (cash_flows or {}).items():          # 시작 전에 넣은 입출금
+        if pd.Timestamp(d).normalize() <= d0:
+            cash += float(f.get("deposit", 0.0))
+    df = pd.DataFrame([{
+        "날짜": d0, "모드": mode_by_week.get(week_key(d0), ""), "티어": None,
+        "매수목표": None, "매도목표": None, "손절일수": None,
+        "1회시드": None, "매수주문가": None, "종가": c0,
+        "등락률": (c0 / cp - 1.0) if cp else None,
+        "매수체결": None, "수량": None, "매수대금": None, "매도목표가": None,
+        "손절예정": None, "매도일": None, "매도체결": None, "실현손익": None,
+        "당일실현": None, "보유": 0, "평가금": 0.0, "예수금": cash, "총자산": cash,
+        "복리금액": None, "투자금갱신": round(cash, 2),
+    }]).set_index("날짜")
+    trades = pd.DataFrame(columns=_TRADE_COLS)
+    return {"df": df, "trades": trades,
+            "metrics": _calc_metrics(df, trades, p, df.index),
+            "by_level": pd.DataFrame(), "by_tier": pd.DataFrame(),
+            "mode_frame": mode_frame, "params": p, "prestart": start}
 
 
 def _light_metrics(total_arr, positions, p: ManseParams, dates) -> dict:
@@ -906,6 +945,11 @@ def build_order_plan(prices: dict, p: ManseParams, bt_result: dict = None,
     out = {"기준일": last_date, "전일종가": last_close, "주문일": nxt,
            "모드": mode, "예수금": cash, "투자금": seed_base,
            "보유": held, "orders": [], "note": "", "message": ""}
+    pre = (bt_result or {}).get("prestart")
+    if pre is not None and nxt.normalize() < pd.Timestamp(pre).normalize():
+        out["message"] = (f"시작일({pd.Timestamp(pre).date()}) 전입니다 — "
+                          f"{nxt.date()} 주문은 없습니다.")
+        return out
 
     def _stop_ts(h):
         """손절예정일 → Timestamp (미지정/NaT 이면 None)."""

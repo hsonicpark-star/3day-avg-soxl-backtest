@@ -1649,7 +1649,7 @@ _MANSE_PRESETS = [
         "ma_ticker": "QQQ", "ma_days": 120, "ma_low": -0.0125, "ma_high": 0.0575,
         "center_ticker": "QQQ", "center_low": 0.055, "center_high": 0.17,
         "rsi_ticker": "QQQ", "rsi_period": 14, "rsi_low": 40.0, "rsi_high": 65.0,
-        "tier_method": "보유",
+        "tier_method": "보유", "min_one_share": True,
         "levels": {
             "바닥": (2, False, False, True,
                     [(0.01, -0.008, 0.015, 36), (0.99, 0.079, 0.032, 1)]),
@@ -1672,7 +1672,7 @@ _MANSE_PRESETS = [
         "ma_ticker": "QQQ", "ma_days": 120, "ma_low": -0.0175, "ma_high": 0.0575,
         "center_ticker": "QQQ", "center_low": 0.055, "center_high": 0.17,
         "rsi_ticker": "QQQ", "rsi_period": 14, "rsi_low": 40.0, "rsi_high": 65.0,
-        "tier_method": "보유",
+        "tier_method": "보유", "min_one_share": True,
         "levels": {
             "바닥": (2, False, False, True,
                     [(0.01, -0.022, 0.029, 32), (0.99, 0.072, 0.017, 1)]),
@@ -1694,7 +1694,7 @@ _MANSE_PRESETS = [
         "ma_ticker": "QQQ", "ma_days": 120, "ma_low": -0.10, "ma_high": 0.05,
         "center_ticker": "QQQ", "center_low": 0.055, "center_high": 0.17,
         "rsi_ticker": "QQQ", "rsi_period": 14, "rsi_low": 40.0, "rsi_high": 65.0,
-        "tier_method": "보유",
+        "tier_method": "보유", "min_one_share": True,
         "levels": {
             "바닥": (2, False, False, True,
                     [(0.01, -0.01, 0.02, 27), (0.99, 0.045, 0.0001, 1)]),
@@ -1716,7 +1716,7 @@ _MANSE_PRESETS = [
         "ma_ticker": "QQQ", "ma_days": 120, "ma_low": -0.0125, "ma_high": 0.0575,
         "center_ticker": "QQQ", "center_low": 0.055, "center_high": 0.17,
         "rsi_ticker": "QQQ", "rsi_period": 14, "rsi_low": 36.0, "rsi_high": 60.0,
-        "tier_method": "보유",
+        "tier_method": "보유", "min_one_share": True,
         "levels": {
             "바닥": (2, False, False, True,
                     [(0.01, -0.003, 0.053, 22), (0.99, 0.101, -0.026, 1)]),
