@@ -4571,8 +4571,9 @@ def render_settings_tab():
             "🔗 여러 계좌 주문을 합쳐서 전송 (한 증권계좌 운용)",
             value=_merge_default, key="ms_merge_tungchigi_ck",
             help="한 증권계좌에서 여러 전략을 함께 굴릴 때 체크하세요. "
-                 "계좌별 탭 대신 아래 지정한 탭 하나에 '전 계좌 합산 퉁치기' 주문을 "
-                 "기록합니다. 종목이 같은 계좌끼리만 합쳐집니다.")
+                 "같은 종목 계좌끼리 합쳐 아래 탭에 '합산 퉁치기' 주문을 기록합니다. "
+                 "종목에 계좌가 하나뿐이면(예: TQQQ 1개) 그 계좌 탭에 따로 기록하고, "
+                 "합칠 종목이 여럿이면 탭 이름 뒤에 _SOXL · _TQQQ 처럼 종목을 붙입니다.")
         merge_sheet = st.text_input(
             "통합 주문 시트 탭 이름", key="ms_merge_sheet_cfg",
             value=str(_usercfg.get("ms_merge_sheet", "") if _IS_CLOUD_val
@@ -4580,8 +4581,9 @@ def render_settings_tab():
             disabled=not use_merge,
             help="합산 주문을 기록할 탭 이름 (계좌별 탭과 다른 이름 권장).")
         if use_merge:
-            st.caption("⚠️ 합산 전송이 켜지면 **계좌별 개별 탭에는 기록하지 않습니다** "
-                       "— 같은 주문을 두 번 넣는 것을 막기 위해서입니다.")
+            st.caption("⚠️ 합산 전송이 켜지면 **합쳐지는 계좌는 개별 탭에 기록하지 않습니다** "
+                       "— 같은 주문을 두 번 넣는 것을 막기 위해서입니다. "
+                       "다른 종목과 짝이 없는 계좌는 자기 탭에 그대로 기록됩니다.")
 
         # ── 계좌별 시트 이름 매핑 ──
         # ⚠️ 종목이 아니라 **계좌** 기준이어야 한다.
