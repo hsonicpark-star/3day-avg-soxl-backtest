@@ -105,6 +105,24 @@ def _default_sheet_name(acct_name: str, ticker: str) -> str:
     return f"manse_{str(acct_name).strip()}" if acct_name else str(ticker).upper()
 
 
+def _merge_sheet_setting() -> str:
+    """통합(합산) 주문 탭 이름 — 개인설정·통합 퉁치기 탭·크론이 같은 값을 쓴다."""
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        v = st.session_state.get("user_settings", {}).get("ms_merge_sheet", "")
+    else:
+        v = load_config().get("ms_merge_sheet", "")
+    return str(v or "").strip() or "manse_통합"
+
+
+def _save_merge_sheet_setting(name: str):
+    name = str(name).strip()
+    if _IS_CLOUD and st.session_state.get("logged_in"):
+        _save_user_settings_to_sheet(st.session_state.username, {"ms_merge_sheet": name})
+        st.session_state.setdefault("user_settings", {})["ms_merge_sheet"] = name
+    else:
+        save_config({"ms_merge_sheet": name})
+
+
 def _sync_widget(key: str, cfg_val):
     """저장된 값이 바뀐 순간에만 위젯 상태를 그 값으로 맞춘다 (value= 대신 사용).
 
@@ -2233,8 +2251,9 @@ def _render_merged_tungchigi(accounts: dict, cfg: dict):
 
     # ── 구글시트 전송 ──
     gs_url = _gs_url()
-    _dflt = str(cfg.get("_merge_sheet", "") or "manse_통합")
-    _nm = st.text_input("전송할 시트 탭 이름", value=_dflt,
+    # 개인설정의 '통합 주문 시트 탭 이름'과 같은 값 (매일 자동 발송도 이 탭에 기록)
+    _sync_widget("ms_merge_sheet_nm", _merge_sheet_setting())
+    _nm = st.text_input("전송할 시트 탭 이름",
                         key="ms_merge_sheet_nm",
                         help="통합 주문을 기록할 구글시트 탭 이름입니다. "
                              "계좌별 탭과 다른 이름을 쓰세요.")
@@ -2263,8 +2282,7 @@ def _render_merged_tungchigi(accounts: dict, cfg: dict):
                 ws.update(range_name="L4", values=rows)
             ws.update(range_name="B11", values=[[
                 pd.Timestamp.now(tz="Asia/Seoul").strftime("%Y-%m-%d %H:%M:%S")]])
-            cfg["_merge_sheet"] = _nm.strip()
-            _save_cfg(cfg)
+            _save_merge_sheet_setting(_nm)
             st.success(f"✅ '{_nm.strip()}' L4에 통합 주문 {len(rows)}건 전송 완료")
         except Exception as e:
             st.error(f"전송 실패: {type(e).__name__}: {e}")
@@ -4574,10 +4592,9 @@ def render_settings_tab():
                  "같은 종목 계좌끼리 합쳐 아래 탭에 '합산 퉁치기' 주문을 기록합니다. "
                  "종목에 계좌가 하나뿐이면(예: TQQQ 1개) 그 계좌 탭에 따로 기록하고, "
                  "합칠 종목이 여럿이면 탭 이름 뒤에 _SOXL · _TQQQ 처럼 종목을 붙입니다.")
+        _sync_widget("ms_merge_sheet_cfg", _merge_sheet_setting())
         merge_sheet = st.text_input(
             "통합 주문 시트 탭 이름", key="ms_merge_sheet_cfg",
-            value=str(_usercfg.get("ms_merge_sheet", "") if _IS_CLOUD_val
-                      else _cfg.get("ms_merge_sheet", "")) or "manse_통합",
             disabled=not use_merge,
             help="합산 주문을 기록할 탭 이름 (계좌별 탭과 다른 이름 권장).")
         if use_merge:
@@ -4648,72 +4665,84 @@ def render_settings_tab():
                     st.warning("등록된 계좌가 없습니다. "
                                "**오늘의 주문표** 탭에서 계좌를 먼저 추가해주세요.")
                 else:
-                    _ok_cnt = 0
+                    # ① 계좌별 주문 계산 (퉁치기 변환 전 원 주문)
+                    _items = []      # (계좌, 종목, 계좌탭, rows)
                     for _an, _acct in _accs_send.items():
                         _ap = _acct_params(_acct)
                         _nm2 = (_sheet_map.get(_an) or _acct.get("gs_sheet")
                                 or _default_sheet_name(_an, _ap.ticker)).strip()
-                        with st.spinner(f"{_an} -> '{_nm2}' 전송 중..."):
+                        with st.spinner(f"{_an} 주문 계산 중..."):
                             try:
-                                _pr = _load_prices(
-                                    _ap.needed_tickers(),
-                                    _acct.get("data_source", DATA_SOURCES[0]))
-                                _adj, _ = recalc_adj_history(
-                                    _acct.get("capital_adj_history", []) or [],
-                                    float(_acct.get("os_capital", 10000.0)))
-                                _cf = {}
-                                for _h in _adj:
-                                    try:
-                                        _cf[pd.Timestamp(_h["날짜"]).normalize()] = {
-                                            "deposit": float(_h.get("조정금액", 0))}
-                                    except Exception:
-                                        pass
-                                _res2 = run_backtest(
-                                    _pr, _ap, start=_acct.get("os_start"),
-                                    end=str(datetime.today().date()),
-                                    cash_flows=_cf)
-                                if "error" in _res2:
-                                    st.error(f"{_an}: {_res2['error']}")
-                                    continue
-                                _plan = build_order_plan(_pr, _ap,
-                                                         bt_result=_res2)
+                                _plan = build_account_store(_acct)["plan"]
                                 if "error" in _plan:
                                     st.error(f"{_an}: {_plan['error']}")
                                     continue
-                                rows = _order_rows(_plan)
-                                if use_tungchigi and rows:
-                                    try:
-                                        from dss_engine import rows_to_tungchigi_rows as _rttr
-                                    except ImportError:
-                                        import importlib
-                                        import dss_engine as _de
-                                        _rttr = importlib.reload(_de).rows_to_tungchigi_rows
-                                    rows = _rttr(rows)
-                                gc = _get_gspread_client()
-                                sh = gc.open_by_url(gs_url)
-                                try:
-                                    ws = sh.worksheet(_nm2)
-                                except Exception:
-                                    # gspread WorksheetNotFound 는 메시지가 탭 이름뿐이라
-                                    # 그대로 보여주면 원인을 알 수 없다
-                                    st.error(
-                                        f"⛔ {_an}: 구글시트에 **'{_nm2}'** 탭이 "
-                                        f"없습니다. 시트에서 해당 이름의 탭을 만들어 "
-                                        f"주세요 (기존 주문 탭을 복사해 이름만 변경하면 "
-                                        f"양식이 유지됩니다).")
-                                    continue
-                                ws.batch_clear(["L4:O13"])
-                                if rows:
-                                    ws.update(range_name="L4", values=rows)
-                                ws.update(range_name="B11", values=[[
-                                    pd.Timestamp.now(tz="Asia/Seoul")
-                                    .strftime("%Y-%m-%d %H:%M:%S")]])
-                                st.success(f"✅ {_an} -> '{_nm2}' L4에 "
-                                           f"{len(rows)}건 전송 완료")
-                                _ok_cnt += 1
+                                _items.append((_an, _ap.ticker.upper(), _nm2,
+                                               _order_rows(_plan)))
                             except Exception as e:
-                                st.error(f"{_an} 전송 실패: "
+                                st.error(f"{_an} 주문 계산 실패: "
                                          f"{type(e).__name__}: {e}")
+
+                    def _to_tung(rows):
+                        try:
+                            from dss_engine import rows_to_tungchigi_rows as _rttr
+                        except ImportError:
+                            import importlib
+                            import dss_engine as _de
+                            _rttr = importlib.reload(_de).rows_to_tungchigi_rows
+                        return _rttr(rows) if rows else rows
+
+                    def _write(sheet, rows, who):
+                        try:
+                            sh = _get_gspread_client().open_by_url(gs_url)
+                            try:
+                                ws = sh.worksheet(sheet)
+                            except Exception:
+                                # gspread WorksheetNotFound 는 메시지가 탭 이름뿐이라
+                                # 그대로 보여주면 원인을 알 수 없다
+                                st.error(
+                                    f"⛔ {who}: 구글시트에 **'{sheet}'** 탭이 "
+                                    f"없습니다. 시트에서 해당 이름의 탭을 만들어 "
+                                    f"주세요 (기존 주문 탭을 복사해 이름만 변경하면 "
+                                    f"양식이 유지됩니다).")
+                                return False
+                            ws.batch_clear([f"L4:O{3 + max(10, len(rows))}"])
+                            if rows:
+                                ws.update(range_name="L4", values=rows)
+                            ws.update(range_name="B11", values=[[
+                                pd.Timestamp.now(tz="Asia/Seoul")
+                                .strftime("%Y-%m-%d %H:%M:%S")]])
+                            st.success(f"✅ {who} -> '{sheet}' L4에 {len(rows)}건 전송 완료")
+                            return True
+                        except Exception as e:
+                            st.error(f"{who} 전송 실패: {type(e).__name__}: {e}")
+                            return False
+
+                    # ② 전송 — 매일 자동 발송(크론)과 같은 규칙
+                    _ok_cnt = 0
+                    if use_merge:
+                        #   같은 종목 계좌 2개 이상 → 합산 퉁치기 → 통합 탭
+                        #   (합칠 종목이 여럿이면 탭 이름 뒤에 _티커) · 혼자인 종목 → 자기 탭
+                        _groups = {}
+                        for _it in _items:
+                            _groups.setdefault(_it[1], []).append(_it)
+                        _multi = [t for t, g in _groups.items() if len(g) > 1]
+                        _mbase = merge_sheet.strip() or "manse_통합"
+                        for _gtk, _g in _groups.items():
+                            if len(_g) == 1:
+                                _an, _, _nm2, _rows = _g[0]
+                                _rows = _to_tung(_rows) if use_tungchigi else _rows
+                                _ok_cnt += _write(_nm2, _rows, _an)
+                            else:
+                                _ms = _mbase if len(_multi) == 1 else f"{_mbase}_{_gtk}"
+                                _raw = [r for _it in _g for r in _it[3]]
+                                _ok_cnt += len(_g) * _write(
+                                    _ms, _to_tung(_raw),
+                                    f"통합 {_gtk} ({' + '.join(_it[0] for _it in _g)})")
+                    else:
+                        for _an, _, _nm2, _rows in _items:
+                            _rows = _to_tung(_rows) if use_tungchigi else _rows
+                            _ok_cnt += _write(_nm2, _rows, _an)
                     if _ok_cnt:
                         st.caption(f"총 {_ok_cnt}/{len(_accs_send)} 계좌 전송 완료")
 
