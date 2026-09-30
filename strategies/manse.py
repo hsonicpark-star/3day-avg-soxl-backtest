@@ -105,6 +105,20 @@ def _default_sheet_name(acct_name: str, ticker: str) -> str:
     return f"manse_{str(acct_name).strip()}" if acct_name else str(ticker).upper()
 
 
+def _sync_widget(key: str, cfg_val):
+    """저장된 값이 바뀐 순간에만 위젯 상태를 그 값으로 맞춘다 (value= 대신 사용).
+
+    value= 와 key= 를 함께 쓰면 session_state 가 우선이라, 다른 탭(개인설정 등)에서
+    바꾼 값이 이 위젯에 반영되지 않고, 그대로 저장하면 옛 값으로 되돌아간다.
+    '_cfgseen_' 마커로 마지막으로 반영한 저장값을 기억해 두고, 저장값이 달라졌거나
+    위젯 키가 정리됐을 때(이번 실행에 안 그려진 위젯)만 다시 채운다.
+    """
+    seen = f"_cfgseen_{key}"
+    if key not in st.session_state or st.session_state.get(seen) != cfg_val:
+        st.session_state[seen] = cfg_val
+        st.session_state[key] = cfg_val
+
+
 def _ms_accounts() -> dict:
     """만능 스위치 계좌 목록 → {계좌명: {ticker, gs_sheet}}."""
     cfg = _load_cfg()
@@ -2502,21 +2516,20 @@ def _render_account(name: str, acct: dict, cfg: dict, idx: int):
     # ══ 계좌 설정 ══
     with st.expander("🗂️ 계좌 설정 (시작일 · 자본 · 이름변경 · 삭제)", expanded=False):
         b1, b2, b3 = st.columns(3)
-        new_start = b1.date_input(
-            "시작일", pd.to_datetime(acct.get("os_start", "2024-01-02")).date(),
-            key=f"ms_{sfx}_start")
-        new_cap = b2.number_input("시작 자본 ($)",
-                                  value=float(acct.get("os_capital", 10000.0)),
-                                  step=1000.0, key=f"ms_{sfx}_cap")
+        # 개인설정 탭 등 다른 곳에서 바꾼 값이 여기에도 보이도록 저장값과 동기화
+        _sync_widget(f"ms_{sfx}_start",
+                     pd.to_datetime(acct.get("os_start", "2024-01-02")).date())
+        new_start = b1.date_input("시작일", key=f"ms_{sfx}_start")
+        _sync_widget(f"ms_{sfx}_cap", float(acct.get("os_capital", 10000.0)))
+        new_cap = b2.number_input("시작 자본 ($)", step=1000.0, key=f"ms_{sfx}_cap")
         src_list = list(DATA_SOURCES)
         cur_src = acct.get("data_source", DATA_SOURCES[0])
-        new_src = b3.selectbox("데이터 소스", src_list,
-                               index=src_list.index(cur_src)
-                               if cur_src in src_list else 0,
-                               key=f"ms_{sfx}_src")
+        _sync_widget(f"ms_{sfx}_src", cur_src if cur_src in src_list else src_list[0])
+        new_src = b3.selectbox("데이터 소스", src_list, key=f"ms_{sfx}_src")
+        _sync_widget(f"ms_{sfx}_sheet",
+                     acct.get("gs_sheet") or _default_sheet_name(name, p.ticker))
         new_sheet = st.text_input(
             "구글시트 탭 이름",
-            value=acct.get("gs_sheet") or _default_sheet_name(name, p.ticker),
             key=f"ms_{sfx}_sheet",
             help="계좌마다 달라야 합니다. 같으면 나중에 보낸 주문이 앞의 것을 덮어씁니다.")
         _dups = [n for n, a in (cfg.get("accounts") or {}).items()
@@ -4605,6 +4618,8 @@ def render_settings_tab():
                     "**오늘의 주문표** 탭에서 계좌를 먼저 추가해주세요.")
 
         st.write("")
+        if st.session_state.pop("_ms_gs_saved", False):
+            st.success("URL 및 계좌별 시트 이름 저장 완료! (오늘의 주문표 계좌 설정에도 반영됨)")
         bg1, bg2, bg3 = st.columns(3)
         with bg1:
             if st.button("시트 연결 테스트", use_container_width=True,
@@ -4732,7 +4747,9 @@ def render_settings_tab():
                         if _an in _accs and isinstance(_accs[_an], dict):
                             _accs[_an]["gs_sheet"] = _nm.strip()
                     _save_cfg(_mcfg)
-                    st.success("URL 및 계좌별 시트 이름 저장 완료!")
+                    # 같은 실행에서 이미 그려진 주문표 탭 입력칸도 새 값으로 보이도록 다시 그린다
+                    st.session_state["_ms_gs_saved"] = True
+                    st.rerun()
 
     st.write("")
 
