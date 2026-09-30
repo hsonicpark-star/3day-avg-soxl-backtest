@@ -2587,7 +2587,7 @@ def main():
                             from stdev_engine import (
                                 SD_HIST_COLS, settle_sd_pending_rows,
                                 calc_sd_record_state, calc_sd_order_from_state,
-                                build_sd_pending_row)
+                                build_sd_pending_row, sd_row_is_pending)
                             _sh_sd = _gs_retry(lambda: client.open_by_url(shared_gs_url))
                             try:
                                 _ws_hist_sd = _sh_sd.worksheet(f"sd_{tk}_매매기록")
