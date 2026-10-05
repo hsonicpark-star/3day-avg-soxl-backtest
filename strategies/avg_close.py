@@ -1172,8 +1172,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         st.info(
             "**반영 시점** — '적용'을 누르는 **순간** 원장(현금·총자산)에 즉시 가산됩니다. "
             "'적용 날짜'는 실제 입금일 기록용이며 반영 시점과는 무관합니다.  \n"
-            "· **오늘 12:00(자동발송) 전**에 적용 → **오늘 주문부터** 매수 수량에 반영  \n"
-            "· **12:00 후**에 적용 → 오늘 주문은 그대로, **내일 주문부터** 반영  \n"
+            "· **오늘 예정 행이 생기기 전**(= 오늘 주문표 로드 전 · 12:00 자동발송 전)에 적용 "
+            "→ **오늘 주문부터** 매수 수량에 반영  \n"
+            "· **이미 오늘 예정 행이 있으면**(주문표 로드했거나 12:00 지남) → 오늘 수량은 잠겨 있어 "
+            "**내일 주문부터** 반영. 오늘 반영이 꼭 필요하면 매매기록 시트에서 오늘 예정 행을 삭제 후 재로드  \n"
             "· 증권사 실제 입금은 주문 전에 끝내야 LOC 매수가 체결됩니다.",
             icon="⏰")
         _adj_history_raw = tk_cfg.get("capital_adj_history", "[]")
@@ -1247,10 +1249,25 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.session_state.pop(f"os_res_{key_sfx}", None)  # 캐시 갱신
                 # 성공 메시지는 rerun 후 위젯 위에서 표시 (입력칸도 그때 초기화)
                 if _baked:
-                    # 12:00 KST 자동발송 전/후에 따라 '언제부터' 반영되는지 명시
-                    _when_txt = ("**오늘 12:00 자동발송 주문부터**"
-                                 if pd.Timestamp.now(tz="Asia/Seoul").hour < 12
-                                 else "**내일 주문부터** (오늘 발송분은 그대로)")
+                    # '언제부터' 반영되는지 — 기준은 "오늘 예정 행 존재 여부" (수량 잠김)
+                    _has_today_pending = False
+                    try:
+                        _df_chk, _st_chk = _load_ticker_ledger(tk)
+                        if _st_chk == "ok" and not _df_chk.empty:
+                            _t_chk = datetime.today().strftime("%Y-%m-%d")
+                            _has_today_pending = any(
+                                str(r0.get("날짜", "")).strip() == _t_chk
+                                and str(r0.get("매매", "")).startswith("예정")
+                                for r0 in _df_chk.to_dict("records"))
+                    except Exception:
+                        pass
+                    if _has_today_pending:
+                        _when_txt = ("**내일 주문부터** — 오늘 예정 행이 이미 있어 오늘 수량은 "
+                                     "잠겨 있습니다 (오늘 반영이 꼭 필요하면 시트에서 오늘 예정 행 삭제 후 재로드)")
+                    elif pd.Timestamp.now(tz="Asia/Seoul").hour < 12:
+                        _when_txt = "**오늘 12:00 자동발송 주문부터**"
+                    else:
+                        _when_txt = "**내일 주문부터** (오늘 발송분은 그대로)"
                     st.session_state[f"adj_done_{key_sfx}"] = (
                         f"✅ {_adj_date} 자본 조정 ${float(_adj_amount):+,.0f} 완료 — "
                         f"**원장에 즉시 반영**되었습니다. {_when_txt} 매수 수량에 "
