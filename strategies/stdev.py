@@ -1232,6 +1232,13 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     # -- 자본 조정 (증액 / 감액) -----
     with st.expander("자본 조정 (증액 / 감액)"):
         st.caption("현재 자본금에 추가하거나 차감할 금액을 입력하세요. 날짜를 선택해 과거 항목도 입력 가능합니다.")
+        st.info(
+            "**반영 시점** — '적용'을 누르는 **순간** 원장(예수금·총자산·총투자금)에 즉시 가산됩니다. "
+            "'적용 날짜'는 실제 입금일 기록용이며 반영 시점과는 무관합니다.  \n"
+            "· **오늘 12:00(자동발송) 전**에 적용 → **오늘 주문부터** 1회매수금에 반영  \n"
+            "· **12:00 후**에 적용 → 오늘 주문은 그대로, **내일 주문부터** 반영  \n"
+            "· 증권사 실제 입금은 주문 전에 끝내야 LOC 매수가 체결됩니다.",
+            icon="⏰")
         _sd_adj_raw = tk_cfg.get("capital_adj_history", "[]")
         try:
             _sd_adj_hist = json.loads(_sd_adj_raw) if isinstance(_sd_adj_raw, str) else _sd_adj_raw
@@ -1246,22 +1253,25 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         #  이력이 이미 있습니다' 중복 가드가 오탐처럼 보여 사용자가 혼란)
         if f"sd_adj_done_{key_sfx}" in st.session_state:
             st.success(st.session_state.pop(f"sd_adj_done_{key_sfx}"))
-            for _rk in (f"sd_adj_inp_{key_sfx}", f"sd_adj_memo_{key_sfx}"):
-                st.session_state.pop(_rk, None)
+            # 위젯 키 버전을 올려 '새 위젯'으로 생성 → 입력칸이 화면에서도 확실히 비워짐
+            # (키만 pop하면 값은 0으로 리셋되지만 화면엔 이전 입력이 남아 보이는 현상)
+            st.session_state[f"sd_adj_ver_{key_sfx}"] = \
+                st.session_state.get(f"sd_adj_ver_{key_sfx}", 0) + 1
+        _adj_ver = st.session_state.get(f"sd_adj_ver_{key_sfx}", 0)
         _sadj_c1, _sadj_c2 = st.columns([2, 1])
         _sadj_date = _sadj_c1.date_input("적용 날짜", value=datetime.today().date(),
-                                          key=f"sd_adj_date_{key_sfx}",
-                                          help="실제 입금/출금이 일어난 날짜")
+                                          key=f"sd_adj_date_{key_sfx}_{_adj_ver}",
+                                          help="실제 입금/출금이 일어난 날짜 (기록용 — 반영은 '적용' 즉시)")
         _sadj_amt = _sadj_c1.number_input("조정 금액 ($)", value=0.0, step=500.0,
                                            help="증액: 양수 / 감액: 음수",
-                                           key=f"sd_adj_inp_{key_sfx}")
+                                           key=f"sd_adj_inp_{key_sfx}_{_adj_ver}")
         _sadj_c1.caption(
             f"현재 자본금: **${_cur_total:,.0f}** → 적용 후: **${_cur_total + _sadj_amt:,.0f}** "
             f"({'up' if _sadj_amt > 0 else 'down' if _sadj_amt < 0 else '='} "
             f"${abs(_sadj_amt):,.0f})"
         )
         _sadj_memo = _sadj_c1.text_input("메모 (선택)", placeholder="예: 3월 추가 입금",
-                                          key=f"sd_adj_memo_{key_sfx}")
+                                          key=f"sd_adj_memo_{key_sfx}_{_adj_ver}")
         # 중복 적용 가드 — 같은 날짜·금액이 이미 있으면 실수 재클릭일 가능성
         _dup_exists_sd = any(
             str(_e.get("날짜", "")) == _sadj_date.strftime("%Y-%m-%d")
@@ -1301,10 +1311,14 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.session_state.pop(f"sd_os_res_{key_sfx}", None)  # 캐시 갱신
                 # 성공 메시지는 rerun 후 위젯 위에서 표시 (입력칸도 그때 초기화)
                 if _baked:
+                    # 12:00 KST 자동발송 전/후에 따라 '언제부터' 반영되는지 명시
+                    _when_txt = ("**오늘 12:00 자동발송 주문부터**"
+                                 if pd.Timestamp.now(tz="Asia/Seoul").hour < 12
+                                 else "**내일 주문부터** (오늘 발송분은 그대로)")
                     st.session_state[f"sd_adj_done_{key_sfx}"] = (
                         f"✅ {_sadj_date} 자본 조정 ${float(_sadj_amt):+,.0f} 완료 — "
-                        f"**원장에 즉시 반영**되었습니다. 다음 주문부터 1회매수금·매수량에 "
-                        f"적용됩니다. (오늘 이미 발송된 주문 수량은 그대로)")
+                        f"**원장에 즉시 반영**되었습니다. {_when_txt} 1회매수금·매수량에 "
+                        f"적용됩니다.")
                 else:
                     st.session_state[f"sd_adj_done_{key_sfx}"] = (
                         f"✅ {_sadj_date} 자본 조정 완료. 현재 자본금: **${_final_cap:,.0f}**")
