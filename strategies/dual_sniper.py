@@ -2189,7 +2189,7 @@ def render_intro_tab(params=None):
     # 성과 분석
     # ══════════════════════════════════════════════
     st.subheader("📊 전략 성과 분석")
-    st.caption("사이드바의 파라미터·기간 설정 또는 기본 프리셋으로 종합 성과를 분석합니다.")
+    st.caption("모드 소스를 고른 뒤 프리셋을 선택해 종합 성과를 분석합니다. (사이드바 설정값 선택 시 사이드바 파라미터 사용)")
 
     if params is None:
         st.info("성과 분석은 사이드바에서 듀얼스나이퍼를 선택한 상태에서 이용하세요.")
@@ -2202,13 +2202,25 @@ def render_intro_tab(params=None):
     use_orig_modes = (src == "📜 원전략 실제모드 (2016~)")
 
     if src in ("⚖️ 기본 (자동모드)", "📜 원전략 실제모드 (2016~)"):
+        _plabels = [pc["label"] for pc in _DS_PRESETS]
+        _psel = st.selectbox("📦 파라미터 (프리셋)", _plabels, key="ds_intro_preset",
+                             help="\n\n".join(f"• {pc['label']}:\n{pc['help']}" for pc in _DS_PRESETS))
+        _pc = _DS_PRESETS[_plabels.index(_psel)]
+        _pname = _psel
         ds_p = DualSniperParams(
+            ag_divisions=int(_pc["ag_div"]), ag_buy_pct=float(_pc["ag_buy"]),
+            ag_sell_alpha=float(_pc["ag_sell_alpha"]), ag_hold_alpha=float(_pc["ag_hold_alpha"]),
+            sf_divisions=int(_pc["sf_div"]), sf_hold=int(_pc["sf_hold"]),
+            sf_buy_pct1=float(_pc["sf_buy1"]), sf_buy_pct2=float(_pc["sf_buy2"]),
+            sf_sell_pct=float(_pc["sf_sell"]), sf_ma_base=int(_pc["sf_ma_base"]),
+            sf_tier_weights=tuple(float(x) for x in str(_pc["sf_weights"]).split(",") if x.strip()),
             ag_buy_inclusive=False, sf_buy_inclusive=False,
             fee_rate=float(params.get("fee_rate", 0.0)) / 100, sec_fee_rate=0.0)
         mr = {"ma_weeks": 36, "peak_thr": 66.0, "dn": 42.0}
         cap = float(params.get("initial_capital", 10000))
         start, end = str(params.get("start_date", "2016-01-04")), str(params.get("end_date"))
     else:
+        _pname = "사이드바 설정값"
         ds_p = _make_params(params)
         mr = {"ma_weeks": params["ma_weeks"], "peak_thr": params["peak_thr"], "dn": params["dn"]}
         cap = float(params["initial_capital"])
@@ -2216,6 +2228,7 @@ def render_intro_tab(params=None):
 
     with st.expander("🔎 적용 파라미터 확인"):
         st.markdown(f"""
+- **파라미터**: {_pname}
 - **기간**: {start} ~ {end} · **초기자본** ${cap:,.0f}
 - **공격**: 분할 {ds_p.ag_divisions} · 매수 {ds_p.ag_buy_pct}% · 매도α {ds_p.ag_sell_alpha} · 보유α {ds_p.ag_hold_alpha}
 - **방어**: 분할 {ds_p.sf_divisions} · 보유 {ds_p.sf_hold}일 · 매수1 {ds_p.sf_buy_pct1}% · 매수2 {ds_p.sf_buy_pct2}% · 매도 {ds_p.sf_sell_pct}%
