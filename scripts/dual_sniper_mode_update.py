@@ -224,9 +224,29 @@ def main():
     apply_date = _next_trading_day(last_date)   # 모드가 적용되는 다음 거래일
     print(f"종가기준일 {last_date} (종가 {c1:.2f}/{c2:.2f}) → 적용거래일 {apply_date} "
           f"모드={mode} 근거={detail}")
+
+    # ── 역설계 원전략 규칙(SOXL 주간RSI, 2016~ 562주 100% 일치)으로 교차검증 ──
+    rule_mode = None
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import dual_sniper_engine as _E
+        _px = _E.load_price_data("SOXL")
+        _px = _px[_px.index.date <= last_date]
+        _rm = _E.build_rule_mode_map(_px)
+        rule_mode = _E.forward_rule_mode(_px, prev_mode=_rm[_px.index[-1]])
+        print(f"[rule] 역설계 규칙 모드 = {rule_mode}")
+        if mode is not None and rule_mode != mode:
+            print(f"[⚠️ WARNING] 원본 주문가 역산({mode}) ≠ 규칙({rule_mode}) — "
+                  f"원본 시트 지연/역산 오류 또는 원전략 규칙 변경 가능성. 확인 필요!")
+    except Exception as e:
+        print(f"[warn] 규칙 교차검증 생략: {e}")
+
     if mode is None:
-        print("[error] 모드 역산 실패")
-        sys.exit(2)
+        if rule_mode is None:
+            print("[error] 모드 역산 실패 (규칙 대체도 불가)")
+            sys.exit(2)
+        print(f"[fallback] 주문가 역산 실패 → 역설계 규칙 모드({rule_mode})로 기록")
+        mode = rule_mode
 
     # ── 주중 전환 검증: 원전략은 '주 첫 거래일'에만 전환 (2016~2026 70회 전수 확인) ──
     # 직전 거래일(last_date)과 적용일(apply_date)이 같은 ISO 주인데 모드가 바뀌면
