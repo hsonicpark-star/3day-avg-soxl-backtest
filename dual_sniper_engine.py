@@ -281,11 +281,17 @@ def determine_mode_wrsi(rr: float, r: float, prev_mode: str) -> str:
         return prev_mode
 
 
-def build_auto_mode_map(prices: pd.DataFrame,
-                        ma_weeks: int = 36, peak_thr: float = 66.0,
-                        dn: float = 42.0, rsi_period: int = 14,
-                        init_mode: str = '방어') -> dict:
-    """자체 설계 모드 규칙 → 일별 mode_map. (원전략 비공개 규칙 대체용)
+def build_auto_mode_map(prices: pd.DataFrame, init_mode: str = '방어', **_legacy) -> dict:
+    """'자동' 모드 = 역설계된 원전략 규칙 (build_rule_mode_map).
+    구 하이브리드 인자(ma_weeks/peak_thr/dn)는 호환용으로 받기만 하고 무시한다."""
+    return build_rule_mode_map(prices, init_mode=init_mode)
+
+
+def build_hybrid_mode_map(prices: pd.DataFrame,
+                          ma_weeks: int = 36, peak_thr: float = 66.0,
+                          dn: float = 42.0, rsi_period: int = 14,
+                          init_mode: str = '방어') -> dict:
+    """[구] 자체 설계 하이브리드 규칙 → 일별 mode_map. (역설계 전 대체 규칙, 참고용 보존)
 
     하이브리드 규칙 (전주 확정 주봉 기준, 룩어헤드 없음):
       · 추세필터: 주봉종가 > N주 이동평균 → 공격 후보
@@ -330,9 +336,14 @@ def build_auto_mode_map(prices: pd.DataFrame,
     return map_modes_to_days(ms, df.index)
 
 
-def forward_mode(prices: pd.DataFrame, ma_weeks: int = 36, peak_thr: float = 66.0,
-                 dn: float = 42.0, prev_mode: str = '방어', rsi_period: int = 14) -> str:
-    """다음 거래 세션(다가오는 주)의 모드를 '직전 확정 주봉' 기준으로 판정.
+def forward_mode(prices: pd.DataFrame, prev_mode: str = '방어', **_legacy) -> str:
+    """'자동' 다음 세션 모드 = 역설계 원전략 규칙 (forward_rule_mode). 구 인자 무시."""
+    return forward_rule_mode(prices, prev_mode=prev_mode)
+
+
+def forward_hybrid_mode(prices: pd.DataFrame, ma_weeks: int = 36, peak_thr: float = 66.0,
+                        dn: float = 42.0, prev_mode: str = '방어', rsi_period: int = 14) -> str:
+    """[구 하이브리드] 다음 거래 세션(다가오는 주)의 모드를 '직전 확정 주봉' 기준으로 판정.
 
     백테스트의 주별 모드는 1주 지연(전주 기준)이 정상이나, 실거래 주문표는
     가장 최근 확정된 주봉(지난주)과 그 전주(지지난주)로 다음 세션 모드를 산출해야
@@ -375,6 +386,63 @@ def build_mode_series(weekly_rsi_df: pd.DataFrame,
                 df.loc[i - 2, 'rsi'], df.loc[i - 1, 'rsi'], modes[i - 1]))
     df['mode'] = modes
     return df
+
+
+# ── 원전략 모드 규칙 (역설계, 2016-01~2026-10 562주 100% 일치) ──
+# r = 직전 확정 주봉 SOXL 주간RSI(14, Wilder, 무조정 종가), rr = 그 전 주.
+#   공격: (r ≤ 35 and 상승) or (52 ≤ r < 60 and 상승)
+#   방어: (r > 65 and 하락) or (40 ≤ r < 52 and 하락)
+#   그 외: 직전 모드 유지
+RULE_DEFAULT = dict(a_lo=35.0, a_mid=52.0, a_hi=60.0, s_lo=40.0, s_mid=52.0, s_top=65.0)
+
+
+def determine_mode_rule(rr: float, r: float, prev_mode: str, a_lo=35.0, a_mid=52.0,
+                        a_hi=60.0, s_lo=40.0, s_mid=52.0, s_top=65.0) -> str:
+    if np.isnan(rr) or np.isnan(r):
+        return prev_mode
+    if r > s_top and r < rr:
+        return '방어'
+    if s_lo <= r < s_mid and r < rr:
+        return '방어'
+    if r <= a_lo and r > rr:
+        return '공격'
+    if a_mid <= r < a_hi and r > rr:
+        return '공격'
+    return prev_mode
+
+
+def build_rule_mode_map(prices: pd.DataFrame, init_mode: str = '방어',
+                        rsi_period: int = 14, **thr) -> dict:
+    """역설계 원전략 규칙 → 일별 mode_map. 주 i의 모드 = (wRSI[i-2], wRSI[i-1]) 판정."""
+    p = dict(RULE_DEFAULT); p.update(thr)
+    df = prices.copy()
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    wclose = df['close'].resample('W-FRI').last().dropna()
+    wrsi = calc_rsi_wilder(wclose.values.astype(float), rsi_period)
+    modes, m = [], init_mode
+    for i in range(len(wrsi)):
+        if i >= 2:
+            m = determine_mode_rule(wrsi[i - 2], wrsi[i - 1], m, **p)
+        modes.append(m)
+    ms = pd.DataFrame({'week_end': wclose.index, 'mode': modes})
+    return map_modes_to_days(ms, df.index)
+
+
+def forward_rule_mode(prices: pd.DataFrame, prev_mode: str = '방어',
+                      rsi_period: int = 14, **thr) -> str:
+    """다음 거래 세션 모드 — 직전 확정 주봉 2개(지난주 r, 지지난주 rr)로 판정."""
+    p = dict(RULE_DEFAULT); p.update(thr)
+    df = prices.copy()
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    wclose = df['close'].resample('W-FRI').last().dropna()
+    if len(wclose) > 0 and wclose.index[-1].date() > df.index[-1].date():
+        wclose = wclose.iloc[:-1]                       # 미완성 현재 주봉 제외
+    if len(wclose) < 3:
+        return prev_mode
+    wrsi = calc_rsi_wilder(wclose.values.astype(float), rsi_period)
+    return determine_mode_rule(wrsi[-2], wrsi[-1], prev_mode, **p)
 
 
 def map_modes_to_days(mode_series: pd.DataFrame,

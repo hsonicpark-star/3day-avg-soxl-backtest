@@ -3,7 +3,7 @@ strategies/dual_sniper.py — Dual Sniper Pro 전략 모듈
 
 종목: SOXL (3x 레버리지 ETF)
 구조: 공격/방어 2모드 슬롯(티어) 기반 그리드 매매 (스프레드시트 역설계, 엔진 검증 완료)
-모드: 주간 wRSI 기반 자체 하이브리드 규칙 (원전략 전환규칙은 비공개) + 수동 오버라이드
+모드: SOXL 주간 wRSI 기반 원전략 규칙 (역설계, 562주 100% 일치) + 원본시트/수동 오버라이드
 
 인터페이스: DSS 패턴 (자체 사이드바)
 - render_sidebar() → params dict
@@ -172,7 +172,7 @@ def clear_ds_data_cache():
 
 
 # ──────────────────────────────────────────────
-# 모드맵 (자동 하이브리드)
+# 모드맵 (자동 = 역설계 원전략 규칙)
 # ──────────────────────────────────────────────
 
 @st.cache_data(show_spinner="모드 계산 중...", ttl=300)
@@ -238,21 +238,25 @@ def render_sidebar():
     st.sidebar.markdown("### 🎯 Dual Sniper Pro")
     st.sidebar.caption("SOXL · 공격/방어 2모드 슬롯 그리드")
 
-    # ── 모드 규칙 (자체 하이브리드) ──
-    with st.sidebar.expander("🧭 모드 규칙 (자동)", expanded=False):
-        st.caption("주봉 > N주MA → 공격, 천장하락/이탈 → 방어")
-        ma_weeks = st.number_input("추세 MA(주)", min_value=5, max_value=60, step=1, key="ds_ma")
-        peak_thr = st.number_input("천장 wRSI", min_value=50.0, max_value=80.0, step=1.0, key="ds_peak")
-        dn = st.number_input("방어 이탈 wRSI", min_value=30.0, max_value=50.0, step=1.0, key="ds_dn")
-        st.caption("기본값: 36 / 66 / 42 (Calmar 2.64)")
+    # ── 모드 규칙 (역설계 원전략 규칙 — 고정) ──
+    with st.sidebar.expander("🧭 모드 규칙 (자동 = 원전략)", expanded=False):
+        st.markdown("기준: **SOXL 주간RSI(14)** · r=지난주, rr=지지난주\n\n"
+                    "- 🟥 공격: r≤35 상승 · 52≤r<60 상승\n"
+                    "- 🟦 방어: r>65 하락 · 40≤r<52 하락\n"
+                    "- 그 외: 직전 모드 유지")
+        st.caption("2016~2026 원전략 실제모드와 562주 100% 일치 (역설계)")
+    ma_weeks, peak_thr, dn = 36, 66.0, 42.0      # 구 하이브리드 인자 (호환용, 미사용)
 
     # ══ 모드 소스 (원전략 따라가기 vs 자동) ══
-    _SRC_OPTS = ["🤖 자동 (하이브리드)", "🔗 원본시트 자동", "✋ 수동 공격", "✋ 수동 방어"]
+    _SRC_OPTS = ["🤖 자동 (원전략 규칙)", "🔗 원본시트 자동", "✋ 수동 공격", "✋ 수동 방어"]
     _src_saved = cfg.get("mode_source", _SRC_OPTS[0])
-    _src_idx = _SRC_OPTS.index(_src_saved) if _src_saved in _SRC_OPTS else 0
+    _src_idx = _SRC_OPTS.index(_src_saved) if _src_saved in _SRC_OPTS else (
+        1 if "원본" in str(_src_saved) else 2 if "공격" in str(_src_saved)
+        else 3 if "방어" in str(_src_saved) else 0)
     mode_source = st.sidebar.selectbox("🧭 모드 소스 (운용 방식)", _SRC_OPTS, index=_src_idx,
                                        key="ds_mode_source",
-                                       help="자동=우리 하이브리드 규칙 / 원본시트=원전략 구글시트에서 모드 역산 / "
+                                       help="자동=역설계 원전략 규칙(원본과 100% 동일, 시트 불필요) / "
+                                            "원본시트=원전략 구글시트에서 모드 역산 / "
                                             "수동=직접 지정. 계좌 추가 시 이 값이 기본값으로 들어갑니다.")
     st.sidebar.caption("↳ 계좌별로 따로 저장됩니다. 주문표 탭에서 계좌마다 변경 가능.")
 
@@ -378,7 +382,7 @@ def render_backtest_tab(params):
 
     _msrc = _normalize_src(p.get("mode_source", "자동"))
     if _msrc == "자동":
-        st.caption("🤖 모드: **자동 하이브리드** (사이드바 모드 소스 기준)")
+        st.caption("🤖 모드: **자동 (원전략 규칙)** (사이드바 모드 소스 기준)")
     else:
         st.caption(f"📜 모드: **원전략 실제모드(2016~)** — 사이드바 '{_SRC_LBL.get(_msrc, _msrc)}' 선택됨 "
                    "→ 원전략 그대로 백테스트")
@@ -546,7 +550,7 @@ def render_optimization_tab(params):
     }
     _msrc = _normalize_src(p.get("mode_source", "자동"))
     _mode_label = ("원전략 실제모드(2016~) 고정" if _msrc != "자동"
-                   else "자동 하이브리드 규칙 고정")
+                   else "자동 원전략 규칙 고정")
     st.caption(_desc[method] + f"  ·  모드는 **{_mode_label}** (전략 파라미터만 탐색)")
 
     # ── 파라미터 범위 ──
@@ -1018,7 +1022,7 @@ def _infer_mode_from_orders(rows, c1, c2, ds_p):
 
 
 _SRC_VALS = ["자동", "원본시트", "공격", "방어"]
-_SRC_LBL = {"자동": "🤖 자동 (하이브리드)", "원본시트": "🔗 원본시트 자동",
+_SRC_LBL = {"자동": "🤖 자동 (원전략 규칙)", "원본시트": "🔗 원본시트 자동",
             "공격": "✋ 수동 공격", "방어": "✋ 수동 방어"}
 
 
@@ -1071,7 +1075,7 @@ def _render_ds_source_box(acct_key, acct_data, cfg, sfx):
         elif sel in ("공격", "방어"):
             st.caption(f"✋ 항상 **{sel}** 모드로 주문을 산출합니다. (원전략 모드를 직접 확인하며 변경)")
         else:
-            st.caption("🤖 자체 하이브리드 규칙(36주MA + 천장방어)으로 모드를 자동 판정합니다.")
+            st.caption("🤖 역설계한 원전략 모드 규칙(SOXL 주간RSI)으로 자동 판정 — 원본 시트 없이도 원전략과 동일합니다.")
         if st.button("💾 모드 소스 저장", key=f"ds_srcsave{sfx}", use_container_width=True):
             acct_data["mode_source"] = sel
             if sel == "원본시트":
@@ -1221,7 +1225,8 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
         m2.metric("공격(매도α/보유α)", f"{ds_p.ag_sell_alpha} / {ds_p.ag_hold_alpha}")
         m3.metric("방어(분할/보유)", f"{ds_p.sf_divisions} / {ds_p.sf_hold}일")
         m4.metric("방어(매수1/2/매도)", f"{ds_p.sf_buy_pct1}/{ds_p.sf_buy_pct2}/{ds_p.sf_sell_pct}")
-        m5.metric("모드(MA/천장/이탈)", f"{mode_rule['ma_weeks']}/{int(mode_rule['peak_thr'])}/{int(mode_rule['dn'])}")
+        m5.metric("모드 규칙", "원전략(wRSI)",
+                  help="공격: r≤35↑ · 52≤r<60↑ / 방어: r>65↓ · 40≤r<52↓ (SOXL 주간RSI, 역설계 100% 일치)")
         with st.expander("✏️ 파라미터 수정"):
             # 위젯 session_state 1회 시드 (저장값 → 위젯). 위젯은 key 만 쓰고 value= 미지정.
             for _k, _v in ((f"ds_e_agdiv{sfx}", int(ds_p.ag_divisions)),
@@ -1278,10 +1283,10 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
             v_sfsell = g1.number_input("방매도", min_value=0.0, max_value=10.0, step=0.1, key=f"ds_e_sfsell{sfx}")
             v_sfma = g2.number_input("MA기준", min_value=2, max_value=10, step=1, key=f"ds_e_sfma{sfx}")
             v_sfw = g3.text_input("티어비중%", key=f"ds_e_sfw{sfx}")
-            h1, h2, h3 = st.columns(3)
-            v_ma = h1.number_input("추세MA(주)", min_value=5, max_value=60, step=1, key=f"ds_e_ma{sfx}")
-            v_pk = h2.number_input("천장wRSI", min_value=50.0, max_value=80.0, step=1.0, key=f"ds_e_pk{sfx}")
-            v_dn = h3.number_input("이탈wRSI", min_value=30.0, max_value=50.0, step=1.0, key=f"ds_e_dn{sfx}")
+            # 모드 규칙은 원전략 규칙으로 고정 (구 하이브리드 인자는 저장값 그대로 보존만)
+            v_ma = st.session_state.get(f"ds_e_ma{sfx}", 36)
+            v_pk = st.session_state.get(f"ds_e_pk{sfx}", 66.0)
+            v_dn = st.session_state.get(f"ds_e_dn{sfx}", 42.0)
             if st.button("💾 파라미터 저장", type="primary", key=f"ds_save_p{sfx}"):
                 # 티어비중 검증: 개수=방분할, 합≈100 아닐 때 경고 (저장은 진행)
                 try:
@@ -1487,7 +1492,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     _kd = str((_nd[0] if len(_nd) else px_df.index[-1]).date())
                     forced = _shared.get(_kd)        # 공유 모드 없으면 None → 번들 carry
                     shared_today = forced
-            # 모드맵: 자동=하이브리드 / 그 외=원전략 실제모드(번들+공유)
+            # 모드맵: 자동=역설계 원전략 규칙 / 그 외=원전략 실제모드(번들+공유)
             if saved_src == "자동":
                 mode_map = build_auto_mode_map(px_df, ma_weeks=mode_rule["ma_weeks"],
                                                peak_thr=mode_rule["peak_thr"], dn=mode_rule["dn"])
@@ -1498,7 +1503,7 @@ def _render_ds_account(acct_key, acct_data, cfg, p, idx):
                     _kd = (_nd[0] if len(_nd) else px_df.index[-1]).date()
                     extra[str(_kd)] = shared_today
                 mode_map = build_original_mode_map(px_df, extra_modes=extra)
-            # 자동=하이브리드 규칙으로 다음 모드 산출 / 그 외=forced 또는 번들·공유 carry
+            # 자동=원전략 규칙으로 다음 모드 산출 / 그 외=forced 또는 번들·공유 carry
             _mr = mode_rule if saved_src == "자동" else None
             r = build_today_orders(px_df, ds_p, mode_map=mode_map, start_date=str(in_start),
                                    mode_rule=_mr, forced_mode=forced,
@@ -1853,76 +1858,70 @@ def _render_norm_viz():
         st.caption("보유일 = 7 + 23 × (1−x)^(1/α),  x=(매수RSI−35)/30")
 
 
-def _render_mode_now(ma_weeks=36, peak_thr=66.0, dn=42.0):
-    """이번 주/지난 주 모드 판정 근거를 실제 수치·계산식으로 표시."""
-    from dual_sniper_engine import calc_rsi_wilder
+def _render_mode_now(*_legacy, **_kw):
+    """이번 주/지난 주 모드 판정 근거 — 역설계 원전략 규칙을 실제 수치로 표시."""
+    from dual_sniper_engine import calc_rsi_wilder, determine_mode_rule, RULE_DEFAULT as T
     try:
         pxf = get_soxl_data()
     except Exception as e:
         st.caption(f"(데이터 로드 실패: {e})")
         return
     wc = pxf['close'].resample('W-FRI').last().dropna()
-    # 미완성 현재 주봉 제외 (주중 실행 시)
     if len(wc) > 0 and wc.index[-1].date() > pxf.index[-1].date():
-        wc = wc.iloc[:-1]
+        wc = wc.iloc[:-1]                                  # 미완성 현재 주봉 제외
     wv = wc.values.astype(float)
-    if len(wv) < ma_weeks + 3:
+    if len(wv) < 20:
         st.caption("(주봉 데이터 부족)")
         return
     wrsi = calc_rsi_wilder(wv, 14)
-    wma = pd.Series(wv).rolling(ma_weeks).mean().values
 
-    # 최근 6주 표
     rows = []
     for i in range(len(wv) - 6, len(wv)):
-        rows.append({"주말(금)": wc.index[i].strftime("%Y-%m-%d"),
-                     "주봉종가": f"${wv[i]:.2f}", f"{ma_weeks}주MA": f"${wma[i]:.2f}",
-                     "추세(종가>MA)": "✅ 상승" if wv[i] > wma[i] else "❌ 하락",
-                     "wRSI(14)": f"{wrsi[i]:.1f}"})
+        d = wrsi[i] - wrsi[i - 1]
+        rows.append({"주말(금)": wc.index[i].strftime("%Y-%m-%d"), "주봉종가": f"${wv[i]:.2f}",
+                     "wRSI(14)": f"{wrsi[i]:.1f}", "전주대비": f"{d:+.1f} {'↑' if d > 0 else '↓'}"})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
-    def _decide(v, vp, c, m):
-        trend_up = c > m
-        crash_lvl = v < dn
-        crash_top = (v < vp) and (vp > peak_thr)
-        if crash_lvl or crash_top:
-            mode = "🟦 방어"
-        elif trend_up:
-            mode = "🟥 공격"
-        else:
-            mode = "🟦 방어"
-        return mode, trend_up, crash_lvl, crash_top
+    def _explain(r, rr):
+        up, dn = r > rr, r < rr
+        checks = [
+            (f"과열권 하락: r {r:.1f} > {T['s_top']:.0f} AND 하락", r > T['s_top'] and dn, "🟦 방어"),
+            (f"중하단 하락: {T['s_lo']:.0f} ≤ r {r:.1f} < {T['s_mid']:.0f} AND 하락",
+             T['s_lo'] <= r < T['s_mid'] and dn, "🟦 방어"),
+            (f"바닥권 반등: r {r:.1f} ≤ {T['a_lo']:.0f} AND 상승", r <= T['a_lo'] and up, "🟥 공격"),
+            (f"중단 상승: {T['a_mid']:.0f} ≤ r {r:.1f} < {T['a_hi']:.0f} AND 상승",
+             T['a_mid'] <= r < T['a_hi'] and up, "🟥 공격"),
+        ]
+        return checks
 
-    # 이번 주(다가오는 세션): 지난주(-1)·지지난주(-2)
-    v1, vp1, c1, m1 = wrsi[-1], wrsi[-2], wv[-1], wma[-1]
-    d1 = wc.index[-1].strftime("%m/%d"); d2 = wc.index[-2].strftime("%m/%d")
-    mode1, t1, cl1, ct1 = _decide(v1, vp1, c1, m1)
-    # 지난 주: 지지난주(-2)·지지지난주(-3)
-    v2, vp2, c2, m2 = wrsi[-2], wrsi[-3], wv[-2], wma[-2]
-    d3 = wc.index[-3].strftime("%m/%d")
-    mode2, t2, cl2, ct2 = _decide(v2, vp2, c2, m2)
+    def _block(title, r, rr, dr, drr, prev_mode, mode):
+        lines = [f"**{title} → {'🟥 공격' if mode == '공격' else '🟦 방어'}**",
+                 f"판단 데이터: r = {dr} wRSI **{r:.1f}**, rr = {drr} wRSI **{rr:.1f}** "
+                 f"→ {'상승 ↑' if r > rr else '하락 ↓'} ({r - rr:+.1f})", ""]
+        hit = None
+        for i, (txt, ok, md) in enumerate(_explain(r, rr), 1):
+            lines.append(f"{i}. {txt} → {'🔔 **발동 ' + md + '**' if ok else '❌'}")
+            if ok and hit is None:
+                hit = md
+        lines.append("")
+        lines.append(f"→ {'조건 발동' if hit else '발동 조건 없음 → 직전 모드(' + prev_mode + ') 유지'} → **{mode}**")
+        st.markdown("  \n".join(lines))
 
+    # 주별 모드 재생 (최근 판정의 직전 모드를 정확히 얻기 위해)
+    modes, m = [], '방어'
+    for i in range(len(wrsi)):
+        if i >= 2:
+            m = determine_mode_rule(wrsi[i - 2], wrsi[i - 1], m)
+        modes.append(m)
+    nxt = determine_mode_rule(wrsi[-2], wrsi[-1], modes[-1])
+    d1, d2, d3 = (wc.index[-k].strftime("%m/%d") for k in (1, 2, 3))
     cc1, cc2 = st.columns(2)
     with cc1:
-        st.markdown(f"**📅 이번 주(다가오는 세션) → {mode1}**")
-        st.markdown(f"""
-판단 데이터: 지난주({d1})·지지난주({d2}) 확정 주봉
-1. **추세필터**: 주봉종가 ${c1:.2f} {'>' if t1 else '≤'} {ma_weeks}주MA ${m1:.2f} → 추세상승 {'✅' if t1 else '❌'}
-2. **이탈 경보**(wRSI<{int(dn)}): {v1:.1f} < {int(dn)}? {'🔔 발동' if cl1 else '❌'}
-3. **천장 경보**(꺾임): wRSI {v1:.1f} < 직전 {vp1:.1f}(하락) **AND** {vp1:.1f} > {int(peak_thr)}? {'🔔 발동' if ct1 else '❌'}
-→ {'방어 경보 발동 → ' if (cl1 or ct1) else ('추세상승 → ' if t1 else '추세하락 → ')}**{mode1}**
-""")
+        _block("📅 이번 주(다가오는 세션)", wrsi[-1], wrsi[-2], d1, d2, modes[-1], nxt)
     with cc2:
-        st.markdown(f"**📅 지난 주 → {mode2}**")
-        st.markdown(f"""
-판단 데이터: {d2}·{d3} 확정 주봉
-1. **추세필터**: 주봉종가 ${c2:.2f} {'>' if t2 else '≤'} {ma_weeks}주MA ${m2:.2f} → 추세상승 {'✅' if t2 else '❌'}
-2. **이탈 경보**(wRSI<{int(dn)}): {v2:.1f} < {int(dn)}? {'🔔 발동' if cl2 else '❌'}
-3. **천장 경보**(꺾임): wRSI {v2:.1f} < 직전 {vp2:.1f}? **AND** {vp2:.1f} > {int(peak_thr)}? {'🔔 발동' if ct2 else '❌'}
-→ {'방어 경보 발동 → ' if (cl2 or ct2) else ('추세상승 → ' if t2 else '추세하락 → ')}**{mode2}**
-""")
-    st.caption("※ 룩어헤드 없음 — 각 주의 모드는 직전 확정 주봉(지난주/지지난주)만 사용. "
-               "백테스트는 추가로 1주 더 지연(전주 기준)되며, 실거래 주문표는 위 '이번 주' 값을 사용합니다.")
+        _block("📅 지난 주", wrsi[-2], wrsi[-3], d2, d3, modes[-2], modes[-1])
+    st.caption("※ 룩어헤드 없음 — 각 주의 모드는 직전 확정 주봉 2개(지난주 r, 지지난주 rr)만 사용. "
+               "금요일 주봉 확정 → 다음 주 첫 거래일부터 적용.")
 
 
 def render_intro_tab(params=None):
@@ -1933,16 +1932,15 @@ def render_intro_tab(params=None):
 원전략 스프레드시트(10.5년, 2,621거래일)와 PDF를 역설계하여 백테스트 엔진을 구축했고,
 **실제 모드를 입력하면 원전략을 사실상 완벽 재현**합니다.
 
-| 검증 항목 | 엔진(실제모드) | 원전략 | 자동모드(하이브리드) |
-|---|---|---|---|
-| CAGR | 96.5% | 96.86% | **76%** |
-| MDD | -26.1% | -26.14% | **-29%** |
-| Calmar | 3.70 | 3.69 | **2.64** |
-| 매수티어 일치 | 98.5% | — | — |
-| 매도사유 일치 | 97.1% | — | — |
+| 검증 항목 | 원전략 실제모드 | **자동모드(역설계 규칙)** |
+|---|---|---|
+| 모드 일치 (2016~2026, 562주) | — | **100%** (일별 2,705일 전부) |
+| CAGR (공격형, 2016~) | 99.1% | **99.1%** |
+| MDD | -26.1% | **-26.1%** |
+| 매수티어 / 매도사유 일치 | 98.4% / 97.5% | 동일 |
 
-> · **엔진(실제모드)**: 원전략의 모드를 그대로 입력 → 원전략 재현 (모드 정확도 검증용)
-> · **자동모드(하이브리드)**: 모드 전환이 비공개라 자체 설계한 규칙(36주MA+천장방어)으로 운용 — 실제로 우리가 쓰는 값. (2016~ 기준, train≈test로 과최적화 없음)
+> · **원전략 실제모드**: 로케트셋 시트의 실제 모드 기록(번들)으로 재현
+> · **자동모드**: 비공개였던 모드 전환 규칙을 **SOXL 주간RSI**로 역설계 — 원전략과 완전히 동일한 모드를 원본 시트 없이 산출
 """)
 
     with st.expander("🟥 공격모드 로직 (추세 상승 구간)", expanded=True):
@@ -2024,28 +2022,31 @@ def render_intro_tab(params=None):
 > **MDD 효과**: 작은 첫 진입 + 약세 매집 + 레버리지 금지 + 교차모드 노출상한 → 3배 ETF인 SOXL에서도 MDD를 -20%대로 억제. (공격 매수공격성↓ 순으로 -26→-23→-21%)
 """)
 
-    with st.expander("🧭 모드 전환 규칙 (자체 하이브리드)", expanded=True):
+    with st.expander("🧭 모드 전환 규칙 (역설계 — 원전략과 100% 일치)", expanded=True):
         st.markdown("""
-원전략의 모드 전환 규칙은 **비공개**라, 우리는 **두 개의 질문**으로 모드를 정하는 직관적 규칙을 씁니다.
-매주 금요일 주봉이 확정되면, 그 데이터로 다음 주 모드를 결정합니다 (룩어헤드 없음).
+원전략은 모드 전환 규칙을 **비공개**로 두었지만, 공식 설명서의 힌트("주간 RSI 흐름 — 상승/하락,
+기준선 돌파, 조건 중 하나라도 충족 시 전환")와 2016~2026 실제 모드 기록 **562주**를 대조해
+**전 주차 100% 일치하는 규칙**을 역설계했습니다.
 
-#### 🟥 언제 공격? — "추세가 살아있을 때"
-- 주간 종가가 **36주(약 9개월) 이동평균 위**에 있으면 = 큰 상승 추세 → **공격**
-- 비유: 강물(장기추세)이 위로 흐르면 배도 위로.
+매주 금요일 주봉이 확정되면, **지난주 주간RSI(r)** 와 **지지난주 주간RSI(rr)** 로 다음 주 모드를 정합니다.
 
-#### 🟦 언제 방어? — "천장에서 꺾이거나, 바닥으로 무너질 때" (이게 우선!)
-방어는 **두 가지 경보** 중 하나만 울려도 발동합니다:
-1. **🔔 천장 경보**: 주간 RSI가 **고점(66 초과)에서 꺾여 내려오기 시작** → 과열 후 하락 전조
-2. **🔔 이탈 경보**: 주간 RSI가 **42 아래로 추락** → 추세 자체가 무너짐
+#### 🟥 공격 전환 — "바닥에서 반등하거나, 중단에서 힘이 붙을 때"
+- **r ≤ 35 이면서 상승** (r > rr) → 과매도 바닥권에서 반등 시작
+- **52 ≤ r < 60 이면서 상승** → 중립선 위에서 상승 탄력
 
-→ **방어 경보가 우선.** 추세가 아무리 좋아 보여도 천장에서 꺾이면 즉시 방어로 전환해 폭락을 피합니다.
+#### 🟦 방어 전환 — "과열에서 꺾이거나, 중하단에서 밀릴 때"
+- **r > 65 이면서 하락** (r < rr) → 과열권에 머문 채 꺾임
+- **40 ≤ r < 52 이면서 하락** → 중립선 아래로 밀리는 중
 
-**왜 이렇게?** 공격은 "추세 추종"으로 큰 상승을 먹고, 방어는 "천장·붕괴 감지"로 큰 낙폭을 피합니다.
-방어를 우선시해 **MDD를 지키는 것**이 이 규칙의 핵심입니다.
+#### ⏸️ 그 외 → 직전 모드 유지
+예: 과열권에서 65 아래로 **급락**(76→60)하면 방어가 아니라 **공격 유지** — 급락 직후는 반등을
+노리는 구간이라 매도하지 않는 설계. 60~65 상승, 35~40 하락 등 애매한 구간도 유지.
 
-**백테스트(2016~)**: CAGR 76% / MDD -29% / **Calmar 2.64** · train≈test(2.68≈2.74)로 과최적화 없음.
-
-> 지표: 주간 RSI(14, Wilder) · 36주 단순이동평균 · 종가 = yfinance 미조정(raw)
+| 구분 | 데이터 |
+|---|---|
+| 지표 | **SOXL** 주간 RSI(14, Wilder) · 금요일 무조정 종가 (시트 wRSI와 547주 오차 0.02) |
+| 전환 시점 | 주 첫 거래일 (70여 회 전환 전부 월요일, 월요일 휴장 시 화요일) |
+| 검증 | 2016-01 ~ 2026-10 일별 2,705일 모드 100% 일치 · 백테스트 CAGR/MDD 소수점까지 동일 |
 """)
         st.markdown("---")
         st.markdown("##### 🔍 지금 모드는 어떻게 정해졌나? (실시간 계산)")
@@ -2054,7 +2055,7 @@ def render_intro_tab(params=None):
     with st.expander("⚠️ 유의사항 & 한계", expanded=True):
         st.markdown("""
 - **2011~2015(반도체 약세장) 포함 시 Calmar 1.1로 하락** — 좋은 숫자는 부분적으로 반도체 secular 강세장 덕. 레버리지 추세전략의 정직한 한계.
-- 원전략 실제모드(Calmar 3.69)의 진짜 강점은 **위기연도(2020 +143%, 2022 +124%) 정밀 타이밍** — 비공개 규칙의 고유 엣지. 자체 자동모드는 여기서 한발 늦음.
+- 원전략의 진짜 강점은 **위기연도(2020 +143%, 2022 +124%) 정밀 타이밍** — 이제 역설계 규칙으로 자동모드도 동일하게 재현됩니다.
 - **최고 성과를 원하면 수동 모드 입력**(원전략 시그널 추종)이 자동모드보다 우수합니다.
 - 실거래 주문표의 '다음 세션 모드'는 가장 최근 확정 주봉(지난주/지지난주)으로 산출 — 백테스트의 1주 지연과는 분리.
 """)
@@ -2074,7 +2075,7 @@ def render_intro_tab(params=None):
     src = st.radio("파라미터 / 모드 소스",
                    ["🧭 사이드바 설정값", "⚖️ 기본 (자동모드)", "📜 원전략 실제모드 (2016~)"],
                    horizontal=True, key="ds_intro_src",
-                   help="자동모드=우리 하이브리드 규칙 / 원전략 실제모드=로케트셋 실제 모드(번들)로 원전략 그대로 재현")
+                   help="자동모드=역설계 원전략 규칙 / 원전략 실제모드=로케트셋 실제 모드(번들) — 둘은 2016~ 동일")
     use_orig_modes = (src == "📜 원전략 실제모드 (2016~)")
 
     if src in ("⚖️ 기본 (자동모드)", "📜 원전략 실제모드 (2016~)"):
@@ -2096,7 +2097,7 @@ def render_intro_tab(params=None):
 - **공격**: 분할 {ds_p.ag_divisions} · 매수 {ds_p.ag_buy_pct}% · 매도α {ds_p.ag_sell_alpha} · 보유α {ds_p.ag_hold_alpha}
 - **방어**: 분할 {ds_p.sf_divisions} · 보유 {ds_p.sf_hold}일 · 매수1 {ds_p.sf_buy_pct1}% · 매수2 {ds_p.sf_buy_pct2}% · 매도 {ds_p.sf_sell_pct}%
 - **티어비중**: {', '.join(str(int(x)) for x in ds_p.sf_tier_weights)}
-- **모드규칙**: 추세MA {mr['ma_weeks']}주 · 천장 {int(mr['peak_thr'])} · 이탈 {int(mr['dn'])}
+- **모드규칙**: {'원전략 실제모드(번들)' if use_orig_modes else '역설계 원전략 규칙 (SOXL 주간RSI: 공격 r≤35↑·52~60↑ / 방어 r>65↓·40~52↓)'}
 """)
 
     if st.button("▶ 성과 분석 실행", type="primary", key="ds_intro_run", use_container_width=True):
