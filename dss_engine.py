@@ -595,6 +595,80 @@ class DSSParams:
     renewal_period: int = 10     # 투자금갱신주기
     pcr: float = 0.80            # 이익복리율
     lcr: float = 0.30            # 손실복리율
+    # 티어별 매수 비중 (티어 k = 장 시작(주문 시점) 보유 수 + 1 — 주문표는 장 전에
+    # 나가므로 당일 매도 체결과 무관하게 이 티어 수량으로 매수). 비어 있으면 균등.
+    # 길이가 분할수와 다르면 균등으로 처리. 0 = 보초병(1주 매수).
+    tier_weights: tuple = ()
+    # "norm": 비중 합 = 투자금 100% (상대 비중)
+    # "raw":  티어 시드 = 투자금/분할수 × 비중 (만능스위치 seed_w 방식,
+    #         합이 분할수를 넘으면 투자금 이상 매수 — 예수금 한도 내)
+    tier_weight_mode: str = "norm"
+    # 모드별 비중 (지정 시 tier_weights보다 우선). 매수 시점 모드 기준.
+    sf_tier_weights: tuple = ()
+    ag_tier_weights: tuple = ()
+    # 추세 필터 (실험): 장 시작 전 정보(전일 종가 vs 전일 이동평균)로 하락 추세를
+    # 판정해 신규 티어 매수를 줄이거나 멈춤. 매도·손절은 그대로. trend_ma=0이면 꺼짐.
+    trend_ma: int = 0             # 이동평균 기간 (거래일)
+    trend_src: str = "soxl"       # "soxl" | "qqq" (qqq는 trend_prices 인자로 종가 전달)
+    trend_mult: float = 0.0       # 하락 추세 시 매수 수량 배율 (0 = 매수 중단)
+    trend_rsi: bool = False       # True면 '주간 RSI 하락(R < RR)'도 함께 만족할 때만 발동
+
+
+def tier_seed(capital: float, divisions: int, tier: int, weights,
+              mode: str = "norm") -> float:
+    """티어(1-based)의 1회시드. weights가 없거나 분할수와 길이가 다르면 균등."""
+    if not weights or len(weights) != divisions:
+        return capital / divisions
+    if mode == "raw":
+        return capital / divisions * float(weights[tier - 1])
+    total = float(sum(weights))
+    if total <= 0:
+        return capital / divisions
+    return capital * float(weights[tier - 1]) / total
+
+
+def parse_tier_weights(s) -> tuple:
+    """'0,4,1.25,...' 문자열/리스트 → float 튜플. 빈 값·오류는 () (= 균등)."""
+    if s is None:
+        return ()
+    if isinstance(s, (list, tuple)):
+        items = s
+    else:
+        items = [x for x in str(s).replace(" ", "").split(",") if x != ""]
+    try:
+        w = tuple(float(x) for x in items)
+    except (TypeError, ValueError):
+        return ()
+    return w if w and all(x >= 0 for x in w) and sum(w) > 0 else ()
+
+
+def mode_tier_weights(params, mode: str) -> tuple:
+    """해당 모드의 티어 비중 (모드별 지정 > 공통 > 균등)."""
+    w = params.ag_tier_weights if mode == "AG" else params.sf_tier_weights
+    return tuple(w or params.tier_weights or ())
+
+
+def order_buy_plan(params, mode: str, capital: float, n_pos: int,
+                   buy_order: float) -> tuple:
+    """주문표용 다음 티어 매수 (수량, 1회시드). 웹·텔레그램 공용 (SSOT).
+
+    엔진 백테스트의 매수 수량 규칙과 동일: 티어 = 보유 수 + 1,
+    비중이 분할수와 길이가 맞으면 비중 시드(보초병 최소 1주), 아니면 균등."""
+    div = params.ag_divisions if mode == "AG" else params.sf_divisions
+    w = mode_tier_weights(params, mode)
+    if w and len(w) == div and n_pos < div:
+        seed = tier_seed(capital, div, n_pos + 1, w, params.tier_weight_mode)
+        return tier_buy_qty(seed, buy_order, w), seed
+    seed = capital / div
+    return (int(seed / buy_order) if buy_order > 0 else 0), seed
+
+
+def tier_buy_qty(seed: float, buy_order: float, weights) -> int:
+    """매수 수량. 비중이 지정된 경우 최소 1주(보초병)를 보장한다."""
+    qty = int(seed / buy_order) if buy_order > 0 else 0
+    if weights and qty < 1:
+        qty = 1
+    return qty
 
 
 def get_mode_for_date(date: pd.Timestamp, mode_series: pd.DataFrame) -> str:
@@ -656,12 +730,67 @@ def get_current_week_mode(mode_series: pd.DataFrame) -> str:
     return determine_mode(rr, r, prev_mode)
 
 
+_TREND_CACHE = []
+
+
+def _week_rsi_falling_map(mode_series, idx) -> dict:
+    """거래일 → 그 주에 적용되는 'R(1주 전) < RR(2주 전)' 여부 (모드 판정과 같은 확정 정보)."""
+    out = {}
+    rsi = list(mode_series["rsi"].astype(float))
+    ends = [pd.Timestamp(x) for x in mode_series["week_end"]]
+    for i, fri in enumerate(ends):
+        if i < 2:
+            continue
+        falling = rsi[i - 1] < rsi[i - 2]
+        mon = fri - pd.Timedelta(days=4)
+        for d in idx[(idx >= mon) & (idx <= fri)]:
+            out[d] = falling
+    if len(ends) >= 2:   # 아직 행이 없는 진행 중 주: 최근 두 확정 주로 판정
+        falling = rsi[-1] < rsi[-2]
+        for d in idx[idx > ends[-1]]:
+            out[d] = falling
+    return out
+
+
+def trend_flags(params, soxl_daily, mode_series, trend_prices=None) -> dict:
+    """거래일 → 하락 추세 필터 발동 여부. 전일 종가 < 전일 이동평균 (장 전 확정 정보)."""
+    if not params.trend_ma or params.trend_ma <= 0:
+        return {}
+    src = trend_prices if (params.trend_src == "qqq" and trend_prices is not None) \
+        else soxl_daily["Close"]
+    key = (id(src), id(mode_series), id(soxl_daily.index), int(params.trend_ma),
+           params.trend_src, bool(params.trend_rsi))
+    for k, v, _refs in _TREND_CACHE:
+        if k == key:
+            return v
+    px = pd.Series(np.asarray(src, dtype=float).ravel(), index=pd.to_datetime(src.index)).sort_index()
+    ma = px.rolling(int(params.trend_ma)).mean()
+    below_prev = (px < ma).shift(1).fillna(False)      # 전일 기준 → 당일 장 전에 확정
+    idx = pd.to_datetime(soxl_daily.index)
+    below = below_prev.reindex(idx).fillna(False)
+    flags = dict(zip(idx, below.values.astype(bool)))
+    if params.trend_rsi:
+        fall = _week_rsi_falling_map(mode_series, idx)
+        flags = {d: bool(f and fall.get(d, False)) for d, f in flags.items()}
+    _TREND_CACHE.append((key, flags, (src, mode_series, soxl_daily.index)))
+    del _TREND_CACHE[:-8]
+    return flags
+
+
+def apply_trend(buy_qty: int, active: bool, mult: float) -> int:
+    """하락 추세면 매수 수량에 배율 적용 (0 = 매수 안 함)."""
+    if not active:
+        return buy_qty
+    return int(buy_qty * mult) if mult > 0 else 0
+
+
 def run_backtest(params: DSSParams,
                  soxl_daily: pd.DataFrame,
                  mode_series: pd.DataFrame,
                  start_date: str = "2024-01-02",
                  end_date: str = "2026-04-10",
-                 capital_adj_history: list = None) -> pd.DataFrame:
+                 capital_adj_history: list = None,
+                 trend_prices=None) -> pd.DataFrame:
     """
     DSS 동파법 백테스트 실행.
 
@@ -691,6 +820,7 @@ def run_backtest(params: DSSParams,
 
     # 모드 맵 생성
     mode_map = get_week_mode_map(mode_series, all_trading_days)
+    _tflags = trend_flags(params, soxl_daily, mode_series, trend_prices)
 
     # 자본 조정 이력 정렬 (날짜 오름차순)
     pending_adjs = []
@@ -826,7 +956,16 @@ def run_backtest(params: DSSParams,
             buy_order_price = math.floor(prev_close * (1 + buy_pct) * 100) / 100  # ROUNDDOWN 2자리
 
             if close <= buy_order_price:
-                buy_qty = int(seed_per_trade / buy_order_price)
+                _tw = tuple((params.ag_tier_weights if mode == "AG"
+                             else params.sf_tier_weights) or params.tier_weights or ())
+                if _tw and len(_tw) == divisions:
+                    buy_qty = tier_buy_qty(
+                        tier_seed(seed_per_trade * divisions, divisions, n_pos_at_open + 1, _tw,
+                                  params.tier_weight_mode),
+                        buy_order_price, _tw)
+                else:
+                    buy_qty = int(seed_per_trade / buy_order_price)
+                buy_qty = apply_trend(buy_qty, _tflags.get(date, False), params.trend_mult)
                 if buy_qty > 0:
                     buy_amount = buy_qty * close
                     buy_fee = buy_amount * params.fee_rate
@@ -905,12 +1044,31 @@ def run_backtest(params: DSSParams,
 # 5. 최적화 전용 경량 백테스트
 # ──────────────────────────────────────────────
 
+# 최적화 반복 호출 시 get_week_mode_map(전체 실행시간의 ~70%)을 매번 다시
+# 만들지 않도록, 같은 mode_series/index 객체에 대한 결과를 보관한다.
+# 객체 참조를 함께 보관하므로 id 재사용으로 잘못된 맵을 돌려줄 일은 없다
+# (데이터를 제자리 수정하지 않는다는 전제).
+_FAST_MAP_CACHE = []
+
+
+def _fast_lookup_maps(mode_series, idx):
+    for ms, ix, mm, d2i in _FAST_MAP_CACHE:
+        if ms is mode_series and ix is idx:
+            return mm, d2i
+    mm = get_week_mode_map(mode_series, idx)
+    d2i = {d: i for i, d in enumerate(idx)}
+    _FAST_MAP_CACHE.append((mode_series, idx, mm, d2i))
+    del _FAST_MAP_CACHE[:-4]
+    return mm, d2i
+
+
 def run_backtest_fast(params: DSSParams,
                       soxl_daily: pd.DataFrame,
                       mode_series: pd.DataFrame,
                       start_date: str = "2024-01-02",
                       end_date: str = "2026-04-10",
-                      capital_adj_history: list = None) -> dict:
+                      capital_adj_history: list = None,
+                      trend_prices=None) -> dict:
     """
     최적화 전용 경량 백테스트.
     UI 출력용 데이터를 생성하지 않고, 핵심 지표만 반환.
@@ -946,19 +1104,15 @@ def run_backtest_fast(params: DSSParams,
         soxl_daily.values[mask_bool, close_col].astype(np.float64), 2
     )
 
-    # 모드 맵: 0=SF, 1=AG (int 배열)
-    mode_map = get_week_mode_map(mode_series, idx)
+    # 모드 맵(0=SF, 1=AG) / 거래일→인덱스 룩업 — 같은 데이터 객체면 재사용
+    mode_map, date_to_idx = _fast_lookup_maps(mode_series, idx)
+    _tflags = trend_flags(params, soxl_daily, mode_series, trend_prices)
+    _tmult = params.trend_mult
     mode_arr = np.array(
         [1 if mode_map.get(d, "AG") == "AG" else 0 for d in trade_dates],
         dtype=np.int8
     )
-
-    # 손절일용: 거래일 → 인덱스 룩업
-    all_dates_list = list(idx)
-    date_to_idx = {}
-    for ii, d in enumerate(all_dates_list):
-        date_to_idx[d] = ii
-    n_all = len(all_dates_list)
+    n_all = len(idx)
 
     # 파라미터 로컬 변수화 (속성 접근 오버헤드 제거)
     sf_div = params.sf_divisions
@@ -975,6 +1129,10 @@ def run_backtest_fast(params: DSSParams,
     pcr_val = params.pcr
     lcr_val = params.lcr
     init_cap = params.initial_capital
+    tier_w_base = tuple(params.tier_weights or ())
+    tier_w_sf = tuple(params.sf_tier_weights or ()) or tier_w_base
+    tier_w_ag = tuple(params.ag_tier_weights or ()) or tier_w_base
+    tier_mode = params.tier_weight_mode
 
     # 포지션: 리스트 of [sell_target, stop_idx, qty, buy_amt, buy_fee]
     positions = []
@@ -1031,6 +1189,7 @@ def run_backtest_fast(params: DSSParams,
             max_hold = sf_hold
 
         seed = capital / divisions
+        tier_w = tier_w_ag if is_ag else tier_w_sf
         cur_idx = date_to_idx.get(trade_dates[i])
 
         # 당일 시작 보유 수 — 당일 매도로 빈 슬롯의 같은 날 재매수 금지
@@ -1063,7 +1222,14 @@ def run_backtest_fast(params: DSSParams,
         if prev_close is not None and n_pos_at_open < divisions and len(positions) < divisions:
             buy_order = math.floor(prev_close * (1 + buy_pct) * 100) / 100
             if close <= buy_order:
-                buy_qty = int(seed / buy_order)
+                if tier_w and len(tier_w) == divisions:
+                    buy_qty = tier_buy_qty(
+                        tier_seed(seed * divisions, divisions, n_pos_at_open + 1, tier_w, tier_mode),
+                        buy_order, tier_w)
+                else:
+                    buy_qty = int(seed / buy_order)
+                if _tflags:
+                    buy_qty = apply_trend(buy_qty, _tflags.get(cur_date, False), _tmult)
                 if buy_qty > 0:
                     buy_amt = buy_qty * close
                     buy_fee = buy_amt * fee_r

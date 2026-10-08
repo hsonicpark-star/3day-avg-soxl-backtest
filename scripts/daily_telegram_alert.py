@@ -490,7 +490,8 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     try:
         from dss_engine import (DSSParams, run_backtest, build_weekly_rsi_series,
                                 build_mode_series, get_week_mode_map,
-                                get_current_week_mode, next_us_trading_days)
+                                get_current_week_mode, next_us_trading_days,
+                                parse_tier_weights, order_buy_plan)
     except ImportError as e:
         print(f"    ⚠️ dss_engine import 실패: {e}")
         return None
@@ -538,6 +539,9 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         initial_capital=os_capital,
         fee_rate=fee / 100, renewal_period=renew,
         pcr=pcr / 100, lcr=lcr / 100,
+        # 티어별 매수 비중 (W 프리셋) — 웹 주문표와 동일 (빈 값 = 균등)
+        sf_tier_weights=parse_tier_weights(ap.get("sf_w", "")),
+        ag_tier_weights=parse_tier_weights(ap.get("ag_w", "")),
     )
 
     today_str = datetime.today().strftime("%Y-%m-%d")
@@ -634,9 +638,10 @@ def calc_dss_order(acct_data: dict) -> dict | None:
                 continue
 
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
-    # 엔진의 capital(투자금)은 PCR 갱신 + 자본 조정 모두 이미 반영된 값
-    seed_per_trade = capital / cur_div if cur_div > 0 else capital
-    buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
+    # 엔진의 capital(투자금)은 PCR 갱신 + 자본 조정 모두 이미 반영된 값.
+    # 티어 비중 반영 수량 — 웹 주문표와 같은 엔진 함수 사용 (SSOT)
+    buy_qty_est, seed_per_trade = order_buy_plan(
+        dss_params, last_mode, capital, n_pos, next_buy_order)
 
     return {
         "prev_close": prev_close, "last_date": last_date, "last_mode": last_mode,

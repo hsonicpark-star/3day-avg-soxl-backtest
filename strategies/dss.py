@@ -43,6 +43,7 @@ from dss_engine import (
     get_week_mode_map, get_current_week_mode,
     run_backtest, run_backtest_fast, DSSParams,
     next_us_trading_days,
+    parse_tier_weights, order_buy_plan,
 )
 
 from common.config import _IS_CLOUD, _CONFIG, load_config, save_config, \
@@ -558,6 +559,12 @@ def render_sidebar():
     initial_capital = bc1.number_input("초기투자금", min_value=1000, max_value=10000000, value=10000, step=1000, key="dss_cap")
     fee_rate = bc2.number_input("수수료(%)", min_value=0.0, max_value=1.0, value=0.04, step=0.001, format="%.3f", key="dss_fee")
 
+    with st.sidebar.expander("🎚️ 티어별 매수 비중 (W)", expanded=False):
+        st.caption("쉼표로 구분, 분할수와 개수가 같아야 적용 (다르거나 비우면 균등). "
+                   "0 = 보초병(1주). 예: 0,4,1.25,1.25,1.25,1.25,1.25,1")
+        sf_w = st.text_input("안전(SF) 비중", value="", key="dss_sf_w")
+        ag_w = st.text_input("공세(AG) 비중", value="", key="dss_ag_w")
+
     dc1, dc2 = st.sidebar.columns(2)
     start_date = dc1.date_input("투자시작일", value=pd.Timestamp("2010-03-12"), key="dss_start")
     end_date = dc2.date_input("투자종료일", value=datetime.today().date(), key="dss_end")
@@ -566,6 +573,7 @@ def render_sidebar():
         "sf_div": sf_div, "sf_hold": sf_hold, "sf_buy": sf_buy, "sf_sell": sf_sell,
         "ag_div": ag_div, "ag_hold": ag_hold, "ag_buy": ag_buy, "ag_sell": ag_sell,
         "pcr": pcr, "lcr": lcr, "renewal_period": renewal_period,
+        "sf_w": _w_str(sf_w), "ag_w": _w_str(ag_w),
         "initial_capital": initial_capital, "fee_rate": fee_rate,
         "start_date": start_date, "end_date": end_date,
         "bt_ticker": "SOXL",
@@ -585,6 +593,7 @@ def _make_params(p):
         fee_rate=p["fee_rate"] / 100,
         renewal_period=p["renewal_period"],
         pcr=p["pcr"] / 100, lcr=p["lcr"] / 100,
+        **_w_kwargs(p),
     )
 
 
@@ -1396,8 +1405,9 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
                 })
 
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
-    seed_per_trade = capital / cur_divisions
-    buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
+    # 티어 비중 반영 (균등이면 기존과 동일: 투자금/분할수)
+    buy_qty_est, seed_per_trade = order_buy_plan(
+        os_params, last_mode, capital, n_pos, next_buy_order)
 
     weekly_rsi_df = build_weekly_rsi_series(qqq)
     latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
@@ -1487,8 +1497,9 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
                 continue
     capital += adj_applied
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
-    seed_per_trade = capital / cur_divisions
-    buy_qty_est = int(seed_per_trade / next_buy_order) if next_buy_order > 0 else 0
+    # 티어 비중 반영 (균등이면 기존과 동일: 투자금/분할수)
+    buy_qty_est, seed_per_trade = order_buy_plan(
+        os_params, last_mode, capital, 0, next_buy_order)
 
     weekly_rsi_df = build_weekly_rsi_series(qqq)
     latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
@@ -1540,11 +1551,45 @@ _DSS_PRESETS = [
      "ag_div": 7, "ag_hold": 6, "ag_buy": 2.9, "ag_sell": 6.5,
      "pcr": 65, "lcr": 20, "renewal_period": 12, "fee_rate": 0.04,
      "help": "sonic형 (2010~ 풀히스토리 최적화)\nCAGR 61.9% | MDD -39.6% | Calmar 1.563\n전 기간 강건 + 최저 MDD"},
+    # ── W 프리셋: 티어별 매수 비중 (2026-10 최적화, 비중 0 = 보초병 1주) ──
+    # 수치는 엔진 v2(티어 = 장 시작 보유수+1, 주문표와 동일) 기준. 검증: verify_dss_presets_v2.py
+    {"label": "🎯 보초형W", "sf_div": 8, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
+     "ag_div": 8, "ag_hold": 8, "ag_buy": 3.15, "ag_sell": 3.75,
+     "pcr": 75, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+     "sf_w": "0,4,1.25,1.25,1.25,1.25,1.25,1", "ag_w": "0,4,1.25,1.25,1.25,1.25,1.25,1",
+     "help": "보초형W — 공격형 + 1티어 보초병·2티어 집중(36%)\n"
+             "16년 CAGR 75.3% | MDD -46.1% | Calmar 1.63\n워크포워드 양방향·봉인구간 통과"},
+    {"label": "🎭 양면형W", "sf_div": 8, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
+     "ag_div": 7, "ag_hold": 8, "ag_buy": 3.15, "ag_sell": 3.75,
+     "pcr": 75, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+     "sf_w": "0,2.5,1,1.188,1.375,1.562,1.75,0.5", "ag_w": "0,4.75,0.25,0.417,0.583,0.75,2.25",
+     "help": "양면형W — 공격형 + 모드별 비중 (안전: 사다리, 공세: 2티어 53% 집중)\n"
+             "16년 CAGR 75.5% | MDD -47.5% | Calmar 1.59\n반기·봉인구간 성과 W 중 최고, 흔들기 최상"},
+    {"label": "🧱 철벽형W", "sf_div": 8, "sf_hold": 42, "sf_buy": 2.8, "sf_sell": 1.9,
+     "ag_div": 7, "ag_hold": 6, "ag_buy": 3.55, "ag_sell": 4.9,
+     "pcr": 65, "lcr": 20, "renewal_period": 17, "fee_rate": 0.04,
+     "sf_w": "0,3.5,1.5,1.562,1.625,1.688,1.75,0.5", "ag_w": "0,4,0.5,0.667,0.833,1,2.5",
+     "help": "철벽형W — 저MDD (2010~2023만으로 탐색, 2024~ 봉인구간 검증 통과)\n"
+             "16년 CAGR 60.3% | MDD -37.0% | Calmar 1.63"},
 ]
 
 _DSS_PARAM_KEYS = ["sf_div","sf_hold","sf_buy","sf_sell",
                    "ag_div","ag_hold","ag_buy","ag_sell",
                    "pcr","lcr","renewal_period","fee_rate"]
+# 티어 비중 (쉼표 문자열, 빈 값 = 균등) — 숫자 키와 별도 취급
+_DSS_W_KEYS = ["sf_w", "ag_w"]
+_DSS_ALL_KEYS = _DSS_PARAM_KEYS + _DSS_W_KEYS
+
+
+def _w_str(v) -> str:
+    """비중 값 → 정규화 문자열 ('' = 균등). 프리셋 비교·저장용."""
+    return ",".join(f"{x:g}" for x in parse_tier_weights(v))
+
+
+def _w_kwargs(d) -> dict:
+    """params dict → DSSParams 티어 비중 인자."""
+    return {"sf_tier_weights": parse_tier_weights(d.get("sf_w", "")),
+            "ag_tier_weights": parse_tier_weights(d.get("ag_w", ""))}
 
 _DSS_DEFAULT_PARAMS = _DSS_PRESETS[2]  # 안정형을 기본값으로
 
@@ -1567,6 +1612,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     cur_lcr     = _ap.get("lcr",     _DSS_DEFAULT_PARAMS["lcr"])
     cur_renew   = _ap.get("renewal_period", _DSS_DEFAULT_PARAMS["renewal_period"])
     cur_fee     = _ap.get("fee_rate", _DSS_DEFAULT_PARAMS["fee_rate"])
+    cur_sf_w    = _w_str(_ap.get("sf_w", ""))
+    cur_ag_w    = _w_str(_ap.get("ag_w", ""))
 
     # ── 파라미터 테이블 ──
     # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
@@ -1581,7 +1628,9 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     _cur_preset_dss = None
     for _pp0 in _DSS_PRESETS:
         if all(abs(float(_cur_vals_dss[_k]) - float(_pp0[_k])) < 1e-9
-               for _k in _DSS_PARAM_KEYS):
+               for _k in _DSS_PARAM_KEYS) and \
+                cur_sf_w == _w_str(_pp0.get("sf_w", "")) and \
+                cur_ag_w == _w_str(_pp0.get("ag_w", "")):
             _cur_preset_dss = _pp0["label"]
             break
 
@@ -1635,6 +1684,9 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             """,
             unsafe_allow_html=True,
         )
+        if cur_sf_w or cur_ag_w:
+            st.caption(f"🎚️ 티어 비중 — 안전(SF): `{cur_sf_w or '균등'}` · "
+                       f"공세(AG): `{cur_ag_w or '균등'}` (0 = 보초병 1주)")
 
         # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
         with st.expander("✏️ 파라미터 수정"):
@@ -1645,6 +1697,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                                 help=_pr["help"], use_container_width=True):
                     for _k in _DSS_PARAM_KEYS:
                         st.session_state[f"dss_{sfx}_edit_{_k}"] = _pr[_k]
+                    for _k in _DSS_W_KEYS:
+                        st.session_state[f"dss_{sfx}_edit_{_k}"] = _w_str(_pr.get(_k, ""))
                     st.rerun()
             st.divider()
 
@@ -1655,6 +1709,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 "ag_buy": float(cur_ag_buy), "ag_sell": float(cur_ag_sell),
                 "pcr": cur_pcr, "lcr": cur_lcr,
                 "renewal_period": cur_renew, "fee_rate": float(cur_fee),
+                "sf_w": cur_sf_w, "ag_w": cur_ag_w,
             }
             for _k, _v in _edit_defaults.items():
                 _skey = f"dss_{sfx}_edit_{_k}"
@@ -1682,11 +1737,29 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             _ec3.number_input("투자금갱신주기",     min_value=1, max_value=100, step=1, key=f"dss_{sfx}_edit_renewal_period")
             _ec4.number_input("수수료(%)",         min_value=0.0, max_value=1.0, step=0.001, format="%.3f", key=f"dss_{sfx}_edit_fee_rate")
 
+            st.markdown("**티어별 매수 비중 (W)** — 쉼표 구분, 개수 = 분할수, 비우면 균등, 0 = 보초병(1주)")
+            _ew1, _ew2 = st.columns(2)
+            _ew1.text_input("안전(SF) 비중", key=f"dss_{sfx}_edit_sf_w",
+                            placeholder="예: 0,4,1.25,1.25,1.25,1.25,1.25,1")
+            _ew2.text_input("공세(AG) 비중", key=f"dss_{sfx}_edit_ag_w",
+                            placeholder="비우면 균등")
+
             if st.button("💾 파라미터 저장", type="primary", key=f"dss_{sfx}_save_params",
                          use_container_width=True):
                 _new_params = {}
                 for _k in _edit_defaults:
                     _new_params[_k] = st.session_state[f"dss_{sfx}_edit_{_k}"]
+                _w_warn = []
+                for _wk, _dk, _lab in (("sf_w", "sf_div", "안전(SF)"), ("ag_w", "ag_div", "공세(AG)")):
+                    _raw_w = str(_new_params.get(_wk, "") or "").strip()
+                    _new_params[_wk] = _w_str(_raw_w)
+                    _n_w = len(parse_tier_weights(_raw_w))
+                    if _raw_w and _n_w == 0:
+                        _w_warn.append(f"{_lab} 비중 형식 오류 → 균등으로 저장")
+                    elif _n_w and _n_w != int(_new_params[_dk]):
+                        _w_warn.append(f"{_lab} 비중 {_n_w}개 ≠ 분할수 {_new_params[_dk]} → 균등으로 동작")
+                for _wm in _w_warn:
+                    st.warning(_wm)
                 acct_data["params"] = _new_params
                 cfg["accounts"][acct_name] = acct_data
                 _save_dss_config(cfg)
@@ -1963,6 +2036,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 fee_rate=cur_fee / 100,
                 renewal_period=cur_renew,
                 pcr=cur_pcr / 100, lcr=cur_lcr / 100,
+                **_w_kwargs({"sf_w": cur_sf_w, "ag_w": cur_ag_w}),
             )
 
             today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -2664,7 +2738,7 @@ def render_ordersheet_tab(params):
             "os_start": str(_legacy_start),
             "os_capital": float(_legacy_capital),
             "capital_adj_history": _legacy_adj if isinstance(_legacy_adj, list) else [],
-            "params": {k: _DSS_DEFAULT_PARAMS[k] for k in _DSS_PARAM_KEYS},
+            "params": {k: _DSS_DEFAULT_PARAMS.get(k, "") for k in _DSS_ALL_KEYS},
         }}
         _cfg["accounts"] = _accounts
         _save_dss_config(_cfg)
@@ -2696,7 +2770,7 @@ def render_ordersheet_tab(params):
                     "os_start": str(_new_start),
                     "os_capital": float(_new_capital),
                     "capital_adj_history": [],
-                    "params": {k: _sel_preset[k] for k in _DSS_PARAM_KEYS},
+                    "params": {k: _sel_preset.get(k, "") for k in _DSS_ALL_KEYS},
                 }
                 _cfg["accounts"] = _accounts
                 _save_dss_config(_cfg)
@@ -3214,6 +3288,8 @@ RSI   = RS / (1 + RS) × 100
         _use_p = dict(p)
         for _k in _DSS_PARAM_KEYS:
             _use_p[_k] = _pr[_k]
+        for _k in _DSS_W_KEYS:
+            _use_p[_k] = _pr.get(_k, "")
 
     # 선택된 파라미터 미리보기
     with st.expander("🔍 적용 파라미터 확인", expanded=False):
@@ -3228,6 +3304,9 @@ RSI   = RS / (1 + RS) × 100
             f"PCR {_use_p['pcr']}% · LCR {_use_p['lcr']}% · "
             f"갱신주기 {_use_p['renewal_period']}일 · 수수료 {_use_p['fee_rate']}% · "
             f"기간 {_start_date} ~ {_end_date} · 자본 ${_initial_capital:,.0f}")
+        if _use_p.get("sf_w") or _use_p.get("ag_w"):
+            st.caption(f"🎚️ 티어 비중 — 안전(SF): `{_use_p.get('sf_w') or '균등'}` · "
+                       f"공세(AG): `{_use_p.get('ag_w') or '균등'}` (0 = 보초병 1주)")
 
     if st.button("▶ 성과 분석 실행", type="primary", key="dss_run_intro_perf"):
         with st.spinner("데이터 로드 및 분석 중..."):
@@ -3248,6 +3327,7 @@ RSI   = RS / (1 + RS) × 100
                 fee_rate=_use_p["fee_rate"]/100,
                 renewal_period=_use_p["renewal_period"],
                 pcr=_use_p["pcr"]/100, lcr=_use_p["lcr"]/100,
+                **_w_kwargs(_use_p),
             )
 
             bt_intro = run_backtest(
@@ -3869,6 +3949,7 @@ RSI   = RS / (1 + RS) × 100
                                 ag_sell_pct=_sv if _sens_mode != "안전모드 (SF)" else p["ag_sell"]/100,
                                 initial_capital=_initial_capital, fee_rate=p["fee_rate"]/100,
                                 renewal_period=p["renewal_period"], pcr=p["pcr"]/100, lcr=p["lcr"]/100,
+                                **_w_kwargs(p),
                             )
                             _bt_s = run_backtest(_p_s, soxl_s, ms_s, _start_date, _end_date)
                             if _bt_s is not None and len(_bt_s) > 10:
@@ -3944,7 +4025,8 @@ RSI   = RS / (1 + RS) × 100
                             ag_divisions=p["ag_div"], ag_max_hold=p["ag_hold"],
                             ag_buy_pct=p["ag_buy"]/100, ag_sell_pct=p["ag_sell"]/100,
                             initial_capital=_initial_capital, fee_rate=p["fee_rate"]/100,
-                            renewal_period=p["renewal_period"], pcr=p["pcr"]/100, lcr=p["lcr"]/100)
+                            renewal_period=p["renewal_period"], pcr=p["pcr"]/100, lcr=p["lcr"]/100,
+                            **_w_kwargs(p))
                         for _ci, _si in enumerate(_mc_chosen):
                             _s_dt = str(_mc_idx[_si].date())
                             _e_dt = str(_mc_idx[_si + _WINDOW - 1].date())
