@@ -136,8 +136,11 @@ if _is_manse:
 dss = None
 if _is_dss:
     try:
-        from strategies import dss
         import importlib
+        # 엔진을 먼저 다시 읽어야 재배포 후 dss.py가 새 엔진 함수를 import 할 수 있음
+        import dss_engine as _dss_engine
+        importlib.reload(_dss_engine)
+        from strategies import dss
         importlib.reload(dss)
     except Exception as _dss_err:
         st.error(f"⚠️ DSS 모듈 로드 실패: {_dss_err}")
