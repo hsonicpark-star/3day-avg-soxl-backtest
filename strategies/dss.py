@@ -2544,12 +2544,20 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                     errors="coerce")
                 _dfp = _dfp[_dfp["_ta"].notna()].sort_values("_d")
                 if len(_dfp) >= 2:
-                    _eq = np.array(
-                        [float(_ta) - sum(a for ad, a in _adj_pairs_dss if ad <= _dstr)
-                         for _dstr, _ta in zip(_dfp["_d"], _dfp["_ta"])], dtype=float)
-                    _pk = np.maximum.accumulate(_eq)
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        _ddv = np.where(_pk > 0, (_eq - _pk) / _pk, 0.0)
+                    # 시간가중(TWR): 하루 수익률 = (Δ총자산 − 그날 입출금) / 전일 총자산.
+                    # DSS 엔진은 자본조정을 해당 날짜에 주입하므로 날짜별 flow 차감이 정확.
+                    # ('총자산 − 누적입금' 수준 방식은 입금이 자산 대비 크면 % 과장 → 폐기)
+                    _ta = _dfp["_ta"].values.astype(float); _ds = list(_dfp["_d"])
+                    _flow = {ad: 0.0 for ad, _ in _adj_pairs_dss}
+                    for ad, a in _adj_pairs_dss:
+                        _flow[ad] = _flow.get(ad, 0.0) + a
+                    _r = np.zeros(len(_ta))
+                    for _k in range(1, len(_ta)):
+                        _r[_k] = ((_ta[_k] - _ta[_k - 1] - _flow.get(_ds[_k], 0.0)) / _ta[_k - 1]
+                                  if _ta[_k - 1] > 0 else 0.0)
+                    _idx = np.cumprod(1.0 + _r)
+                    _pk = np.maximum.accumulate(_idx)
+                    _ddv = _idx / _pk - 1.0
                     _cur_dd_d = float(_ddv[-1]) * 100
                     _mdd_d = float(_ddv.min()) * 100
 

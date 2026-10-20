@@ -1973,14 +1973,19 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _dfp = _df_hist.copy()
             _dfp["_d"] = _dfp["날짜"].astype(str)
             _dfp["_ta"] = pd.to_numeric(_dfp["총자산($)"], errors="coerce")
-            _dfp = _dfp[_dfp["_ta"].notna()].sort_values("_d")
+            _dfp["_h"] = pd.to_numeric(_dfp["보유주수"], errors="coerce").fillna(0)
+            _dfp["_c"] = pd.to_numeric(_dfp["종가(x)"], errors="coerce")
+            _dfp = _dfp[_dfp["_ta"].notna() & _dfp["_c"].notna()].sort_values("_d")  # 정산 행만
             if len(_dfp) >= 2:
-                _eq = np.array([float(_ta) - sum(a for ad, a in _adj_pairs_dd if ad <= _dstr)
-                                for _dstr, _ta in zip(_dfp["_d"], _dfp["_ta"])],
-                               dtype=float)
-                _pk = np.maximum.accumulate(_eq)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    _ddv = np.where(_pk > 0, (_eq - _pk) / _pk, 0.0)
+                # 시간가중(TWR): 하루 손익 = 전일 보유 × 종가 변화. 입출금·보정은 자동 제외
+                # (표준편차와 동일 — '총자산 − 누적입금' 수준 방식의 % 과장 해소)
+                _ta = _dfp["_ta"].values; _h = _dfp["_h"].values; _c = _dfp["_c"].values
+                _r = np.zeros(len(_ta))
+                for _k in range(1, len(_ta)):
+                    _r[_k] = (_h[_k - 1] * (_c[_k] - _c[_k - 1]) / _ta[_k - 1]) if _ta[_k - 1] > 0 else 0.0
+                _idx = np.cumprod(1.0 + _r)
+                _pk = np.maximum.accumulate(_idx)
+                _ddv = _idx / _pk - 1.0
                 _cur_dd = float(_ddv[-1]) * 100
                 _mdd_v = float(_ddv.min()) * 100
 
@@ -2013,8 +2018,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         vcolor="#C62828" if (_mdd_v is not None and _mdd_v < -0.005) else "#333")
             + _avg_card("운용 기간", _period_txt)
             + "</div>", unsafe_allow_html=True)
-        st.caption("성과는 원장(매매기록) 총자산 기준 · DD/MDD는 원장에 반영된 입출금"
-                   "('원장반영' 표시 조정)을 제거한 수익 곡선으로 계산합니다.")
+        st.caption("성과는 원장(매매기록) 기준 · DD/MDD는 시간가중 방식 — 하루 손익(전일 보유 × 종가 변화)을 "
+                   "이어 붙인 수익 곡선이라 입출금·보정 시점의 영향을 받지 않습니다.")
     except Exception as _perf_err:
         st.caption(f"성과 계산 실패: {_perf_err}")
 
