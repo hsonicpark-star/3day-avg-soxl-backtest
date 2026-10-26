@@ -184,8 +184,14 @@ def _filter_incomplete_today(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fetch_yfinance(ticker: str, start: str = "2009-01-01", end=None,
-                   auto_adjust: bool = True) -> pd.DataFrame:
-    """야후에서 종가 시계열을 받아 (Date index, Close) 로 정규화. 실패 시 빈 DF."""
+                   auto_adjust: bool = False) -> pd.DataFrame:
+    """야후에서 종가 시계열을 받아 (Date index, Close) 로 정규화. 실패 시 빈 DF.
+
+    ⚠️ 이 DB 는 **무조정 종가**(원본 시트와 동일)다 → 기본값 auto_adjust=False.
+       예전 기본값 True(배당조정)로 로컬 DB 뒤를 이어붙이다가, 배당락일
+       (2026-09-21 QQQ · 09-22 SOXL · 09-23 TQQQ) 이전 구간이 일제히 낮아져
+       만능 스위치 수량이 원본 시트와 1주씩 어긋났다 (2026-10-26 발견).
+    """
     import yfinance as yf
 
     if end is None:
@@ -259,7 +265,8 @@ def load_prices_hybrid(ticker: str, start=None, end=None,
 
     만능시트 재현에 필요한 과거 무조정 종가는 로컬 DB 를 그대로 쓰고,
     DB 마지막 날짜 이후 구간만 야후에서 받아 덧붙인다.
-    (최근 구간은 배당 조정계수가 1.0 이라 이어붙여도 불연속이 없다.)
+    야후분도 무조정 종가(auto_adjust=False)로 받는다 — 조정 종가는 배당락일 이전이
+    통째로 낮아져 시트와 어긋난다.
 
     DB 가 비어 있으면 야후 전체를, 야후가 실패하면 DB 만 반환한다.
     반환 df 의 attrs:
