@@ -126,22 +126,32 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
         df.columns = df.columns.get_level_values(0)
     df.index = pd.to_datetime(df.index)
     # 미국장 마감(16:30 ET) 이전이면 당일 intraday 제거
+    after_close = False
     try:
         now_est = pd.Timestamp.now(tz="America/New_York")
         close_buf = now_est.replace(hour=16, minute=30, second=0, microsecond=0)
         if now_est < close_buf:
             df = df[df.index.normalize() < pd.Timestamp(now_est.date())]
+        else:
+            after_close = True
         today_est = now_est.date()
     except Exception:
         today_est = None
+
+    def _settled(d):
+        """확정된 세션인가: 지난 날짜, 또는 장 마감(16:30 ET) 이후의 오늘."""
+        d = pd.Timestamp(d).date()
+        return d < today_est or (after_close and d == today_est)
     out = df[['Close']].rename(columns={'Close': 'close'}).copy()
-    # ── 야후 일봉 지연/누락 보정 (마감된 지난 거래일만 대상 — 오늘 행은 위에서 제거됨) ──
+    # ── 야후 일봉 지연/누락 보정 (마감된 세션만 대상 — 장 마감 후면 오늘 세션 포함) ──
     # 1순위: 보조 종가 DB(구글시트) → 2순위: yf fast_info 최종가
+    # 2026-11-04 사고: 마감 후(ET 저녁 = KST 아침) 야후가 당일 종가를 NaN으로 반환 →
+    # '오늘 행은 미확정'으로 보고 보정에서 빼버려 주문표가 하루 밀림. DB엔 값이 있었음.
     try:
         if ticker == "SOXL" and today_est is not None and len(out):
-            _tail_nan = pd.isna(out['close'].iloc[-1]) and out.index[-1].date() < today_est
+            _tail_nan = pd.isna(out['close'].iloc[-1]) and _settled(out.index[-1])
             _nd = next_trading_days(out.index[-1], 1)
-            _row_missing = len(_nd) > 0 and _nd[0].date() < today_est  # 마감된 세션 행 자체가 없음
+            _row_missing = len(_nd) > 0 and _settled(_nd[0])  # 마감된 세션 행 자체가 없음
             # 중간 구멍 후보: 최근 45일 bdate 중 결과에 없는 날 (휴장일 포함 가능
             # → DB 거래일과 대조해 진짜 구멍만 보충). 2026-08-06 사고:
             # yfinance가 8/4 하루만 빼고 반환 → 마지막 행 검사는 통과 →
@@ -154,7 +164,7 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
                 if db is not None:
                     # NaN 채움 + 꼬리/중간 구멍 행 추가 (오늘 이전 확정분만)
                     for d, c in db.items():
-                        if d.date() >= today_est:
+                        if not _settled(d):
                             continue
                         if d in out.index:
                             if pd.isna(out.loc[d, 'close']):
@@ -162,7 +172,8 @@ def load_price_data(ticker: str = "SOXL", start: str = "2009-01-01",
                         elif d > out.index[-1] or d in _mid_cand:
                             out.loc[d] = c
                     out = out.sort_index()
-                elif _tail_nan:   # DB 불가 시 최후 폴백
+                # 최후 폴백: DB 불가 또는 DB에도 아직 없음 → 정규장 최종가 (마지막 세션에만)
+                if pd.isna(out['close'].iloc[-1]) and _settled(out.index[-1]):
                     lp = yf.Ticker(ticker).fast_info.last_price
                     if lp and float(lp) > 0:
                         out.iloc[-1, out.columns.get_loc('close')] = float(lp)
