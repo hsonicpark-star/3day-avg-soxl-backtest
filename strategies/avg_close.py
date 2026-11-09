@@ -2378,6 +2378,93 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
 # TAB 4 – 전략 소개 & 성과
 # ══════════════════════════════════════════════
 
+def _fmt_a(v) -> str:
+    """경계 조정값 표기: -0.0125 → '-1.25%', 0.00875 → '+0.875%' (소수 둘째 자리까지는 항상 표시)."""
+    s = f"{float(v) * 100:+.3f}"
+    return (s[:-1] if s.endswith("0") else s) + "%"
+
+
+_PRESET_TICKER_NAMES = {"SOXL": "SOXL · 반도체 3배", "USD": "USD · 반도체 2배", "TQQQ": "TQQQ · 나스닥100 3배"}
+
+
+def _render_preset_guide():
+    """전략 소개 탭 — 종목별 추천 프리셋 표 + RSI 모드 설명.
+
+    표는 _AVG_PRESETS_DB 와 preset_stats.json(평일 자동 재계산)에서 만든다
+    → 프리셋 값을 바꾸거나 종목을 추가하면 여기도 따라 바뀐다 (손으로 맞출 필요 없음)."""
+    from common import preset_stats as _ps
+
+    st.markdown("#### 🎯 종목별 추천 프리셋")
+    st.caption("모든 프리셋은 최근 2일 종가 평균 기준 · 매도비율 100%(전량 매도)입니다. "
+               "주문표 탭의 계좌 추가·파라미터 수정에서 버튼 한 번으로 적용할 수 있습니다.")
+
+    for _tk, _presets in _AVG_PRESETS_DB.items():
+        if not _presets:
+            continue
+        st.markdown(f"**{_PRESET_TICKER_NAMES.get(_tk, _tk)}**")
+        _rows = ["| 프리셋 | 매수 기준 | 매도 기준 | 분할수 | CAGR | MDD | Calmar | 승률 |",
+                 "|---|---|---|---|---|---|---|---|"]
+        _basis = ""
+        _stats = {}
+        for _p in _presets:
+            _it = _ps.get("avg", _tk, _p)
+            _stats[_p["label"]] = _it
+            _buy, _sell = _fmt_a(_p["a_buy"]), _fmt_a(_p["a_sell"])
+            if _cfg_flag(_p.get("rsi_mode")):
+                _buy += f" · 상승 주 {_fmt_a(_p['up_a_buy'])}"
+                _sell += f" · 상승 주 {_fmt_a(_p['up_a_sell'])}"
+            if _it:
+                _perf = (f"{_it['cagr'] * 100:.1f}% | {_it['mdd'] * 100:.1f}% | {_it['calmar']:.2f} | "
+                         + (f"{_it['win'] * 100:.0f}%" if _it.get("win") is not None else "–"))
+                _basis = _basis or f"{str(_it.get('start', ''))[:7]} ~ {_it.get('end', '')}"
+            else:
+                _perf = "– | – | – | –"
+            _rows.append(f"| {_p['label']} | {_buy} | {_sell} | {int(_p['divisions'])} | {_perf} |")
+        st.markdown("\n".join(_rows))
+        st.caption((f"{_basis} 백테스트 기준 · 평일 자동 갱신" if _basis
+                    else "성과 수치는 다음 자동 갱신 때 표시됩니다")
+                   + " · 과거 성과이며 미래 수익을 보장하지 않습니다.")
+
+        # ── RSI 모드 프리셋이 있는 종목: 모드 설명 ──
+        _mp = next((x for x in _presets if _cfg_flag(x.get("rsi_mode"))), None)
+        if _mp is None:
+            continue
+        _bp = next((x for x in _presets if not _cfg_flag(x.get("rsi_mode"))
+                    and abs(float(x["a_buy"]) - float(_mp["a_buy"])) < 1e-9
+                    and abs(float(x["a_sell"]) - float(_mp["a_sell"])) < 1e-9), None)
+        _base_name = f"{_bp['label']}" if _bp else "기본 기준"
+        _cmp = ""
+        _mi, _bi = _stats.get(_mp["label"]), (_stats.get(_bp["label"]) if _bp else None)
+        if _mi and _bi:
+            _cmp = (f"- **백테스트 결과**: 같은 기간 {_base_name} CAGR {_bi['cagr'] * 100:.1f}% · "
+                    f"MDD {_bi['mdd'] * 100:.1f}% → RSI 모드형 CAGR {_mi['cagr'] * 100:.1f}% · "
+                    f"MDD {_mi['mdd'] * 100:.1f}%."
+                    + (" 낙폭은 그대로 두고 수익만 늘어난 형태입니다."
+                       if _mi["cagr"] > _bi["cagr"] and abs(_mi["mdd"] - _bi["mdd"]) < 0.005 else "")
+                    + "\n")
+        with st.expander(f"🧭 {_tk} {_mp['label']} — 무엇이 다른가요?", expanded=True):
+            st.markdown(
+                f"시장이 오르는 주와 그렇지 않은 주에 **매수·매도 기준을 다르게** 쓰는 프리셋입니다. "
+                f"분할수({int(_mp['divisions'])})와 매도비율은 {_base_name}과 같습니다.\n\n"
+                f"| 이번 주 구분 | 판정 | 매수 기준 | 매도 기준 |\n"
+                f"|---|---|---|---|\n"
+                f"| 📈 상승 주 | 지난주 QQQ 주간 RSI가 그 전주보다 **올랐을 때** | "
+                f"{_fmt_a(_mp['up_a_buy'])} | {_fmt_a(_mp['up_a_sell'])} |\n"
+                f"| 📉 그 외 주 | 같거나 내렸을 때 | {_fmt_a(_mp['a_buy'])} | {_fmt_a(_mp['a_sell'])} |\n\n"
+                f"- **판정 시점**: 매주 금요일 장 마감 후 QQQ 주간 RSI(14주, DSS 동파법과 같은 값)가 확정되면 "
+                f"전주 값과 비교합니다. 그 결과를 **다음 주 월~금 내내** 쓰고, 주중에는 바뀌지 않습니다.\n"
+                f"- **상승 주에는** 조금 덜 눌려도 사고, 더 많이 오를 때까지 기다렸다가 팝니다. "
+                f"오르는 흐름을 더 길게 타기 위한 설정입니다.\n"
+                f"{_cmp}"
+                f"- **주문표·텔레그램**에 매번 판정 근거(어느 주의 RSI로 판단했는지, 이번 주 적용 기준)가 한 줄로 표시됩니다.\n"
+                f"- **직전 주 QQQ 종가를 받지 못하면 주문표를 만들지 않습니다.** 백테스트에서 신호를 한 주 늦게 "
+                f"적용하면 효과가 대부분 사라졌기 때문에, 묵은 신호로 주문이 나가지 않게 막아 둔 것입니다.\n"
+                f"- **켜는 방법**: 주문표 탭 → 계좌 추가(또는 파라미터 수정)에서 {_mp['label']} 버튼을 누르고 저장합니다. "
+                f"상승 주 기준 값은 계좌별로 바꿀 수 있습니다.\n"
+                f"- **성과 확인**: 아래 '전략 성과 분석'에서 분석 종목을 {_tk}로, 파라미터 소스를 {_mp['label']}으로 고르면 됩니다."
+            )
+
+
 def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_date, initial_capital):
     """종가평균매매 전략 소개 & 성과 분석 탭 렌더링."""
     a_buy      = params["a_buy"]
@@ -2447,6 +2534,8 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
     당일 오후 3시 55분(미국 기준) 이전에
     기준가 조건을 확인 후 주문을 넣습니다.
         """)
+
+    _render_preset_guide()
 
     st.divider()
 
