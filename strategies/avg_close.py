@@ -3302,13 +3302,30 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
 
     st.markdown("사이드바의 파라미터와 기간 설정을 기반으로 성과를 분석합니다.")
 
+    # ── 분석 종목 선택 ──
+    # 예전엔 사이드바 종목의 프리셋만 보였고, 계좌가 등록돼 있으면 등록 종목만 분석해서
+    # 계좌 없는 종목(예: TQQQ)은 이 탭에서 분석할 방법이 없었음 → 탭 안에서 직접 선택.
+    _an_opts = [ticker] + [t for t in list(_AVG_PRESETS_DB.keys()) + list(_perf_tk_settings.keys())
+                           if t != ticker]
+    _an_opts = list(dict.fromkeys(_an_opts))          # 중복 제거, 순서 유지
+    _an_tk = st.selectbox(
+        "분석 종목", _an_opts, index=0, key=f"avg_intro_ticker_{ticker}",   # 사이드바 종목이 바뀌면 그 종목으로 초기화
+        help="사이드바 종목이 기본값입니다. 계좌를 등록하지 않은 종목도 여기서 골라 분석할 수 있습니다.")
+
     # ── 파라미터 소스 선택 (사이드바 or 프리셋) ──
-    _avg_presets_for_tk = _AVG_PRESETS_DB.get(ticker, [])
+    _avg_presets_for_tk = _AVG_PRESETS_DB.get(_an_tk, [])
     _src_options = ["📐 사이드바 설정값"] + [pr["label"] for pr in _avg_presets_for_tk]
     _src_sel = st.radio(
         "파라미터 소스", _src_options, index=0, horizontal=True,
-        key="avg_intro_param_src",
+        key=f"avg_intro_param_src_{_an_tk}",          # 종목마다 선택지가 달라 키를 분리
+        help="프리셋에 마우스를 올리면 나오는 수치는 평일마다 자동 갱신됩니다.",
     )
+    if _src_options[1:]:
+        _sel_pr = next((pr for pr in _avg_presets_for_tk if pr["label"] == _src_sel), None)
+        if _sel_pr:
+            st.caption(_sel_pr["help"].replace("\n", "  ·  "))
+    else:
+        st.caption(f"ℹ️ {_an_tk}는 추천 프리셋이 없습니다 — 사이드바 설정값으로 분석합니다.")
     _src_idx = _src_options.index(_src_sel)
 
     if _src_idx == 0:
@@ -3336,7 +3353,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         _pv4, _pv5, _pv6 = st.columns(3)
         _pv4.markdown(f"**매도비율**: `{_use_sr:.0f}%`")
         _pv5.markdown(f"**분할수**: `{_use_dv}회`")
-        _pv6.markdown(f"**대상 종목**: `{ticker}`")
+        _pv6.markdown(f"**대상 종목**: `{_an_tk}`")
         st.caption(
             f"기간 {start_date} ~ {end_date} · 자본 ${initial_capital:,.0f}"
             + (f"  |  등록된 계좌: **{', '.join(_perf_tk_settings.keys())}** (각자 저장된 파라미터 적용)"
@@ -3346,7 +3363,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
     if st.button("▶ 성과 분석 실행", type="primary", key="run_perf"):
         st.session_state["perf_run_params"] = {
             "tk_settings": dict(_perf_tk_settings) if _perf_tk_settings else None,
-            "ticker": ticker,
+            "ticker": _an_tk,
             "a_buy": _use_ab, "a_sell": _use_as,
             "sell_ratio": _use_sr, "divisions": _use_dv,
             "n_days": _use_nd,
@@ -3377,6 +3394,10 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             )
 
         if _p_tk_settings:
+            # 선택한 분석 종목을 항상 첫 탭으로 — 계좌가 없는 종목이면 빈 설정으로 끼워 넣어
+            # 선택한 파라미터(프리셋/사이드바)로 분석한다.
+            _p_tk_settings = {_p_ticker: _p_tk_settings.get(_p_ticker, {}),
+                              **{t: c for t, c in _p_tk_settings.items() if t != _p_ticker}}
             _tk_list = list(_p_tk_settings.keys())
             if len(_tk_list) > 1:
                 _perf_tabs = st.tabs([f"📊 {t}" for t in _tk_list])
@@ -3392,10 +3413,15 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                 _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _p_sd, _p_ed)
 
             # ── 종목 간 비교 ──────────────────────────────────────
-            _CMP_DEFAULTS = {
-                "SOXL": {"a_buy": -0.0063, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2},
-                "USD":  {"a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 5, "n_days": 2},
-            }
+            # 미등록 종목의 비교용 기본값 = 프리셋 DB 의 추천(⭐) 프리셋, 없으면 첫 프리셋
+            # (예전엔 SOXL·USD 값이 여기 따로 적혀 있어 DB 와 어긋났고 TQQQ 는 빠져 있었음)
+            _CMP_DEFAULTS = {}
+            for _dtk, _dps in _AVG_PRESETS_DB.items():
+                if not _dps:
+                    continue
+                _dp = next((x for x in _dps if "⭐" in x["label"]), _dps[0])
+                _CMP_DEFAULTS[_dtk] = {k: _dp[k] for k in
+                                       ("a_buy", "a_sell", "sell_ratio", "divisions", "n_days")}
             _cmp_all_settings = dict(_p_tk_settings)
             for _def_tk, _def_cfg in _CMP_DEFAULTS.items():
                 if _def_tk not in _cmp_all_settings:
@@ -3404,7 +3430,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             if len(_cmp_all_keys) > 1:
                 st.divider()
                 st.subheader("🔄 종목 간 성과 비교")
-                st.caption("등록된 종목들의 수익 곡선 및 지표를 한 화면에서 비교합니다. (미등록 종목은 안정형 기본 파라미터 사용)")
+                st.caption("분석 종목·등록된 종목의 수익 곡선과 지표를 한 화면에서 비교합니다. (계좌가 없는 종목은 추천 프리셋 값 적용)")
                 _colors = ["#1565C0", "#E53935", "#2E7D32", "#F57F17", "#6A1B9A"]
                 _fig_cmp = go.Figure()
                 _cmp_rows = []
