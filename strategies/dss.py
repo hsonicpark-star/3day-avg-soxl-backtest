@@ -1550,7 +1550,7 @@ _DSS_PRESETS = [
     {"label": "🔬 sonic형", "sf_div": 7, "sf_hold": 36, "sf_buy": 3.3, "sf_sell": 1.8,
      "ag_div": 7, "ag_hold": 6, "ag_buy": 2.9, "ag_sell": 6.5,
      "pcr": 65, "lcr": 20, "renewal_period": 12, "fee_rate": 0.04,
-     "help": "sonic형 (2010~ 풀히스토리 최적화)\nCAGR 61.9% | MDD -39.6% | Calmar 1.563\n전 기간 강건 + 최저 MDD"},
+     "help": "sonic형 (2010~ 풀히스토리 최적화)\nCAGR 61.9% | MDD -39.6% | Calmar 1.563\n전 기간 강건"},
     # ── W 프리셋: 티어별 매수 비중 (2026-10 최적화, 비중 0 = 보초병 1주) ──
     # 수치는 엔진 v2(티어 = 장 시작 보유수+1, 주문표와 동일) 기준. 검증: verify_dss_presets_v2.py
     {"label": "🎯 보초형W", "sf_div": 8, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
@@ -1572,6 +1572,10 @@ _DSS_PRESETS = [
      "help": "철벽형W — 저MDD (2010~2023만으로 탐색, 2024~ 봉인구간 검증 통과)\n"
              "16년 CAGR 60.3% | MDD -37.0% | Calmar 1.63"},
 ]
+# ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다 — 모듈 로드 시
+#    preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체된다.
+from common.preset_stats import apply as _apply_preset_stats
+_apply_preset_stats("dss", "SOXL", _DSS_PRESETS)
 
 _DSS_PARAM_KEYS = ["sf_div","sf_hold","sf_buy","sf_sell",
                    "ag_div","ag_hold","ag_buy","ag_sell",

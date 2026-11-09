@@ -814,6 +814,9 @@ def _render_iuo_account(acct_key: str, acct_data: dict, cfg: dict, params: dict,
                  "sell_pct": 6.0, "moc_days": 24, "max_add_buys": 7, "divisions": 6,
                  "help": "CAGR 42.35%  |  MDD -28.00%  |  Calmar 1.512  |  승률 77.2%\n최저 MDD — 안정적 운용 추천"},
             ]
+            # help 의 수치 줄은 preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체
+            from common.preset_stats import apply as _apply_preset_stats
+            _apply_preset_stats("iuo", "SOXL", _IUO_PRESETS)
             st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
             _pc1, _pc2, _pc3 = st.columns(3)
             for _pi, (_pcol, _pr) in enumerate(zip([_pc1, _pc2, _pc3], _IUO_PRESETS)):

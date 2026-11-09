@@ -543,7 +543,7 @@ _SD_PRESETS_DB = {
         {"label": "공격형",
          "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0,
          "divisions": 3, "renewal": 3,
-         "help": "CAGR 83.59%  |  MDD 41.06%  |  Calmar 2.04\n3분할 + 85% 매도로 매우 공격적. CAGR 최고\n(σ기간=2일, 갱신주기=3 자동 적용)"},
+         "help": "CAGR 83.59%  |  MDD 41.06%  |  Calmar 2.04\n3분할 + 85% 매도로 매우 공격적\n(σ기간=2일, 갱신주기=3 자동 적용)"},
         {"label": "균형형",
          "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 90.0,
          "divisions": 6, "renewal": 10,
@@ -555,13 +555,17 @@ _SD_PRESETS_DB = {
         {"label": "Ultra-Safe형",
          "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.30, "sell_ratio": 95.0,
          "divisions": 7, "renewal": 7,
-         "help": "CAGR 35.81%  |  MDD 17.40%  |  Calmar 2.06\n7분할 + 95% 매도로 매우 보수적. MDD 17% 이내\n변동성 22% (안정형 35%)로 심리 안정\n(σ기간=2일, 갱신주기=7 자동 적용)"},
+         "help": "CAGR 35.81%  |  MDD 17.40%  |  Calmar 2.06\n7분할 + 95% 매도로 매우 보수적\n(σ기간=2일, 갱신주기=7 자동 적용)"},
         {"label": "Sonic형",
          "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.45, "sell_ratio": 95.0,
          "divisions": 3, "renewal": 3,
-         "help": "CAGR 77.25%  |  MDD 35.80%  |  Calmar 2.16\n3분할 + 95% 매도. 19,200개 중 Calmar 1위\n(σ기간=2일, 갱신주기=3 자동 적용)"},
+         "help": "CAGR 77.25%  |  MDD 35.80%  |  Calmar 2.16\n3분할 + 95% 매도. 최적화 당시 19,200개 조합 중 Calmar 1위\n(σ기간=2일, 갱신주기=3 자동 적용)"},
     ],
 }
+# ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다 — 모듈 로드 시
+#    preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체된다.
+from common.preset_stats import apply_db as _apply_preset_stats_db
+_apply_preset_stats_db("stdev", _SD_PRESETS_DB)
 
 
 # ══════════════════════════════════════════════

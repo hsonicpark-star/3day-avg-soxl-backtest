@@ -60,13 +60,13 @@ from avg_close_engine import (
 _AVG_PRESETS_DB = {
     "SOXL": [
         {"label": "🚀 공격형",    "a_buy": -0.0055, "a_sell": 0.00875, "sell_ratio": 100.0, "divisions": 3, "n_days": 2,
-         "help": "CAGR 61.81%  |  MDD 33.11%  |  Calmar 1.87\n3분할 + 100% 매도. CAGR 최고 (종가평균 한계 영역)\nv3 grid에서 MDD -2%p 개선"},
+         "help": "CAGR 61.81%  |  MDD 33.11%  |  Calmar 1.87\n3분할 + 100% 매도. 수익 추구형 — 낙폭도 가장 큼"},
         {"label": "⚖️ 균형형",   "a_buy": -0.0050, "a_sell": 0.0095, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
          "help": "CAGR 55.23%  |  MDD 28.52%  |  Calmar 1.94\n4분할 + 100% 매도. CAGR과 안정성의 균형\n수익률과 안정성의 중간"},
         {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0065, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-         "help": "CAGR 45.43%  |  MDD 22.96%  |  Calmar 1.98\n5분할 + 100% 매도. 안정형 — 종가평균 클래식\n검증된 최적 영역 (변경 불요)"},
+         "help": "CAGR 45.43%  |  MDD 22.96%  |  Calmar 1.98\n5분할 + 100% 매도. 안정형 — 종가평균 클래식"},
         {"label": "🪨 Ultra-Safe형", "a_buy": -0.01275, "a_sell": 0.0075, "sell_ratio": 100.0, "divisions": 7, "n_days": 2,
-         "help": "CAGR 29.36%  |  MDD 15.61%  |  Calmar 1.88\n7분할 + 100% 매도. MDD 15.6% 이내 — 매우 안정\nv3 grid에서 MDD 16→15.6%로 더 안전"},
+         "help": "CAGR 29.36%  |  MDD 15.61%  |  Calmar 1.88\n7분할 + 100% 매도. 가장 보수적"},
     ],
     "USD": [
         {"label": "🚀 공격형",    "a_buy": -0.0088, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
@@ -74,15 +74,19 @@ _AVG_PRESETS_DB = {
         {"label": "⚖️ 균형형",   "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 4, "n_days": 2,
          "help": "CAGR 36.57%  |  MDD 20.51%  |  Calmar 1.78\n수익률과 안정성의 중간"},
         {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-         "help": "CAGR 31.37%  |  MDD 16.03%  |  Calmar 1.96\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
+         "help": "CAGR 31.37%  |  MDD 16.03%  |  Calmar 1.96\n5분할 — 안정적 운용 추천"},
     ],
-    # TQQQ — 2026-11-09 추가. 수치는 2010-02-11 ~ 2026-11-06 전체 기간(조정 종가) 백테스트.
+    # TQQQ — 2026-11-09 추가.
     "TQQQ": [
         {"label": "⚖️ 균형형", "a_buy": -0.0125, "a_sell": 0.0175, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
-         "help": "CAGR 27.46%  |  MDD 25.83%  |  Calmar 1.06\n5분할 + 100% 매도 · 매수 -1.25% / 매도 +1.75%\n"
-                 "2010~2026 전체 기간 · 손실 연도 0/17 · 승률 86%"},
+         "help": "CAGR 27.46%  |  MDD 25.83%  |  Calmar 1.06\n5분할 + 100% 매도 · 매수 -1.25% / 매도 +1.75%"},
     ],
 }
+# ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다.
+#    모듈 로드 시 preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체되고,
+#    최신값이 없으면 숫자 줄 자체를 감춘다. → 수치를 손으로 고칠 필요 없음.
+from common.preset_stats import apply_db as _apply_preset_stats_db
+_apply_preset_stats_db("avg", _AVG_PRESETS_DB)
 
 
 # ══════════════════════════════════════════════
@@ -2160,34 +2164,19 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
 
         if _add_tk:
             # ── 추천 프리셋 (ticker별) ──
-            _ADD_ALL_PRESETS = {
-                "SOXL": [
-                    {"label": "🚀 공격형",    "a_buy": -0.0048, "a_sell": 0.0087, "divisions": 4,
-                     "help": "CAGR 52.98%  |  MDD 28.91%  |  Calmar 1.83\n높은 수익률 추구, 변동성 감수"},
-                    {"label": "⚖️ 균형형",   "a_buy": -0.0048, "a_sell": 0.0096, "divisions": 5,
-                     "help": "CAGR 46.01%  |  MDD 25.08%  |  Calmar 1.83\n수익률과 안정성의 중간"},
-                    {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0063, "a_sell": 0.0075, "divisions": 5,
-                     "help": "CAGR 44.12%  |  MDD 22.94%  |  Calmar 1.92\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
-                ],
-                "USD": [
-                    {"label": "🚀 공격형",    "a_buy": -0.0088, "a_sell": 0.0063, "divisions": 4,
-                     "help": "CAGR 37.64%  |  MDD 24.73%  |  Calmar 1.52\n높은 수익률 추구, 변동성 감수"},
-                    {"label": "⚖️ 균형형",   "a_buy": -0.0111, "a_sell": 0.0063, "divisions": 4,
-                     "help": "CAGR 36.57%  |  MDD 20.51%  |  Calmar 1.78\n수익률과 안정성의 중간"},
-                    {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0111, "a_sell": 0.0063, "divisions": 5,
-                     "help": "CAGR 31.37%  |  MDD 16.03%  |  Calmar 1.96\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
-                ],
-            }
-            _ADD_PRESETS = _ADD_ALL_PRESETS.get(_add_tk, [])
+            # 주문표의 '파라미터 수정'과 같은 프리셋 DB를 사용 (예전엔 값이 다른 별도 목록이 있어
+            # 계좌 추가 때와 수정 때 같은 이름의 프리셋이 서로 다른 값을 넣었음)
+            _ADD_PRESETS = _AVG_PRESETS_DB.get(_add_tk, [])
             if _ADD_PRESETS:
                 st.caption("💡 추천 프리셋 — 버튼 위에 마우스를 올리면 성과 지표를 확인할 수 있습니다.")
-                _apc1, _apc2, _apc3 = st.columns(3)
-                for _api, (_apcol, _apr) in enumerate(zip([_apc1, _apc2, _apc3], _ADD_PRESETS)):
+                _apcols = st.columns(len(_ADD_PRESETS))
+                for _api, (_apcol, _apr) in enumerate(zip(_apcols, _ADD_PRESETS)):
                     if _apcol.button(_apr["label"], key=f"add_preset_{_api}",
                                      help=_apr["help"], use_container_width=True):
                         st.session_state["add_a_buy"]  = _apr["a_buy"]
                         st.session_state["add_a_sell"] = _apr["a_sell"]
                         st.session_state["add_div"]    = _apr["divisions"]
+                        st.session_state["add_sr"]     = float(_apr.get("sell_ratio", 100.0))
                         st.rerun()
                 st.divider()
             else:

@@ -820,11 +820,15 @@ _DS_PRESETS = [
     {"label": "🧘 최적안정", "ag_div": 10, "ag_buy": 8.0, "ag_sell_alpha": 0.4,
      "ag_hold_alpha": 2.0, "sf_div": 5, "sf_hold": 8, "sf_buy1": -0.6, "sf_buy2": 5.5,
      "sf_sell": 0.7, "sf_ma_base": 3, "sf_weights": "3, 11, 20, 29, 37",
-     "help": ("2016~ 파라미터 최적화 — 위험 대비 수익(Calmar) 최고, MDD 최저\n"
+     "help": ("2016~ 파라미터 최적화 — 낙폭 최소화 지향\n"
               "공격: 분할10 · 매수8.0% · 매도α0.4 · 보유α2.0\n"
               "방어: 분할5 · 보유8일 · 매수1 -0.6% · 매수2 5.5% · 매도0.7% · MA3 · 비중3/11/20/29/37\n"
               "2016~ CAGR 70.2% / MDD -16.7% / Calmar 4.22")},
 ]
+# ⚠️ 위 help 의 'CAGR / MDD / Calmar' 숫자 줄은 화면에 표시되지 않는다 — 모듈 로드 시
+#    preset_stats.json(평일 매일 자동 재계산, 원전략 실제모드 기준)의 최신값으로 교체된다.
+from common.preset_stats import apply as _apply_preset_stats
+_apply_preset_stats("dual", "SOXL", _DS_PRESETS)
 
 
 def _ds_history_path(acct_name=""):
