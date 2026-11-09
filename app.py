@@ -82,14 +82,105 @@ for _cm in ("common.analysis", "common.pricedb", "common.telegram"):
     except Exception:
         pass   # 최초 실행(아직 import 전)이면 그냥 통과
 
+# ── 종가평균·표준편차·Sigma 최신화 (push 후 Reboot 없이 반영) ──
+# 다른 전략은 선택될 때마다 importlib.reload 하지만 이 셋은 import 만 해서,
+# Cloud 가 새 커밋을 받고도 프로세스를 유지하면 옛 모듈이 메모리에 남았다
+# (2026-11-09: TQQQ 프리셋·RSI 모드가 Reboot 전까지 화면에 안 나옴).
+# 파일 수정 시각이 바뀐 것을 감지했을 때만, 의존 순서대로 한 묶음을 통째로 다시 읽는다.
+#   · 실패하면 전부 이전 상태로 되돌린다 → 반쯤 바뀐 코드로 주문을 계산하는 일이 없다
+#     (그 경우 화면 위에 'Reboot 필요' 경고만 띄우고 이전 버전으로 계속 동작)
+#   · common.config / common.auth 는 세션·쿠키 상태가 있어 대상에서 제외
+import os as _os
+import sys as _sys
+import threading as _threading
+import common as _common_pkg
+
+_HOT_MODULES = ("common.preset_stats", "common.data", "dss_engine", "avg_close_engine",
+                "stdev_engine", "strategies.avg_close", "strategies.stdev", "strategies.sigma")
+# 상태는 common 패키지 객체에 둔다 (app.py 전역은 실행마다 초기화되므로)
+_hot_state = _common_pkg.__dict__.setdefault(
+    "_hot_reload_state", {"mtimes": {}, "error": "", "lock": _threading.Lock()})
+
+
+def _hot_mtimes() -> dict:
+    """이미 로드된 대상 모듈의 {이름: 파일 수정 시각}."""
+    out = {}
+    for _n in _HOT_MODULES:
+        _f = getattr(_sys.modules.get(_n), "__file__", None)
+        if _f:
+            try:
+                out[_n] = _os.path.getmtime(_f)
+            except OSError:
+                pass
+    return out
+
+
+def _hot_reload_if_changed():
+    with _hot_state["lock"]:
+        cur = _hot_mtimes()
+        seen = _hot_state["mtimes"]
+        if all(seen.get(_n) == _mt for _n, _mt in cur.items()):
+            return
+        mods = [_sys.modules[_n] for _n in _HOT_MODULES if _n in cur]
+        snaps = [(_m, dict(_m.__dict__)) for _m in mods]
+        try:
+            for _m in mods:
+                _importlib.reload(_m)
+            _hot_state["error"] = ""
+        except Exception:
+            import traceback as _tb
+            _hot_state["error"] = _tb.format_exc()
+            for _m, _snap in snaps:           # 전부 이전 상태로 복원
+                for _k in [k for k in _m.__dict__ if k not in _snap]:
+                    del _m.__dict__[_k]
+                _m.__dict__.update(_snap)
+        seen.update(cur)   # 실패해도 기록 — 같은 파일로 매 실행마다 재시도하지 않는다
+
+
+try:
+    _hot_reload_if_changed()
+except Exception:
+    pass   # 최신화 로직 자체의 오류로 앱이 죽지 않게
+
 # ── 전략 모듈 import ─────────────────────────────────────────
 try:
     from strategies import avg_close, stdev, sigma
+    _hot_state["mtimes"].update(_hot_mtimes())   # 방금 처음 읽은 모듈의 기준 시각 기록
 except Exception as _import_err:
     st.error(f"⚠️ 전략 모듈 로드 실패: {_import_err}")
     import traceback
     st.code(traceback.format_exc())
     st.stop()
+
+if _hot_state.get("error"):
+    st.warning("⚠️ 새 버전을 적용하지 못해 **이전 버전으로 동작 중**입니다. "
+               "Manage app → Reboot 이 필요합니다.")
+    with st.expander("상세 (개발자 전달용)"):
+        st.code(_hot_state["error"])
+
+
+def _app_version() -> str:
+    """배포된 커밋 '짧은해시 · 커밋시각(KST)'. git 정보를 못 읽으면 빈 문자열.
+
+    'push 했는데 화면이 안 바뀐다' 를 진단하는 용도 — Cloud 가 새 커밋을 받았는지 바로 보인다."""
+    import time as _time
+    _c = _hot_state.get("version")
+    if _c and _time.time() - _c[0] < 60:
+        return _c[1]
+    _txt = ""
+    try:
+        import subprocess as _sp
+        _out = _sp.run(["git", "log", "-1", "--format=%h|%ct"],
+                       cwd=_os.path.dirname(_os.path.abspath(__file__)),
+                       capture_output=True, text=True, timeout=3).stdout.strip()
+        _h, _ts = _out.split("|")
+        from datetime import timezone as _tz
+        _kst = datetime.fromtimestamp(int(_ts), _tz(timedelta(hours=9)))
+        _txt = f"{_h} · {_kst:%m/%d %H:%M}"
+    except Exception:
+        _txt = ""
+    _hot_state["version"] = (_time.time(), _txt)
+    return _txt
 
 # ── 전략 목록 ────────────────────────────────────────────────
 _STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🎲 카마릴라 돌파", "🪜 평단 트레이딩", "🎛️ 만능 스위치", "📏 TQ200", "🧩 포트폴리오 합산"]
@@ -477,6 +568,11 @@ with st.sidebar:
             for k in ("logged_in", "username", "user_settings"):
                 st.session_state.pop(k, None)
             st.rerun()
+
+    # ── 배포 버전 (push 가 반영됐는지 확인용) ──
+    _ver_txt = _app_version()
+    if _ver_txt:
+        st.caption(f"버전 {_ver_txt}")
 
 
 # ══════════════════════════════════════════════════════════════
