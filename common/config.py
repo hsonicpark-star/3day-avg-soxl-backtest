@@ -37,6 +37,20 @@ _SENSITIVE_KEYS    = {"tg_chat_id", "tg_token", "gs_url", "gs_sheet",
                       "ms_tg_chat_id", "ms_tg_token"}
 _GLOBAL_CONFIG_KEYS = _SENSITIVE_KEYS  # ticker 네임스페이스가 아닌 루트 키들
 
+# 로컬 config.json 은 여러 전략이 한 파일을 같이 쓰고, 계좌 키의 접두사로 전략을 구분한다
+# (종가평균 "SOXL" / 표준편차 "sd_SOXL" / Sigma "sigma_SOXL").
+# 접두사 없는 종가평균 조회·저장·삭제가 다른 전략의 계좌를 건드리지 않도록 여기에 등록한다.
+# 같은 파일에 접두사 계좌를 쓰는 전략을 추가하면 이 목록에도 추가할 것.
+_STRATEGY_KEY_PREFIXES = ("sd_", "sigma_")
+
+
+def _foreign_key_prefix(key: str) -> str:
+    """key 가 다른 전략의 계좌 접두사로 시작하면 그 접두사, 아니면 ''."""
+    for p in _STRATEGY_KEY_PREFIXES:
+        if str(key).startswith(p):
+            return p
+    return ""
+
 def load_config(ticker: str = None):
     """ticker 지정 시 해당 ticker 네임스페이스 반환, 없으면 전체 반환."""
     if _CONFIG.exists():
@@ -370,6 +384,9 @@ def get_ticker_settings(prefix: str = "", settings_key: str = "ticker_settings",
     exclude_prefix : str | None
         결과에서 이 접두사로 시작하는 키를 제외. 종가평균은 "sd_" 를 전달하여
         과거 버그로 오염된 sd_SOXL 등을 걸러냄.
+
+    로컬에서 prefix="" 이면 다른 전략의 접두사(_STRATEGY_KEY_PREFIXES) 키는
+    exclude_prefix 와 무관하게 항상 제외한다 (같은 파일을 공유하므로).
     """
     if _IS_CLOUD and st.session_state.get("logged_in"):
         raw = st.session_state.get("user_settings", {}).get(settings_key, "") or ""
@@ -395,7 +412,8 @@ def get_ticker_settings(prefix: str = "", settings_key: str = "ticker_settings",
                     if k.startswith(prefix) and isinstance(v, dict)}
         else:
             result = {k: v for k, v in full_cfg.items()
-                      if k not in _GLOBAL_CONFIG_KEYS and isinstance(v, dict)}
+                      if k not in _GLOBAL_CONFIG_KEYS and isinstance(v, dict)
+                      and not _foreign_key_prefix(k)}
             if exclude_prefix:
                 result = {k: v for k, v in result.items() if not k.startswith(exclude_prefix)}
             return result
@@ -426,6 +444,10 @@ def save_ticker_setting(tk: str, data: dict, prefix: str = "",
                         settings_key: str = "ticker_settings") -> str:
     """ticker별 설정 저장 (로컬 config.json + 클라우드 Google Sheets 동기).
     성공 시 '' 반환, 실패 시 오류 메시지 반환."""
+    # 접두사 없는(종가평균) 저장이 다른 전략 계좌 키(sd_SOXL, sigma_SOXL)를 덮어쓰지 않도록 차단
+    if not prefix and _foreign_key_prefix(tk):
+        return (f"'{tk}' 는 다른 전략 계좌용 접두사 "
+                f"'{_foreign_key_prefix(tk)}' 로 시작해 계좌명으로 쓸 수 없습니다.")
     save_config(data, f"{prefix}{tk}")  # 로컬
     if _IS_CLOUD and st.session_state.get("logged_in"):
         try:
@@ -453,6 +475,10 @@ def delete_ticker_setting(tk: str, prefix: str = "",
                           settings_key: str = "ticker_settings",
                           history_prefix: str = "") -> str:
     """ticker 설정 + 매매 히스토리 삭제 (로컬 + 클라우드). 성공 시 '' 반환, 실패 시 오류 메시지 반환."""
+    # 접두사 없는(종가평균) 삭제가 다른 전략 계좌 키(sd_SOXL, sigma_SOXL)를 지우지 않도록 차단
+    if not prefix and _foreign_key_prefix(tk):
+        return (f"'{tk}' 는 다른 전략 계좌용 접두사 "
+                f"'{_foreign_key_prefix(tk)}' 로 시작해 여기서 삭제할 수 없습니다.")
     # 로컬 config 제거
     full_cfg = _load_full_config()
     full_cfg.pop(f"{prefix}{tk}", None)
