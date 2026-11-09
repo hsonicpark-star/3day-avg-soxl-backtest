@@ -274,13 +274,35 @@ def _sum_adj_between(cfg: dict, after_date: str, upto_date: str) -> float:
     return total
 
 
+_AVG_QQQ_CACHE = {}
+
+
+def _avg_rsi_mode(mode_cfg, index):
+    """종가평균 RSI 모드 설정 → 엔진용 mode dict (꺼져 있으면 None).
+
+    웹(strategies/avg_close._rsi_mode_from_cfg)과 같은 판정: QQQ 주간 RSI(DSS 와 같은 값)가
+    전주보다 오르면 이번 주에 상승용 기준. 직전 주 QQQ 종가가 없으면 ValueError →
+    호출 측의 기존 오류 경로로 '주문표 미발송' 처리된다 (모드를 추정해서 보내지 않음)."""
+    if not mode_cfg or not _flag_on(mode_cfg.get("rsi_mode")):
+        return None
+    if "qqq" not in _AVG_QQQ_CACHE:
+        # DSS 와 같은 기준(무조정 종가)·같은 검증(중간 구멍 차단)으로 로드, 실행당 1회
+        _AVG_QQQ_CACHE["qqq"] = fetch_prices("QQQ", "2009-01-01", auto_adjust=False)
+    from avg_close_engine import make_rsi_mode
+    return make_rsi_mode(
+        _AVG_QQQ_CACHE["qqq"], index, datetime.today().date(),
+        float(mode_cfg.get("up_a_buy", mode_cfg.get("a_buy", -0.01))),
+        float(mode_cfg.get("up_a_sell", mode_cfg.get("a_sell", 0.0275))))
+
+
 def calc_today_order(ticker: str, os_start: str,
                      a_buy: float, a_sell: float,
                      sell_ratio: float, divisions: int,
-                     capital: float, n_days: int = 2) -> dict:
+                     capital: float, n_days: int = 2, mode_cfg: dict = None) -> dict:
     """종가평균매매 오늘의 주문 계산.
     웹앱(strategies/avg_close.py:run_portfolio_for_ordersheet)과 동일 로직.
     n_days 파라미터 지원 (사용자 설정 그대로 사용).
+    mode_cfg: 계좌 설정 dict — rsi_mode 가 켜져 있으면 RSI 모드로 기준을 고른다.
     """
     df = fetch_prices(ticker, os_start)
     if df is None or df.empty or len(df) < n_days + 1:
@@ -291,6 +313,7 @@ def calc_today_order(ticker: str, os_start: str,
         a_buy=a_buy, a_sell=a_sell,
         sell_ratio=sell_ratio, divisions=divisions,
         initial_capital=capital, n_days=n_days,
+        mode=_avg_rsi_mode(mode_cfg, df.index),
     )
     if res is None:
         return {}
@@ -312,6 +335,7 @@ def calc_today_order(ticker: str, os_start: str,
         "cash":     float(res.get("cash", 0)),
         "avg_cost": float(res.get("avg_cost", 0)),
         "total_asset": float(res.get("current_asset", 0)),  # 총자산 표시용
+        "rsi_mode": res.get("rsi_mode"),                    # RSI 모드 판정 근거 (미사용이면 None)
         # 확정 종가 맵 (예정 주문 정산용) — intraday 필터 후 데이터라 전부 확정가
         "closes":   {str(row.get("날짜", "")): float(row.get("종가(x)", 0))
                      for row in (res.get("daily_log") or [])},
@@ -353,6 +377,12 @@ def build_avg_message(res: dict, ticker: str) -> str:
         lines.append(f"\n📦 보유: {res['shares']}주  |  평단 ${res['avg_cost']:.2f}")
     else:
         lines.append("\n📦 보유 없음 (전량 현금)")
+    _rm = res.get("rsi_mode")
+    if _rm:
+        # 어느 주의 RSI 로 판정했는지 매번 표시 (한 주 밀린 신호를 쓰면 효과가 사라지므로 눈으로 확인)
+        lines.append(f"🧭 RSI 모드: {_rm.get('basis_week')} 마감 주 QQQ 주간 RSI {_rm.get('rsi', 0):.1f} "
+                     f"(전주 {_rm.get('prev_rsi', 0):.1f}) → {'상승' if _rm.get('up') else '하락'} · "
+                     f"이번 주 기준 매수 {_rm.get('a_buy', 0)*100:+.2f}% / 매도 {_rm.get('a_sell', 0)*100:+.2f}%")
     return "\n".join(lines)
 
 def parse_ticker_settings(user: dict) -> dict:
@@ -2144,7 +2174,8 @@ def _cam_source_state(user: dict, client, strategy: str, account: str):
                 a_buy=float(c.get("a_buy", DEFAULT_A_BUY)), a_sell=float(c.get("a_sell", DEFAULT_A_SELL)),
                 sell_ratio=float(c.get("sell_ratio", DEFAULT_SELL_RATIO)),
                 divisions=int(float(c.get("divisions", DEFAULT_DIVISIONS))),
-                capital=float(c.get("os_capital", DEFAULT_CAPITAL)), n_days=int(float(c.get("n_days", 2))))
+                capital=float(c.get("os_capital", DEFAULT_CAPITAL)), n_days=int(float(c.get("n_days", 2))),
+                mode_cfg=c)
             if not r:
                 return None
             adj = _cam_adj_sum(c)
@@ -2431,6 +2462,7 @@ def main():
                             a_buy=a_buy, a_sell=a_sell,
                             sell_ratio=sell_ratio, divisions=divisions,
                             capital=capital, n_days=n_days,
+                            mode_cfg=cfg,
                         )
                     except Exception as e:
                         print(f"    ❌ [{tk}] 계산 오류 → {e}")

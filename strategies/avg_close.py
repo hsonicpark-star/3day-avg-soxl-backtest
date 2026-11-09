@@ -43,6 +43,7 @@ from avg_close_engine import (
     run_backtest,
     run_backtest_fast,
     run_portfolio_for_ordersheet,
+    make_rsi_mode,
     run_5tier_analysis,
     run_tier_breakdown_analysis,
     settle_avg_pending_rows,
@@ -80,6 +81,13 @@ _AVG_PRESETS_DB = {
     "TQQQ": [
         {"label": "⚖️ 균형형", "a_buy": -0.0125, "a_sell": 0.0175, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
          "help": "CAGR 27.46%  |  MDD 25.83%  |  Calmar 1.06\n5분할 + 100% 매도 · 매수 -1.25% / 매도 +1.75%"},
+        # RSI 모드형 (2026-11-09): QQQ 주간 RSI(DSS 와 같은 값)가 전주보다 오르면 다음 주에
+        # 상승용 기준(up_a_buy / up_a_sell)을 쓰고, 아니면 위 기준(a_buy / a_sell)을 쓴다.
+        {"label": "📈 RSI 모드형", "a_buy": -0.0125, "a_sell": 0.0175, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+         "rsi_mode": True, "up_a_buy": -0.0100, "up_a_sell": 0.0275,
+         "help": "CAGR 34.26%  |  MDD 25.84%  |  Calmar 1.33\n"
+                 "QQQ 주간 RSI 가 전주보다 오른 다음 주: 매수 -1.00% / 매도 +2.75%\n"
+                 "그 외 주: 매수 -1.25% / 매도 +1.75% (균형형과 동일) · 5분할 + 100% 매도"},
     ],
 }
 # ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다.
@@ -90,6 +98,42 @@ _apply_preset_stats_db("avg", _AVG_PRESETS_DB)
 
 # 성과 분석 탭의 종목별 기본 시작일 (없는 종목은 사이드바 시작일). 값 = 상장일.
 _AN_START_DEFAULT = {"TQQQ": datetime(2010, 2, 11).date()}
+
+
+# ── RSI 모드 (QQQ 주간 RSI 기울기로 매수/매도 기준 전환) ──────────────
+_RSI_MODE_KEYS = ("rsi_mode", "up_a_buy", "up_a_sell")
+
+
+def _cfg_flag(v) -> bool:
+    return v is True or str(v).strip().lower() in ("true", "1", "on", "yes")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_qqq_for_rsi_mode():
+    """RSI 모드 판정용 QQQ 일봉 — DSS 와 같은 로더·같은 기준."""
+    from dss_engine import load_price_data as _dss_load_px
+    return _dss_load_px("QQQ", "2009-01-01", "2027-01-01")
+
+
+def _rsi_mode_from_cfg(cfg, index, order_date=None):
+    """계좌/프리셋 설정에 RSI 모드가 켜져 있으면 엔진용 mode dict, 아니면 None.
+    직전 주 QQQ 종가가 없어 판정할 수 없으면 ValueError (추정해서 주문을 만들지 않는다)."""
+    if not cfg or not _cfg_flag(cfg.get("rsi_mode")):
+        return None
+    return make_rsi_mode(
+        _load_qqq_for_rsi_mode(), index, order_date or datetime.today().date(),
+        float(cfg.get("up_a_buy", cfg.get("a_buy", -0.01))),
+        float(cfg.get("up_a_sell", cfg.get("a_sell", 0.0275))))
+
+
+def _rsi_mode_caption(info) -> str:
+    """주문표·메시지에 붙일 모드 판정 근거 한 줄."""
+    if not info:
+        return ""
+    _dir = "상승 📈" if info.get("up") else "하락 📉"
+    return (f"RSI 모드: {info.get('basis_week')} 마감 주 QQQ 주간 RSI {info.get('rsi', 0):.1f} "
+            f"(전주 {info.get('prev_rsi', 0):.1f}) → {_dir} · 이번 주 기준 "
+            f"매수 {info.get('a_buy', 0)*100:+.2f}% / 매도 {info.get('a_sell', 0)*100:+.2f}%")
 
 
 # ══════════════════════════════════════════════
@@ -221,7 +265,7 @@ def _bake_adj_into_avg_ledger(tk: str, amount: float):
 def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                   _sell_ratio: float, _divisions: int, _n_days: int = 2,
                   _os_start=None, _os_capital: float = 10000.0,
-                  capital_adj_history=None) -> str:
+                  capital_adj_history=None, _mode_cfg=None) -> str:
     """Tab3와 동일한 시뮬레이션 엔진으로 오늘의 주문표를 텔레그램 텍스트로 변환.
 
     capital_adj_history: JSON 문자열 또는 list [{날짜, 조정금액}, ...]
@@ -233,10 +277,14 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         if price_df_tg.empty:
             return "❌ 가격 데이터를 불러오지 못했습니다."
 
+        try:
+            _mode_tg = _rsi_mode_from_cfg(_mode_cfg, price_df_tg.index, today)
+        except ValueError as _me:
+            return f"❌ {ticker_name}: {_me} 주문표를 만들지 않았습니다."
         res = run_portfolio_for_ordersheet(
             price_df_tg, _os_start, ticker_name,
             _a_buy, _a_sell, _sell_ratio, _divisions, _os_capital,
-            n_days=_n_days,
+            n_days=_n_days, mode=_mode_tg,
         )
         if res is None:
             return "❌ 시뮬레이션 데이터가 없습니다."
@@ -391,6 +439,8 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
             lines.extend(tungchigi_message_lines(_tng_rows))
         except Exception:
             pass
+        if res.get("rsi_mode"):
+            lines.append("🧭 " + _rsi_mode_caption(res["rsi_mode"]))
         lines.append("※ 종가 LOC 주문 기준입니다.")
         return "\n".join(lines)
 
@@ -1049,6 +1099,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _sell_ratio = float(tk_cfg.get("sell_ratio",  100.0))
     _divisions  = int  (tk_cfg.get("divisions",   5))
     _n_days     = int  (tk_cfg.get("n_days",      2))
+    # RSI 모드 (없으면 꺼짐 — 기존 계좌는 그대로)
+    _rsi_on = _cfg_flag(tk_cfg.get("rsi_mode"))
+    _up_ab  = float(tk_cfg.get("up_a_buy",  _a_buy))
+    _up_as  = float(tk_cfg.get("up_a_sell", _a_sell))
 
     _raw_start   = tk_cfg.get("os_start",   "2024-01-01")
     _raw_capital = tk_cfg.get("os_capital",  10000.0)
@@ -1080,7 +1134,11 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 and abs(float(_pp0["a_sell"]) - _a_sell) < 1e-9
                 and abs(float(_pp0["sell_ratio"]) - _sell_ratio) < 1e-9
                 and int(_pp0["divisions"]) == int(_divisions)
-                and int(_pp0.get("n_days", 2)) == int(_n_days)):
+                and int(_pp0.get("n_days", 2)) == int(_n_days)
+                and _cfg_flag(_pp0.get("rsi_mode")) == _rsi_on
+                and (not _rsi_on
+                     or (abs(float(_pp0.get("up_a_buy", 0)) - _up_ab) < 1e-9
+                         and abs(float(_pp0.get("up_a_sell", 0)) - _up_as) < 1e-9))):
             _cur_preset_avg = _pp0["label"]
             break
 
@@ -1104,6 +1162,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _p3.metric("매도비율",          f"{_sell_ratio:.0f}%")
         _p4.metric("분할수",            f"{_divisions}회")
         _p5.metric("이동평균",          f"{_n_days + 1}일 평균")
+        if _rsi_on:
+            st.caption(f"🧭 **RSI 모드 사용 중** — QQQ 주간 RSI 가 전주보다 오른 다음 주에는 "
+                       f"매수 **{_up_ab*100:+.2f}%** / 매도 **{_up_as*100:+.2f}%**, "
+                       f"그 외 주에는 위 기준을 씁니다. 이번 주 판정은 주문표 로드 후 표시됩니다.")
 
         with st.expander("✏️ 파라미터 수정"):
             # ── 추천 프리셋 (ticker별) — 모듈 레벨 _AVG_PRESETS_DB 사용 ──
@@ -1120,6 +1182,9 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         st.session_state[f"edit_sr_{key_sfx}"]    = _pr["sell_ratio"]
                         st.session_state[f"edit_div_{key_sfx}"]   = _pr["divisions"]
                         st.session_state[f"edit_ndays_{key_sfx}"] = f"{_pr['n_days'] + 1}일"
+                        st.session_state[f"edit_rsi_{key_sfx}"] = _cfg_flag(_pr.get("rsi_mode"))
+                        st.session_state[f"edit_upb_{key_sfx}"] = float(_pr.get("up_a_buy", _pr["a_buy"]))
+                        st.session_state[f"edit_ups_{key_sfx}"] = float(_pr.get("up_a_sell", _pr["a_sell"]))
                         st.rerun()
                 st.divider()
             else:
@@ -1132,6 +1197,9 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 "sr":    (f"edit_sr_{key_sfx}",    _sell_ratio),
                 "div":   (f"edit_div_{key_sfx}",   _divisions),
                 "ndays": (f"edit_ndays_{key_sfx}", f"{_n_days + 1}일"),
+                "rsi":   (f"edit_rsi_{key_sfx}",   _rsi_on),
+                "upb":   (f"edit_upb_{key_sfx}",   _up_ab),
+                "ups":   (f"edit_ups_{key_sfx}",   _up_as),
             }
             for _k, (_skey, _sval) in _sk.items():
                 if _skey not in st.session_state:
@@ -1151,12 +1219,25 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 "이동평균 일수", options=[f"{i}일" for i in range(3, 12)],
                 key=f"edit_ndays_{key_sfx}",
             )
+            _new_rsi = st.checkbox(
+                "🧭 RSI 모드 사용 — QQQ 주간 RSI 가 전주보다 오른 다음 주에는 아래 '상승 주' 기준으로 주문",
+                key=f"edit_rsi_{key_sfx}",
+                help="금요일 장 마감으로 그 주 RSI(DSS 와 같은 값)가 확정되면, 전주보다 높을 때 다음 주 "
+                     "월~금에 상승 주 기준을 씁니다. 그 외 주에는 위의 매수기준/매도기준을 씁니다. "
+                     "직전 주 QQQ 종가가 확보되지 않으면 주문표를 만들지 않습니다.")
+            _er1, _er2 = st.columns(2)
+            _new_upb = _er1.number_input("상승 주 매수기준", step=0.001, format="%.4f",
+                                          key=f"edit_upb_{key_sfx}", disabled=not _new_rsi)
+            _new_ups = _er2.number_input("상승 주 매도기준", step=0.001, format="%.4f",
+                                          key=f"edit_ups_{key_sfx}", disabled=not _new_rsi)
             if st.button("💾 파라미터 저장", key=f"save_param_{key_sfx}", type="primary",
                          use_container_width=True):
                 _new_param = {
                     "a_buy": float(_new_a_buy), "a_sell": float(_new_a_sell),
                     "sell_ratio": float(_new_sr), "divisions": int(_new_div),
                     "n_days": int(_ndays_edit.replace("일", "")) - 1,
+                    "rsi_mode": bool(_new_rsi),
+                    "up_a_buy": float(_new_upb), "up_a_sell": float(_new_ups),
                 }
                 save_ticker_setting(tk, _new_param, prefix="", settings_key="ticker_settings")
                 # 저장 후 session_state 초기화 → 다음 렌더에서 저장값으로 새로 로드
@@ -1561,10 +1642,16 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if halt_if_stale(price_df_os):
             return
 
+        # RSI 모드 계좌: 직전 주 QQQ 주간 RSI 로 이번 주 기준 결정. 판정 불가면 주문표 미생성.
+        try:
+            _mode_os = _rsi_mode_from_cfg(tk_cfg, price_df_os.index, today)
+        except ValueError as _mode_err:
+            st.error(f"⛔ {_mode_err}  \n모드를 추정해서 주문을 만들지 않습니다. 잠시 후 다시 시도해주세요.")
+            return
         res = run_portfolio_for_ordersheet(
             price_df_os, os_start, tk,
             _a_buy, _a_sell, _sell_ratio, _divisions, os_capital,
-            n_days=_n_days,
+            n_days=_n_days, mode=_mode_os,
         )
         if res is None:
             st.warning("시뮬레이션 데이터가 없습니다.")
@@ -1813,6 +1900,8 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     lp, p1, p2 = res["latest_price"], res["p1_now"], res["p2_now"]
     st.subheader(f"📑 오늘의 LOC 주문  ({next_trading_date().strftime('%Y-%m-%d')})")
     st.caption(f"p1(전일종가)=**${p1:,.2f}** · p2(전전일종가)=**${p2:,.2f}** · 최근가=**${lp:,.2f}**")
+    if res.get("rsi_mode"):
+        st.info("🧭 " + _rsi_mode_caption(res["rsi_mode"]))
 
     today_orders = []
     # 매도/매수 수량: 원장(매매기록) 기준 — 로드 시 res가 원장 값으로 오버라이드됨
@@ -2180,6 +2269,10 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
                         st.session_state["add_a_sell"] = _apr["a_sell"]
                         st.session_state["add_div"]    = _apr["divisions"]
                         st.session_state["add_sr"]     = float(_apr.get("sell_ratio", 100.0))
+                        # RSI 모드 프리셋이면 모드 값도 기억해 두었다가 등록 때 함께 저장
+                        st.session_state["add_mode_cfg"] = (
+                            {"tk": _add_tk, **{k: _apr[k] for k in _RSI_MODE_KEYS if k in _apr}}
+                            if _cfg_flag(_apr.get("rsi_mode")) else None)
                         st.rerun()
                 st.divider()
             else:
@@ -2192,16 +2285,25 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
             _add_div     = _ac2.number_input("분할수",       value=5,      min_value=1, step=1,        key="add_div")
             _add_start   = _ac1.date_input(  "시작일",       value=datetime(2024, 1, 1).date(),        key="add_os_start")
             _add_capital = _ac2.number_input("시작 자본 ($)", value=10000.0, step=1000.0,              key="add_os_capital")
+            _amc = st.session_state.get("add_mode_cfg") or {}
+            if _amc.get("tk") == _add_tk and _cfg_flag(_amc.get("rsi_mode")):
+                st.caption(f"🧭 RSI 모드 포함 — 상승 주 매수 {float(_amc.get('up_a_buy', 0))*100:+.2f}% / "
+                           f"매도 {float(_amc.get('up_a_sell', 0))*100:+.2f}% (등록 후 '파라미터 수정'에서 변경 가능)")
 
             if st.button(f"✅ {_add_tk} 계좌 등록", type="primary", key="add_tk_btn"):
                 if _add_tk in _registered_tickers:
                     st.warning(f"⚠️ {_add_tk} 계좌가 이미 등록되어 있습니다.")
                 else:
+                    _add_mode = st.session_state.get("add_mode_cfg") or {}
+                    _add_mode = ({k: _add_mode[k] for k in _RSI_MODE_KEYS if k in _add_mode}
+                                 if _add_mode.get("tk") == _add_tk else {})
                     _err = save_ticker_setting(_add_tk, {
                         "a_buy": float(_add_a_buy), "a_sell": float(_add_a_sell),
                         "sell_ratio": float(_add_sr), "divisions": int(_add_div),
                         "os_start": str(_add_start), "os_capital": float(_add_capital),
+                        **_add_mode,
                     }, prefix="", settings_key="ticker_settings")
+                    st.session_state.pop("add_mode_cfg", None)
                     if _err:
                         st.error(f"❌ 계좌 등록 실패: {_err}")
                     else:
@@ -2364,15 +2466,28 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             })
         return records
 
-    def _render_perf_analysis(tk, a_b, a_s, sr, div, init_cap, s_date, e_date):
-        """ticker 하나의 성과 분석 전체를 렌더링."""
+    def _render_perf_analysis(tk, a_b, a_s, sr, div, init_cap, s_date, e_date, mode_cfg=None):
+        """ticker 하나의 성과 분석 전체를 렌더링. mode_cfg: RSI 모드 설정(dict) 또는 None."""
         with st.spinner(f"{tk} 데이터 로드 및 분석 중..."):
             _pdf = load_price_data(tk, s_date, e_date, "야후파이낸스 (yfinance)", None)
         if _pdf.empty:
             st.error(f"{tk}: 가격 데이터를 불러오지 못했습니다.")
             return
 
-        _res = run_backtest(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, return_history=True, n_days=n_days)
+        # RSI 모드: 거래일별 모드를 붙여 백테스트 (주간 RSI 는 DSS 와 같은 값)
+        _mode_pa = None
+        if mode_cfg and _cfg_flag(mode_cfg.get("rsi_mode")):
+            try:
+                _mode_pa = _rsi_mode_from_cfg(mode_cfg, _pdf.index)
+                st.info(f"🧭 **RSI 모드 반영** — 상승 주 매수 {float(mode_cfg.get('up_a_buy', a_b))*100:+.2f}% / "
+                        f"매도 {float(mode_cfg.get('up_a_sell', a_s))*100:+.2f}%, 그 외 주 "
+                        f"매수 {a_b*100:+.2f}% / 매도 {a_s*100:+.2f}%. "
+                        f"아래 수치·곡선·민감도·무작위 구간 분석에 모두 반영됩니다.")
+            except ValueError as _mode_err:
+                st.warning(f"RSI 모드를 판정할 수 없어 모드 없이 분석합니다 — {_mode_err}")
+
+        _res = run_backtest(_pdf, s_date, e_date, a_b, a_s, sr, div, init_cap, return_history=True, n_days=n_days,
+                            mode=_mode_pa)
         if _res is None:
             st.warning(f"{tk}: 선택된 기간 내 거래 데이터가 없습니다.")
             return
@@ -2814,7 +2929,8 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             with st.spinner("민감도 분석 중... (25회 시뮬레이션)"):
                 for _bi, _bv in enumerate(_buy_range):
                     for _si, _sv in enumerate(_sell_range):
-                        _hr = run_backtest(_pdf, s_date, e_date, _bv, _sv, sr, div, init_cap, n_days=n_days)
+                        _hr = run_backtest(_pdf, s_date, e_date, _bv, _sv, sr, div, init_cap, n_days=n_days,
+                                           mode=_mode_pa)
                         _heat[_bi][_si] = _hr["calmar"] if _hr else 0.0
             _buy_labels  = [f"{v*100:.2f}%" for v in _buy_range]
             _sell_labels = [f"{v*100:.2f}%" for v in _sell_range]
@@ -2869,7 +2985,14 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                         for _ci, _si in enumerate(_mc_chosen):
                             _s_dt = str(_mc_idx[_si].date())
                             _e_dt = str(_mc_idx[_si + _WINDOW - 1].date())
-                            _r = run_backtest(_mc_pdf, _s_dt, _e_dt, a_b, a_s, sr, div, init_cap, n_days=n_days)
+                            if _ci == 0:
+                                # 무작위 구간용 데이터(_mc_pdf)는 인덱스가 달라 모드를 다시 붙인다
+                                try:
+                                    _mode_mc = _rsi_mode_from_cfg(mode_cfg, _mc_pdf.index) if _mode_pa else None
+                                except ValueError:
+                                    _mode_mc = None
+                            _r = run_backtest(_mc_pdf, _s_dt, _e_dt, a_b, a_s, sr, div, init_cap, n_days=n_days,
+                                              mode=_mode_mc)
                             if _r:
                                 _mc_strat_ret.append(round(_r["total_return"] * 100, 2))
                                 _mc_strat_mdd.append(round(abs(_r["mdd"]) * 100, 2))
@@ -3358,6 +3481,9 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         _use_sr = float(_pr["sell_ratio"])
         _use_dv = int(_pr["divisions"])
         _use_nd = int(_pr["n_days"])
+    # RSI 모드: 프리셋을 골랐을 때만 그 프리셋의 모드 설정을 쓴다 (사이드바 설정값은 모드 없음)
+    _use_mode = ({k: _pr[k] for k in _RSI_MODE_KEYS if k in _pr}
+                 if (_src_idx > 0 and _cfg_flag(_pr.get("rsi_mode"))) else None)
 
     # 적용 파라미터 미리보기
     with st.expander("🔍 적용 파라미터 확인", expanded=False):
@@ -3369,6 +3495,9 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         _pv4.markdown(f"**매도비율**: `{_use_sr:.0f}%`")
         _pv5.markdown(f"**분할수**: `{_use_dv}회`")
         _pv6.markdown(f"**대상 종목**: `{_an_tk}`")
+        if _use_mode:
+            st.markdown(f"**RSI 모드**: 상승 주 매수 `{float(_use_mode['up_a_buy']):+.4f}` / "
+                        f"매도 `{float(_use_mode['up_a_sell']):+.4f}` (그 외 주는 위 a_buy / a_sell)")
         st.caption(
             f"기간 {_an_start} ~ {end_date} · 자본 ${initial_capital:,.0f}"
             + (f"  |  등록된 계좌: **{', '.join(_perf_tk_settings.keys())}** (각자 저장된 파라미터 적용)"
@@ -3382,6 +3511,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             "a_buy": _use_ab, "a_sell": _use_as,
             "sell_ratio": _use_sr, "divisions": _use_dv,
             "n_days": _use_nd,
+            "mode_cfg": _use_mode,
             "initial_capital": initial_capital,
             "start_date": _an_start, "start_date_others": start_date, "end_date": end_date,
             "source_label": _src_sel,
@@ -3400,6 +3530,15 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         # 다른 종목 탭과 종목 간 비교는 사이드바 기간 (공통 기간이어야 비교가 성립)
         _p_sd          = _prm.get("start_date_others", _p_sd_sel)
         _sd_of         = lambda _t: _p_sd_sel if _t == _p_ticker else _p_sd
+
+        _p_mode = _prm.get("mode_cfg")
+
+        def _mode_of(ptk, pcfg):
+            """선택 종목 = 고른 소스의 모드, 그 외 종목 = 그 계좌에 저장된 모드."""
+            if ptk == _p_ticker:
+                return _p_mode
+            return ({k: pcfg[k] for k in _RSI_MODE_KEYS if k in pcfg}
+                    if _cfg_flag((pcfg or {}).get("rsi_mode")) else None)
 
         def _resolve_saved(ptk, pcfg):
             if ptk == _p_ticker:
@@ -3423,12 +3562,14 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                     with _perf_tabs[_pi]:
                         _pcfg = _p_tk_settings[_ptk]
                         _pb, _ps, _psr, _pdv = _resolve_saved(_ptk, _pcfg)
-                        _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _sd_of(_ptk), _p_ed)
+                        _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _sd_of(_ptk), _p_ed,
+                                              mode_cfg=_mode_of(_ptk, _pcfg))
             else:
                 _ptk  = _tk_list[0]
                 _pcfg = _p_tk_settings[_ptk]
                 _pb, _ps, _psr, _pdv = _resolve_saved(_ptk, _pcfg)
-                _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _sd_of(_ptk), _p_ed)
+                _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _sd_of(_ptk), _p_ed,
+                                      mode_cfg=_mode_of(_ptk, _pcfg))
 
             # ── 종목 간 비교 ──────────────────────────────────────
             # 미등록 종목의 비교용 기본값 = 프리셋 DB 의 추천(⭐) 프리셋, 없으면 첫 프리셋
@@ -3459,7 +3600,12 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                         continue
                     _cb, _cs, _csr, _cdv = _resolve_saved(_ctk, _ccfg)
                     _c_ndays = int(_ccfg.get("n_days", 2))
-                    _cr = run_backtest(_cpdf, _p_sd, _p_ed, _cb, _cs, _csr, _cdv, _p_cap, n_days=_c_ndays)
+                    try:
+                        _c_mode = _rsi_mode_from_cfg(_mode_of(_ctk, _ccfg), _cpdf.index)
+                    except ValueError:
+                        _c_mode = None
+                    _cr = run_backtest(_cpdf, _p_sd, _p_ed, _cb, _cs, _csr, _cdv, _p_cap, n_days=_c_ndays,
+                                       mode=_c_mode)
                     if not _cr:
                         continue
                     _sharpe_c, _sortino_c = compute_sharpe_sortino(_cr["assets"])
@@ -3488,7 +3634,8 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                 if _cmp_rows:
                     st.dataframe(pd.DataFrame(_cmp_rows), hide_index=True, use_container_width=True)
         else:
-            _render_perf_analysis(_p_ticker, _p_ab, _p_as, _p_sr, _p_dv, _p_cap, _p_sd_sel, _p_ed)
+            _render_perf_analysis(_p_ticker, _p_ab, _p_as, _p_sr, _p_dv, _p_cap, _p_sd_sel, _p_ed,
+                                  mode_cfg=_p_mode)
 
     _do_render_perf()
 
@@ -3573,6 +3720,7 @@ def render_settings_tab():
                                         _os_start=_tg_start_d,
                                         _os_capital=float(_tg_cfg.get("os_capital") or 10000.0),
                                         capital_adj_history=_tg_cfg.get("capital_adj_history", "[]"),
+                                        _mode_cfg=_tg_cfg,
                                     )
                                     result = _send_telegram(tg_token, tg_chat_id, msg)
                                 except Exception as _tg_err:
@@ -3783,6 +3931,8 @@ def render_settings_tab():
                                     _pdf, _gs_start_d, _gs_tk,
                                     _gs_a_buy, _gs_a_sell, _gs_sr, _gs_div, _gs_cap,
                                     n_days=_gs_ndays,
+                                    # 판정 불가면 예외 → 아래 except 에서 전송 실패로 처리
+                                    mode=_rsi_mode_from_cfg(_gs_cfg, _pdf.index),
                                 )
                                 if _res is None:
                                     st.error(f"❌ {_gs_tk}: 시뮬레이션 데이터가 없습니다.")

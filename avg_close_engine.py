@@ -30,8 +30,9 @@ def calc_boundary(prices, a):
     return sum(prices) * (1 + a) / (n - a)
 
 
-def _prep_sim(sim_raw, n_days, a_buy, a_sell):
+def _prep_sim(sim_raw, n_days, a_buy, a_sell, mode=None):
     """N일 이동평균 기반 매수/매도 경계가 벡터 계산.
+    mode: RSI 모드 dict (make_rsi_mode 참조). None 이면 기존과 완전히 동일한 계산.
     Returns: (sim_df, closes_arr, tgt_buy_arr, tgt_sell_arr)"""
     for k in range(1, n_days + 1):
         sim_raw[f"p{k}"] = sim_raw["Close"].shift(k)
@@ -40,9 +41,91 @@ def _prep_sim(sim_raw, n_days, a_buy, a_sell):
         return sim, np.array([]), np.array([]), np.array([])
     psum = sum(sim[f"p{k}"].values.astype(float) for k in range(1, n_days + 1))
     closes   = sim["Close"].values.astype(float)
+    if mode is not None:
+        # RSI 상승 주에 속한 거래일만 상승용 기준(a_buy_up / a_sell_up) 사용
+        _up = mode["up_flags"].reindex(sim.index).fillna(False).values.astype(bool)
+        a_buy  = np.where(_up, float(mode["a_buy_up"]),  float(a_buy))
+        a_sell = np.where(_up, float(mode["a_sell_up"]), float(a_sell))
     tgt_buy  = psum * (1 + a_buy)  / (n_days - a_buy)
     tgt_sell = psum * (1 + a_sell) / (n_days - a_sell)
     return sim, closes, tgt_buy, tgt_sell
+
+
+# ══════════════════════════════════════════════════════════════
+# RSI 모드 — QQQ 주간 RSI(DSS 와 같은 값)의 전주 대비 기울기로 매수/매도 기준 전환
+# ══════════════════════════════════════════════════════════════
+#   금요일 장 마감으로 그 주 RSI 확정 → 전주보다 높으면 '다음 주' 월~금에 상승용 기준 적용.
+#   미래 정보 차단: 어떤 거래일의 모드는 직전에 '끝난' 주까지의 RSI 로만 정한다.
+#   신호를 한 주 늦게 쓰면 효과가 사라지므로(백테스트 Calmar 1.33 → 0.71),
+#   직전 주 종가가 확보되지 않았으면 추정하지 않고 예외를 던져 주문 생성을 막는다.
+
+def _week_friday(ts):
+    """날짜(들)가 속한 주의 금요일. 토·일은 다음 주로 본다 (다음 주문이 그 주에 나가므로)."""
+    ts = pd.to_datetime(ts)
+    if isinstance(ts, pd.DatetimeIndex):
+        ts = ts.normalize()
+        return ts + pd.to_timedelta((4 - ts.weekday) % 7, unit="D")
+    ts = ts.normalize()
+    return ts + pd.Timedelta(days=(4 - ts.weekday()) % 7)
+
+
+def rsi_weekly_table(qqq_df) -> pd.DataFrame:
+    """DSS 가 쓰는 QQQ 주간 RSI 표. index = 그 주의 금요일.
+    columns: rsi, prev_rsi, up(전주 대비 상승 여부), last_day(그 주에 실제로 들어 있는 마지막 거래일)."""
+    from dss_engine import build_weekly_rsi_series
+    w = build_weekly_rsi_series(qqq_df)
+    t = pd.DataFrame({"rsi": w["rsi"].astype(float).values},
+                     index=_week_friday(pd.DatetimeIndex(pd.to_datetime(w["week_end"]))))
+    t = t[~t.index.duplicated(keep="last")].sort_index()
+    # 그 주에 '실제로' 들어 있는 마지막 거래일 — DSS 표의 week_end 는 주 이름(금요일)일 뿐이라
+    # 금요일 종가가 빠진 데이터도 금요일로 표시된다. 일봉 인덱스에서 직접 구해야
+    # '직전 주 종가 미확보' 를 잡아낼 수 있다.
+    _days = pd.DatetimeIndex(pd.to_datetime(qqq_df.index)).normalize()
+    _last = pd.Series(_days, index=_week_friday(_days)).groupby(level=0).max()
+    t["last_day"] = _last.reindex(t.index).values
+    t["prev_rsi"] = t["rsi"].shift(1)
+    t["up"] = (t["rsi"] > t["prev_rsi"]) & t["rsi"].notna() & t["prev_rsi"].notna()
+    return t
+
+
+def rsi_up_flags(weekly: pd.DataFrame, index) -> pd.Series:
+    """거래일별 '상승 모드' 여부 — 그 거래일이 속한 주의 직전 주 RSI 기울기."""
+    idx = pd.DatetimeIndex(index)
+    prev_week = _week_friday(idx) - pd.Timedelta(days=7)
+    return pd.Series(weekly["up"].reindex(prev_week).fillna(False).values.astype(bool), index=idx)
+
+
+def rsi_mode_for_date(weekly: pd.DataFrame, order_date) -> dict:
+    """주문일의 모드 판정 + 근거. 직전 주 종가가 없으면 ValueError (추정 금지)."""
+    fri = _week_friday(order_date)
+    basis = fri - pd.Timedelta(days=7)
+    if basis not in weekly.index or pd.isna(weekly.loc[basis, "rsi"]) or pd.isna(weekly.loc[basis, "prev_rsi"]):
+        raise ValueError(f"RSI 모드 판정 불가 — 직전 주({basis.date()} 마감) QQQ 주간 RSI 가 없습니다.")
+    # 직전 주의 마지막 거래일 종가까지 들어 있어야 그 주 RSI 가 확정값
+    from dss_engine import _is_us_trading_day
+    need = basis
+    for _ in range(5):
+        if _is_us_trading_day(need):
+            break
+        need -= pd.Timedelta(days=1)
+    have = pd.Timestamp(weekly.loc[basis, "last_day"]).normalize()
+    if have < need.normalize():
+        raise ValueError(f"RSI 모드 판정 불가 — QQQ 종가가 {have.date()} 까지만 있습니다 "
+                         f"(직전 주 마지막 거래일 {need.date()} 필요).")
+    r = weekly.loc[basis]
+    return {"up": bool(r["up"]), "basis_week": basis.date(), "rsi": float(r["rsi"]),
+            "prev_rsi": float(r["prev_rsi"])}
+
+
+def make_rsi_mode(qqq_df, index, order_date, a_buy_up: float, a_sell_up: float) -> dict:
+    """엔진에 넘길 RSI 모드 dict 생성.
+    qqq_df     : QQQ 일봉 ('Close') — DSS 와 같은 로더(dss_engine.load_price_data) 사용 권장
+    index      : 시뮬레이션에 쓰는 가격 데이터의 거래일 인덱스
+    order_date : 오늘 주문일 (모드 판정 근거를 함께 담는다)"""
+    weekly = rsi_weekly_table(qqq_df)
+    today = rsi_mode_for_date(weekly, order_date)
+    return {"up_flags": rsi_up_flags(weekly, index), "a_buy_up": float(a_buy_up),
+            "a_sell_up": float(a_sell_up), "today_up": today["up"], "info": today}
 
 
 def scalar(v):
@@ -58,10 +141,11 @@ def scalar(v):
 def run_backtest(
     price_df, start_date, end_date,
     a_buy, a_sell, sell_ratio, divisions, initial_capital,
-    return_history=False, n_days=2,
+    return_history=False, n_days=2, mode=None,
 ):
+    """mode: RSI 모드 dict (make_rsi_mode). None 이면 기존과 동일."""
     sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(end_date)].copy()
-    sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw, n_days, a_buy, a_sell)
+    sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw, n_days, a_buy, a_sell, mode)
     if sim.empty:
         return None
 
@@ -228,9 +312,12 @@ def run_backtest_fast(
 def run_portfolio_for_ordersheet(
     price_df, start_date, ticker_name,
     a_buy, a_sell, sell_ratio, divisions, initial_capital,
-    n_days=2,
+    n_days=2, mode=None,
 ):
-    """백테스트를 오늘까지 실행하며 평균단가·티어·매도이력을 추적."""
+    """백테스트를 오늘까지 실행하며 평균단가·티어·매도이력을 추적.
+
+    mode: RSI 모드 dict (make_rsi_mode). 과거 시뮬은 거래일별 모드로, 오늘 주문가는
+          mode["today_up"] 으로 기준을 고른다. None 이면 기존과 동일."""
     today = datetime.today().date()
     sim_raw = price_df.loc[pd.to_datetime(start_date):pd.to_datetime(today)].copy()
     all_closes = sim_raw["Close"].dropna().values.astype(float)
@@ -250,7 +337,7 @@ def run_portfolio_for_ordersheet(
     _hold_tday  = 0    # 거래일 기준 보유기간 카운터 (첫 매수일 = 0)
 
     if not sim_raw.empty:
-        sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw.copy(), n_days, a_buy, a_sell)
+        sim, closes, tgt_buy, tgt_sell = _prep_sim(sim_raw.copy(), n_days, a_buy, a_sell, mode)
     else:
         sim    = sim_raw
         closes = np.array([])
@@ -381,9 +468,13 @@ def run_portfolio_for_ordersheet(
     p_now = [float(all_closes[-(k)]) for k in range(1, n_days + 1)]
     p1_now = p_now[0]
     p2_now = p_now[1] if len(p_now) > 1 else p_now[0]
-    next_buy_primary   = calc_boundary(p_now, a_buy)
+    # 오늘 주문에 쓸 기준 — RSI 모드면 오늘(주문일)의 모드에 따라 선택
+    _a_buy_now, _a_sell_now = a_buy, a_sell
+    if mode is not None and mode.get("today_up"):
+        _a_buy_now, _a_sell_now = float(mode["a_buy_up"]), float(mode["a_sell_up"])
+    next_buy_primary   = calc_boundary(p_now, _a_buy_now)
     next_buy_secondary = next_buy_primary * 0.95
-    next_sell_target   = calc_boundary(p_now, a_sell)
+    next_sell_target   = calc_boundary(p_now, _a_sell_now)
 
     min_tier_price = min(t["price"] for t in open_tiers) if open_tiers else 0.0
     chunk_now      = current_asset / divisions
@@ -424,6 +515,10 @@ def run_portfolio_for_ordersheet(
         "cagr":             cagr,
         "start_date":       start_date,
         "end_date":         today,
+        # RSI 모드 판정 결과 (모드 미사용이면 None) — 화면·메시지 표시용
+        "rsi_mode":         (None if mode is None else {
+                                **dict(mode.get("info") or {}),
+                                "a_buy": _a_buy_now, "a_sell": _a_sell_now}),
     }
 
 

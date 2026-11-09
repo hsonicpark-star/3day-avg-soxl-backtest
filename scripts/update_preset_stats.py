@@ -102,15 +102,26 @@ def run_avg():
     import avg_close_engine as E
     db = extract_literal("strategies/avg_close.py", "_AVG_PRESETS_DB")
     out = {}
+    qqq = None
     for tk, presets in db.items():
         px = load_adjusted(tk)[["Close"]]
         check_fresh(px.index, f"종가평균/{tk}")
         s, e = px.index[0], px.index[-1]
         for p in presets:
+            mode, note = None, None
+            if p.get("rsi_mode"):
+                # RSI 모드형: 앱과 같은 판정(QQQ 주간 RSI, DSS 와 같은 로더)을 거래일별로 붙여 계산
+                if qqq is None:
+                    from dss_engine import load_price_data as _dss_load
+                    qqq = _dss_load("QQQ", "2009-01-01", "2027-01-01")
+                    check_fresh(qqq.index, "종가평균/QQQ(RSI 모드)")
+                mode = E.make_rsi_mode(qqq, px.index, datetime.utcnow().date(),
+                                       p["up_a_buy"], p["up_a_sell"])
+                note = "RSI 모드 반영"
             r = E.run_backtest(px, str(s.date()), str(e.date()), p["a_buy"], p["a_sell"],
-                               p["sell_ratio"], p["divisions"], CAP, n_days=p.get("n_days", 2))
+                               p["sell_ratio"], p["divisions"], CAP, n_days=p.get("n_days", 2), mode=mode)
             win = r["win_count"] / r["sell_count"] if r["sell_count"] else None
-            out[item_key("avg", tk, p["label"])] = entry(p, r["cagr"], r["mdd"], r["dates"][0], e, win)
+            out[item_key("avg", tk, p["label"])] = entry(p, r["cagr"], r["mdd"], r["dates"][0], e, win, note)
     return out
 
 
