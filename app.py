@@ -92,7 +92,7 @@ except Exception as _import_err:
     st.stop()
 
 # ── 전략 목록 ────────────────────────────────────────────────
-_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🎲 카마릴라 돌파", "🪜 평단 트레이딩", "🎛️ 만능 스위치", "🧩 포트폴리오 합산"]
+_STRATEGIES = ["📐 표준편차매매", "📈 종가평균매매", "📐 Sigma매매", "🌊 DSS 동파법", "📊 IUO 매매법", "🎯 듀얼스나이퍼", "🎲 카마릴라 돌파", "🪜 평단 트레이딩", "🎛️ 만능 스위치", "📏 TQ200", "🧩 포트폴리오 합산"]
 
 # ── 전략 판별 ────────────────────────────────────────────────
 _strategy_title = st.session_state.get("strategy_radio", "📐 표준편차매매")
@@ -104,6 +104,7 @@ _is_dual = (_strategy_title == "🎯 듀얼스나이퍼")
 _is_cam = (_strategy_title == "🎲 카마릴라 돌파")
 _is_pdan = (_strategy_title == "🪜 평단 트레이딩")
 _is_manse = (_strategy_title == "🎛️ 만능 스위치")
+_is_tq200 = (_strategy_title == "📏 TQ200")
 _is_portfolio = (_strategy_title == "🧩 포트폴리오 합산")
 
 # ── 포트폴리오 합산 lazy import (선택 시에만 로드) ─────────────
@@ -115,6 +116,20 @@ if _is_portfolio:
         importlib.reload(portfolio)
     except Exception as _pf_err:
         st.error(f"⚠️ 포트폴리오 모듈 로드 실패: {_pf_err}")
+        import traceback
+        st.code(traceback.format_exc())
+
+# ── TQ200 lazy import (선택 시에만 로드) ─────────────────────
+tq200 = None
+if _is_tq200:
+    try:
+        import importlib
+        import tq200_engine as _tq_engine
+        importlib.reload(_tq_engine)
+        from strategies import tq200
+        importlib.reload(tq200)
+    except Exception as _tq_err:
+        st.error(f"⚠️ TQ200 모듈 로드 실패: {_tq_err}")
         import traceback
         st.code(traceback.format_exc())
 
@@ -201,7 +216,9 @@ if _is_dual:
         st.code(traceback.format_exc())
 
 # ── 타이틀 ───────────────────────────────────────────────────
-if _is_manse:
+if _is_tq200:
+    st.title("📏 TQ200 — 200일선 이격도 매매")
+elif _is_manse:
     st.title("🎛️ 만능 스위치 백테스터")
 elif _is_pdan:
     st.title("🪜 평단 트레이딩 백테스터")
@@ -232,7 +249,7 @@ with st.sidebar:
     st.markdown("---")
 
     # ── 공통 종목 선택 (Sigma·DSS·IUO·듀얼·카마릴라·평단법·포트폴리오 제외 — 자체 사이드바 사용) ──
-    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual and not _is_cam and not _is_pdan and not _is_manse and not _is_portfolio:
+    if not _is_sigma and not _is_dss and not _is_iuo and not _is_dual and not _is_cam and not _is_pdan and not _is_manse and not _is_tq200 and not _is_portfolio:
         st.subheader("📌 종목")
         _PRESET_TICKERS = ["SOXL", "USD", "TQQQ", "직접입력"]
         _ticker_select = st.selectbox("종목코드 (Ticker)", _PRESET_TICKERS, index=0)
@@ -297,6 +314,22 @@ with st.sidebar:
         if data_source == "엑셀 Daily_Close 시트":
             excel_file = st.file_uploader("엑셀 파일 업로드 (.xlsx)", type=["xlsx"])
             st.caption("엑셀 내 **Daily_Close** 시트의 날짜/종가 두 컬럼이 사용됩니다.")
+
+    elif _is_tq200 and tq200:
+        # TQ200: 자체 사이드바 (이격도 구간 + 기울기 필터)
+        params = tq200.render_sidebar()
+        ticker = params.get("bt_ticker", "TQQQ")
+        start_date = params.get("bt_start_date")
+        end_date = params.get("bt_end_date")
+        initial_capital = params.get("bt_initial_capital", 10000.0)
+        data_source = "야후 파이낸스 (yfinance)"
+        excel_file = None
+
+    elif _is_tq200 and not tq200:
+        st.warning("TQ200 모듈 로드 실패. 위 에러를 확인하세요.")
+        params = {}; ticker = "TQQQ"
+        start_date = datetime(2011, 1, 3).date(); end_date = datetime.today().date()
+        initial_capital = 10000.0; data_source = "야후 파이낸스 (yfinance)"; excel_file = None
 
     elif _is_manse and manse:
         # 만능 스위치: 자체 사이드바 (모드 스위치 + 구간별 티어 테이블)
@@ -456,7 +489,15 @@ if _is_portfolio:
 # ══════════════════════════════════════════════════════════════
 # 탭 구성 & 라우팅
 # ══════════════════════════════════════════════════════════════
-if _is_manse and manse:
+if _is_tq200 and tq200:
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 신호",
+        "📖 전략 소개", "⚙️ 개인 설정",
+    ])
+elif _is_tq200 and not tq200:
+    st.warning("⚠️ TQ200 모듈을 로드하지 못했습니다.")
+    st.stop()
+elif _is_manse and manse:
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 주문표",
         "📖 전략 소개", "📂 DB 조회", "⚙️ 개인 설정",
@@ -522,7 +563,9 @@ else:
 
 
 with tab1:
-    if _is_manse and manse:
+    if _is_tq200 and tq200:
+        tq200.render_backtest_tab(params)
+    elif _is_manse and manse:
         manse.render_backtest_tab(params)
     elif _is_pdan and pdan:
         pdan.render_backtest_tab(params)
@@ -544,7 +587,9 @@ with tab1:
                                       start_date, end_date, initial_capital)
 
 with tab2:
-    if _is_manse and manse:
+    if _is_tq200 and tq200:
+        tq200.render_optimization_tab(params)
+    elif _is_manse and manse:
         manse.render_optimization_tab(params)
     elif _is_pdan and pdan:
         pdan.render_optimization_tab(params)
@@ -566,7 +611,9 @@ with tab2:
                                           initial_capital, data_source, excel_file)
 
 with tab3:
-    if _is_manse and manse:
+    if _is_tq200 and tq200:
+        tq200.render_ordersheet_tab(params)
+    elif _is_manse and manse:
         manse.render_ordersheet_tab(params)
     elif _is_pdan and pdan:
         pdan.render_ordersheet_tab(params)
@@ -588,7 +635,9 @@ with tab3:
                                         data_source, excel_file)
 
 with tab4:
-    if _is_manse and manse:
+    if _is_tq200 and tq200:
+        tq200.render_intro_tab(params)
+    elif _is_manse and manse:
         manse.render_intro_tab(params)
     elif _is_pdan and pdan:
         pdan.render_intro_tab(params)
@@ -610,7 +659,9 @@ with tab4:
                                    start_date, end_date, initial_capital)
 
 with tab5:
-    if _is_manse and manse:
+    if _is_tq200 and tq200:
+        tq200.render_settings_tab()
+    elif _is_manse and manse:
         manse.render_db_tab(params)
     elif _is_pdan and pdan:
         pdan.render_settings_tab()

@@ -128,6 +128,7 @@ def render_login_gate():
                             "ticker_settings", "sd_ticker_settings",
                             "dss_config",                       # DSS 동파법 설정
                             "pdan_config",                      # 평단법 설정
+                            "tq200_config",                     # TQ200 설정
                         )
                     }
                     st.rerun()
