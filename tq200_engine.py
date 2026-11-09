@@ -2,6 +2,8 @@
 """TQ200 (TQQQ 200일선 이격도 매매) — 백테스트 엔진
 
 원본: 14.TQ200/TQQQ200일선.xlsx (최근로그 · 사이클 시트) 규칙 1:1 이식.
+운용 기본값(DEFAULTS)은 과열 익절만 원본 55% → **50%** 로 조정 (2026-11-09).
+원본 시트 값 그대로는 SHEET_PARAMS — 엑셀 대조 검증은 이 값으로 한다.
 
 규칙 (모든 판단은 종가 확정 후, 체결은 다음 거래일 시가)
 ----------------------------------------------------------
@@ -11,9 +13,9 @@
 - 매수 신호 (무포지션): buy_lo < 이격도 < buy_hi (1% 초과 10% 미만)  AND  Slope > 0
                         → 다음 거래일 **시가 전량 매수** (MOO)
 - 매도 신호 (보유 중) : 이격도 < exit_disp (−1% 미만으로 이탈)
-                        또는 이격도 > tp_disp (55% 초과 과열 익절)
+                        또는 이격도 > tp_disp (기본 50% 초과 과열 익절 · 원본 55%)
                         → 다음 거래일 **시가 전량 매도** (MOO)
-- 경계값은 모두 '초과/미만' (정확히 1.00%·−1.00%·55.00% 는 신호 아님).
+- 경계값은 모두 '초과/미만' (정확히 1.00%·−1.00%·50.00% 는 신호 아님).
   원본 엑셀 구간에는 경계에 정확히 걸린 날이 없어 '이상/이하'와 결과가 같다.
 - 시가 매도한 날 종가에 매수 조건이 맞으면 그날 바로 매수 신호 (다음날 재진입)
 - 시가 매수한 날 종가가 −1% 를 이탈하면 그날 바로 매도 신호 (다음날 청산)
@@ -32,11 +34,18 @@ DEFAULTS = {
     "buy_lo": 1.0,         # 매수 이격도 하한 (%)
     "buy_hi": 10.0,        # 매수 이격도 상한 (%)
     "exit_disp": -1.0,     # 청산 이격도 (%) — 미만으로 이탈 시 매도
-    "tp_disp": 55.0,       # 과열 익절 이격도 (%) — 초과 시 매도
+    # 과열 익절 이격도 (%) — 초과 시 매도. 원본 시트는 55.
+    # 50~55% 는 성과가 비슷한 구간인데 55 는 그 위쪽 끝이라(57.5 부터 CAGR 39.7%·
+    # MDD −36.9% 로 급락 — 2020-02 익절이 이격도 55.68% 에서 겨우 걸림) 안쪽으로 옮겼다.
+    # 50 기준 TQQQ 2011-01~2026-11: CAGR 45.3% · MDD −31.1% (55: 43.9% · −31.1%).
+    "tp_disp": 50.0,
     "use_slope": True,     # 200MA 기울기 > 0 필터 사용
     "use_tp": True,        # 과열 익절 사용
     "fee": 0.0,            # 수수료+슬리피지 (%, 편도)
 }
+
+# 원본 엑셀(TQQQ200일선.xlsx)의 값 — 14.TQ200/verify_tq200.py 대조 검증용
+SHEET_PARAMS = {**DEFAULTS, "tp_disp": 55.0}
 
 EXIT_BREAK = "이격도 이탈"
 EXIT_TP = "이격도 과열"
@@ -82,7 +91,7 @@ def run_backtest(df: pd.DataFrame, initial_capital: float = 10000.0,
                  start=None, end=None,
                  ma_window: int = 200, slope_window: int = 5,
                  buy_lo: float = 0.01, buy_hi: float = 0.10,
-                 exit_disp: float = -0.01, tp_disp: float = 0.55,
+                 exit_disp: float = -0.01, tp_disp: float = 0.50,
                  use_slope: bool = True, use_tp: bool = True,
                  fee_rate: float = 0.0) -> dict:
     """TQ200 백테스트.
@@ -305,7 +314,7 @@ def yearly_returns(equity: pd.Series, initial_capital: float,
 def latest_signal(df: pd.DataFrame, holding: bool,
                   ma_window: int = 200, slope_window: int = 5,
                   buy_lo: float = 0.01, buy_hi: float = 0.10,
-                  exit_disp: float = -0.01, tp_disp: float = 0.55,
+                  exit_disp: float = -0.01, tp_disp: float = 0.50,
                   use_slope: bool = True, use_tp: bool = True) -> dict:
     """마지막 확정 종가 기준 — 실제 보유 여부(holding)에 따른 다음 거래일 주문.
 
