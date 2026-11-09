@@ -169,7 +169,10 @@ def fetch_prices(ticker: str, start_date: str, auto_adjust: bool = True) -> pd.D
     try:
         from dss_engine import _is_us_trading_day
         _last_d = pd.Timestamp(df.index[-1]).normalize()
-        _chk = [d for d in pd.bdate_range(_last_d - timedelta(days=30), _last_d)
+        # 요청한 시작일 이전은 원래 받지 않은 구간 → 구멍이 아니다.
+        # (시작일이 30일 이내인 새 계좌가 '중간 누락'으로 오판되어 발송이 막히던 문제)
+        _chk_from = max(_last_d - timedelta(days=30), pd.Timestamp(start_date).normalize())
+        _chk = [d for d in pd.bdate_range(_chk_from, _last_d)
                 if _is_us_trading_day(d)]
         _have = {pd.Timestamp(d).normalize() for d in df.index}
         _holes = [d.strftime("%m/%d") for d in _chk if d not in _have]
@@ -305,7 +308,9 @@ def calc_today_order(ticker: str, os_start: str,
     mode_cfg: 계좌 설정 dict — rsi_mode 가 켜져 있으면 RSI 모드로 기준을 고른다.
     """
     df = fetch_prices(ticker, os_start)
-    if df is None or df.empty or len(df) < n_days + 1:
+    # 종가 n_days 개면 첫 주문가를 만들 수 있다 (엔진·웹과 같은 기준 — 그보다 적으면 엔진이 None 반환).
+    # 예전엔 n_days+1 을 요구해 새 계좌의 첫날은 웹에 주문이 나와도 텔레그램이 빠졌다.
+    if df is None or df.empty or len(df) < n_days:
         return {}
 
     res = _avg_run_ordersheet(

@@ -1155,7 +1155,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _up_ab  = float(tk_cfg.get("up_a_buy",  _a_buy))
     _up_as  = float(tk_cfg.get("up_a_sell", _a_sell))
 
-    _raw_start   = tk_cfg.get("os_start",   "2024-01-01")
+    # 시작일: os_first(첫 주문일)가 있으면 새 방식 계좌 — 화면에는 첫 주문일을 보여주고
+    # 엔진에는 그 n_days 거래일 전(os_start)을 넘긴다. 없으면 기존 계좌 — os_start 그대로. (_engine_start 참조)
+    _new_style   = bool(str(tk_cfg.get("os_first") or "").strip())
+    _raw_start   = tk_cfg.get("os_first") if _new_style else tk_cfg.get("os_start", "2024-01-01")
     _raw_capital = tk_cfg.get("os_capital",  10000.0)
     try:    _default_start = datetime.strptime(str(_raw_start), "%Y-%m-%d").date()
     except: _default_start = datetime(2024, 1, 1).date()
@@ -1290,6 +1293,9 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                     "rsi_mode": bool(_new_rsi),
                     "up_a_buy": float(_new_upb), "up_a_sell": float(_new_ups),
                 }
+                if _new_style:
+                    # 평균 일수가 바뀌면 필요한 '앞 종가' 개수도 바뀐다 → 엔진 시작일 다시 계산
+                    _new_param["os_start"] = str(_engine_start(_default_start, _new_param["n_days"]))
                 save_ticker_setting(tk, _new_param, prefix="", settings_key="ticker_settings")
                 # 저장 후 session_state 초기화 → 다음 렌더에서 저장값으로 새로 로드
                 for _skey, _ in _sk.values():
@@ -1304,12 +1310,17 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if _pk in st.session_state:
             st.session_state[_wk] = st.session_state.pop(_pk)
     c1, c2 = st.columns(2)
-    os_start   = c1.date_input("시작일", value=_default_start,
+    _ui_start  = c1.date_input("시작일", value=_default_start,
                                 min_value=datetime(2000, 1, 1).date(),
                                 max_value=datetime.today().date(),
                                 key=f"os_start_{key_sfx}")
     os_capital = c2.number_input("시작 자본 ($)", value=_default_capital,
                                   step=1000.0, key=f"os_capital_{key_sfx}")
+    # 엔진에 넘길 시작일 — 새 방식 계좌는 첫 주문일의 n_days 거래일 전, 기존 계좌는 입력값 그대로
+    os_start = _engine_start(_ui_start, _n_days) if _new_style else _ui_start
+    if _new_style:
+        st.caption(f"📅 **{_ui_start:%Y-%m-%d} 주문부터 시작** · 주문가 계산에 필요한 그 앞 "
+                   f"{_n_days}거래일 종가({os_start:%m/%d}~)는 자동으로 가져옵니다 (그 기간 매매 없음).")
 
     # ── 자본 조정 ──
     with st.expander("💰 자본 조정 (증액 / 감액)"):
@@ -1531,8 +1542,10 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                        f"시작일: {_reset_start} / 자본금: ${_reset_capital:,.0f} / 조정 이력 전체 삭제")
             _conf_c1, _conf_c2 = st.columns(2)
             if _conf_c1.button("✅ 확인 (초기화)", type="primary", key=f"confirm_reset_{key_sfx}"):
+                # 새 시작일 = 첫 주문일 (오늘로 잡아도 앞 종가를 자동 사용) → 새 방식으로 저장
                 save_ticker_setting(tk, {
-                    "os_start": str(_reset_start),
+                    "os_first": str(_reset_start),
+                    "os_start": str(_engine_start(_reset_start, _n_days)),
                     "os_capital": float(_reset_capital),
                     "capital_adj_history": "[]",
                 }, prefix="", settings_key="ticker_settings")
@@ -1651,19 +1664,27 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         # 다른 기기/탭의 낡은 세션이 시작일·자본을 되돌리는 사고 방지 (표준편차와 동일):
         # 직접 바꾼 칸만 저장 + 시트 최신값과 다르면 화면 갱신 후 재로드 요청
         _edited = {}
-        if str(os_start) != str(_default_start) or "os_start" not in tk_cfg:
-            _edited["os_start"] = str(os_start)
+        # 화면의 시작일이 저장되는 키: 새 방식 계좌는 os_first(첫 주문일), 기존 계좌는 os_start
+        _start_key = "os_first" if _new_style else "os_start"
+        if str(_ui_start) != str(_default_start) or _start_key not in tk_cfg:
+            _edited[_start_key] = str(_ui_start)
+        if _new_style and str(tk_cfg.get("os_start", "")) != str(os_start):
+            _edited["os_start"] = str(os_start)      # 첫 주문일에서 다시 계산한 엔진 시작일
         if abs(float(os_capital) - float(_default_capital)) > 1e-9 or "os_capital" not in tk_cfg:
             _edited["os_capital"] = float(os_capital)
         from common.config import refresh_user_settings_from_sheet as _refresh_us
         if _refresh_us():
             _fresh_cfg = get_ticker_settings(prefix="", settings_key="ticker_settings",
                                              exclude_prefix="sd_").get(tk, {})
+            if bool(str(_fresh_cfg.get("os_first") or "").strip()) != _new_style:
+                # 다른 기기에서 시작일 방식이 바뀜 → 낡은 화면 값으로 저장하지 않고 화면부터 갱신
+                st.session_state.pop(_ss_key, None)
+                st.rerun()
             _stale_hit = False
-            if "os_start" not in _edited:
+            if _start_key not in _edited:
                 try:
-                    _fs = datetime.strptime(str(_fresh_cfg.get("os_start", "")), "%Y-%m-%d").date()
-                    if _fs != os_start:
+                    _fs = datetime.strptime(str(_fresh_cfg.get(_start_key, "")), "%Y-%m-%d").date()
+                    if _fs != _ui_start:
                         st.session_state[f"os_start_pending_{key_sfx}"] = _fs
                         _stale_hit = True
                 except Exception:
@@ -1683,29 +1704,47 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         if _edited:
             save_ticker_setting(tk, _edited, prefix="", settings_key="ticker_settings")
         today = datetime.today().date()
-        with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
-            price_df_os = load_price_data(tk, os_start, today, "야후파이낸스 (yfinance)", None)
-        if price_df_os.empty:
-            st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
-            return
-        # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
         from common.data import halt_if_stale
-        if halt_if_stale(price_df_os):
-            return
-
-        # RSI 모드 계좌: 직전 주 QQQ 주간 RSI 로 이번 주 기준 결정. 판정 불가면 주문표 미생성.
-        try:
-            _mode_os = _rsi_mode_from_cfg(tk_cfg, price_df_os.index, today)
-        except ValueError as _mode_err:
-            st.error(f"⛔ {_mode_err}  \n모드를 추정해서 주문을 만들지 않습니다. 잠시 후 다시 시도해주세요.")
-            return
-        res = run_portfolio_for_ordersheet(
-            price_df_os, os_start, tk,
-            _a_buy, _a_sell, _sell_ratio, _divisions, os_capital,
-            n_days=_n_days, mode=_mode_os,
-        )
+        # 시도할 엔진 시작일. 기존 방식 계좌인데 시작일이 너무 최근(오늘·어제)이라 종가가 모자라면,
+        # 두 번째 후보로 '입력한 날짜 = 첫 주문일' 로 해석해 그 앞 n_days 거래일 종가를 자동으로 쓴다.
+        _start_cands = [os_start] + ([] if _new_style else [_engine_start(_ui_start, _n_days)])
+        res = None
+        for _ci, _cs in enumerate(_start_cands):
+            _has_next = _ci + 1 < len(_start_cands)
+            with st.spinner("데이터 로드 및 포트폴리오 시뮬레이션 중..."):
+                price_df_os = load_price_data(tk, _cs, today, "야후파이낸스 (yfinance)", None)
+            if price_df_os.empty:
+                if _has_next:
+                    continue        # 시작일이 오늘이면 그날 이후 종가가 아직 없다 → 다음 후보로
+                st.error("가격 데이터를 불러오지 못했습니다 — 야후 서버 일시 장애일 수 있습니다. 잠시 후 버튼을 다시 눌러주세요.")
+                return
+            # 전일 종가 미확보(yfinance+백업 실패) 시 주문표 생성 차단
+            if halt_if_stale(price_df_os):
+                return
+            # RSI 모드 계좌: 직전 주 QQQ 주간 RSI 로 이번 주 기준 결정. 판정 불가면 주문표 미생성.
+            try:
+                _mode_os = _rsi_mode_from_cfg(tk_cfg, price_df_os.index, today)
+            except ValueError as _mode_err:
+                st.error(f"⛔ {_mode_err}  \n모드를 추정해서 주문을 만들지 않습니다. 잠시 후 다시 시도해주세요.")
+                return
+            res = run_portfolio_for_ordersheet(
+                price_df_os, _cs, tk,
+                _a_buy, _a_sell, _sell_ratio, _divisions, os_capital,
+                n_days=_n_days, mode=_mode_os,
+            )
+            if res is not None:
+                if _ci > 0:
+                    # 기존 방식 → 새 방식 전환을 저장 (자동발송·시트 전송도 같은 엔진 시작일을 쓰게 된다)
+                    save_ticker_setting(tk, {"os_first": str(_ui_start), "os_start": str(_cs)},
+                                        prefix="", settings_key="ticker_settings")
+                    os_start = _cs
+                    st.info(f"📅 **{_ui_start:%Y-%m-%d} 주문부터 시작**합니다. 주문가 계산에 필요한 그 앞 "
+                            f"{_n_days}거래일({_cs:%m/%d}~) 종가를 자동으로 가져왔습니다 (그 기간 매매 없음).")
+                break
         if res is None:
-            st.warning("시뮬레이션 데이터가 없습니다.")
+            # 앞 n_days 거래일 종가까지 썼는데도 모자람 (휴장·데이터 지연 등)
+            st.warning(f"⚠️ 주문가 계산에 필요한 직전 {_n_days}거래일 종가를 아직 다 가져오지 못했습니다. "
+                       f"잠시 후 '주문표 로드'를 다시 눌러주세요.")
             return
         # 자본 조정 반영 (엔진은 os_capital로만 시뮬, 조정은 별도 합산)
         _adj_raw_os = tk_cfg.get("capital_adj_history", "[]")
@@ -2144,11 +2183,11 @@ def _render_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
 
         try:
             from dateutil.relativedelta import relativedelta as _rdelta
-            _rd = _rdelta(datetime.today().date(), os_start)
+            _rd = _rdelta(datetime.today().date(), _ui_start)
             _period_txt = ((f"{_rd.years}년 " if _rd.years else "")
                            + f"{_rd.months}개월 {_rd.days}일").strip()
         except Exception:
-            _days_pf = (datetime.today().date() - os_start).days
+            _days_pf = (datetime.today().date() - _ui_start).days
             _period_txt = f"{_days_pf // 30}개월 {_days_pf % 30}일"
 
         _pp_c = "#2E7D32" if _period_pnl >= 0 else "#C62828"
@@ -2334,7 +2373,9 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
             _add_a_sell  = _ac2.number_input("매도 a값",    value=0.009,  step=0.001, format="%.4f", key="add_a_sell")
             _add_sr      = _ac1.number_input("매도비율 (%)", value=100.0,  step=10.0,                 key="add_sr")
             _add_div     = _ac2.number_input("분할수",       value=5,      min_value=1, step=1,        key="add_div")
-            _add_start   = _ac1.date_input(  "시작일",       value=datetime(2024, 1, 1).date(),        key="add_os_start")
+            _add_start   = _ac1.date_input(  "시작일",       value=datetime(2024, 1, 1).date(),        key="add_os_start",
+                                             help="이 날짜의 주문부터 시작합니다 (오늘도 가능). "
+                                                  "주문가 계산에 필요한 그 앞 2거래일 종가는 자동으로 가져옵니다.")
             _add_capital = _ac2.number_input("시작 자본 ($)", value=10000.0, step=1000.0,              key="add_os_capital")
             _amc = st.session_state.get("add_mode_cfg") or {}
             if _amc.get("tk") == _add_tk and _cfg_flag(_amc.get("rsi_mode")):
@@ -2351,7 +2392,10 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
                     _err = save_ticker_setting(_add_tk, {
                         "a_buy": float(_add_a_buy), "a_sell": float(_add_a_sell),
                         "sell_ratio": float(_add_sr), "divisions": int(_add_div),
-                        "os_start": str(_add_start), "os_capital": float(_add_capital),
+                        # 시작일 = 첫 주문일(os_first). 엔진 시작일(os_start)은 그 2거래일 전 (_engine_start)
+                        "os_first": str(_add_start),
+                        "os_start": str(_engine_start(_add_start, 2)),
+                        "os_capital": float(_add_capital),
                         **_add_mode,
                     }, prefix="", settings_key="ticker_settings")
                     st.session_state.pop("add_mode_cfg", None)
@@ -2377,6 +2421,27 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
 # ══════════════════════════════════════════════
 # TAB 4 – 전략 소개 & 성과
 # ══════════════════════════════════════════════
+
+def _engine_start(first_order, n_days: int):
+    """'첫 주문일'(화면의 시작일) → 엔진 시작일(os_start).
+
+    엔진은 os_start 이후 종가 n_days 개를 기준가 계산에만 쓰고, 그 다음 거래일부터 매매를 시뮬한다.
+    그래서 첫 주문일의 n_days 거래일 전을 os_start 로 넘기면
+    '첫 주문일부터 매매 · 그 앞 n_days 거래일은 종가만 사용'이 된다 (시작일을 오늘로 넣어도 동작).
+
+    저장 규칙 (새 방식 계좌 = 설정에 os_first 가 있는 계좌)
+      · os_first : 사용자가 입력한 첫 주문일 — 화면 표시용
+      · os_start : 위에서 변환한 엔진 시작일 — 엔진·자동발송·시트 전송은 예전처럼 이 값만 본다
+    os_first 가 없는 기존 계좌는 os_start 를 입력한 그대로 쓴다 (계산 불변)."""
+    from dss_engine import _is_us_trading_day as _is_td
+    d = first_order
+    k = 0
+    while k < int(n_days):
+        d -= timedelta(days=1)
+        if _is_td(d):
+            k += 1
+    return d
+
 
 def _fmt_a(v) -> str:
     """경계 조정값 표기: -0.0125 → '-1.25%', 0.00875 → '+0.875%' (소수 둘째 자리까지는 항상 표시)."""
