@@ -76,6 +76,12 @@ _AVG_PRESETS_DB = {
         {"label": "🛡️ 안정형 ⭐", "a_buy": -0.0111, "a_sell": 0.0063, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
          "help": "CAGR 31.37%  |  MDD 16.03%  |  Calmar 1.96\n최저 MDD + 최고 Calmar — 안정적 운용 추천"},
     ],
+    # TQQQ — 2026-11-09 추가. 수치는 2010-02-11 ~ 2026-11-06 전체 기간(조정 종가) 백테스트.
+    "TQQQ": [
+        {"label": "⚖️ 균형형", "a_buy": -0.0100, "a_sell": 0.0150, "sell_ratio": 100.0, "divisions": 5, "n_days": 2,
+         "help": "CAGR 25.32%  |  MDD 29.98%  |  Calmar 0.84\n5분할 + 100% 매도 · 매수 -1.0% / 매도 +1.5%\n"
+                 "2010~2026 전체 기간 · 손실 연도 0/17 · 승률 86%"},
+    ],
 }
 
 
