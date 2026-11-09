@@ -2190,7 +2190,7 @@ def render_settings_tab():
                                  type="password", key="iuo_set_token")
         tg_chat_id = st.text_input("Chat ID", value=cfg.get("tg_chat_id", ""),
                                    key="iuo_set_chatid")
-        st.caption("매주 월~금 오후 3시에 자동 발송됩니다 (GitHub Actions)")
+        st.caption("매주 월~금 낮 12:00 (KST)에 자동 발송됩니다 (GitHub Actions)")
 
         col_tg1, col_tg2 = st.columns(2)
         with col_tg1:

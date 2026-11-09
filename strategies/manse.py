@@ -4413,7 +4413,7 @@ def render_settings_tab():
                    else _cfg.get("ms_tg_token", "")),
             placeholder="예: 123456789:AAF...", type="password",
             key="ms_tg_token_input")
-        st.caption("주문표는 매주 월~금 오후 3:00 (KST)에 텔레그램으로 자동 발송됩니다")
+        st.caption("주문표는 매주 월~금 낮 12:00 (KST)에 텔레그램으로 자동 발송됩니다")
 
         btn1, btn2, _sp = st.columns([1, 1, 4])
         with btn1:

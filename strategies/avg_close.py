@@ -3503,7 +3503,7 @@ def render_settings_tab():
             key="tg_token_input",
         )
 
-        st.caption("📅 주문표는 매주 월~금 오후 3:00 (KST)에 텔레그램으로 자동 발송됩니다")
+        st.caption("📅 주문표는 매주 월~금 낮 12:00 (KST)에 텔레그램으로 자동 발송됩니다")
 
         btn_col1, btn_col2, spacer = st.columns([1, 1, 4])
         with btn_col1:
