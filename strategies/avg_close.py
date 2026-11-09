@@ -262,6 +262,55 @@ def _bake_adj_into_avg_ledger(tk: str, amount: float):
     return True, "ok"
 
 
+def _apply_avg_sim_adjust(res: dict, divisions: int, capital_adj_history=None) -> float:
+    """시뮬 단계 보정 — 원장 없는 계좌의 주문 수량 기준 (웹 주문표 탭·자동발송과 같은 규칙).
+
+    1) 자본 조정 이력(오늘까지) 합계를 현금·총자산에 가산
+    2) 매수 수량 = min(1회매수금, 현금) ÷ 매수 LOC 가 로 재계산.
+       엔진의 pending_buys[0]["수량"]은 1회매수금 ÷ 가격이라 현금 한도를 보지 않는다
+       → 보유 중엔 현금으로 살 수 없는 수량이 나올 수 있어 조정 유무와 무관하게 항상 제한.
+    원장이 있으면 뒤이은 _apply_avg_ledger_override 가 이 값을 전부 덮어쓴다.
+    텔레그램 주문표(_build_order_text)와 수동 '주문 시트 전송'이 함께 쓴다.
+
+    capital_adj_history: JSON 문자열 또는 list [{날짜, 조정금액}, ...]
+    Returns: 적용된 조정 합계
+    """
+    _adj_total = 0.0
+    if capital_adj_history:
+        try:
+            _adj_list = (json.loads(capital_adj_history)
+                          if isinstance(capital_adj_history, str)
+                          else capital_adj_history)
+            if isinstance(_adj_list, list):
+                _today_ts = pd.Timestamp(datetime.today().date())
+                for _it in _adj_list:
+                    try:
+                        _dt = pd.Timestamp(_it.get("날짜"))
+                        if _dt <= _today_ts:
+                            _adj_total += float(_it.get("조정금액", 0))
+                    except Exception:
+                        continue
+        except Exception:
+            _adj_total = 0.0
+    if _adj_total != 0:
+        res["cash"] = float(res.get("cash", 0)) + _adj_total
+        if "current_asset" in res:
+            res["current_asset"] = float(res.get("current_asset", 0)) + _adj_total
+    # 예상수량 재계산 (엔진 값은 조정·현금 한도 미반영)
+    try:
+        _buy_p_tx = float(res.get("next_buy_primary", 0))
+        if _buy_p_tx > 0 and divisions > 0:
+            _chunk_tx = res.get("current_asset", 0) / divisions
+            # 현금이 1회매수금보다 적으면 현금만큼만, 음수면 매수 불가 → 0 (음수 수량 방지)
+            _qty_tx = int(math.floor(max(0.0, min(_chunk_tx, res["cash"])) / _buy_p_tx + 1e-9))
+            if "pending_buys" in res and res["pending_buys"]:
+                res["pending_buys"][0]["수량"] = _qty_tx
+                res["pending_buys"][0]["금액"] = _qty_tx * _buy_p_tx
+    except Exception:
+        pass
+    return _adj_total
+
+
 def _apply_avg_ledger_override(ticker_name: str, res: dict, divisions: int,
                                sell_ratio: float, capital_adj_history=None) -> str:
     """원장(매매기록) 기준으로 res의 보유/현금/총자산/평단/매수·매도 수량을 덮어씀
@@ -376,40 +425,8 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
         if res is None:
             return "❌ 시뮬레이션 데이터가 없습니다."
 
-        # 자본 조정 이력 합산 (웹 ordersheet와 일관성)
-        if capital_adj_history:
-            try:
-                _adj_list = (json.loads(capital_adj_history)
-                              if isinstance(capital_adj_history, str)
-                              else capital_adj_history)
-                if isinstance(_adj_list, list):
-                    _today_ts = pd.Timestamp(today)
-                    _adj_total = 0.0
-                    for _it in _adj_list:
-                        try:
-                            _dt = pd.Timestamp(_it.get("날짜"))
-                            if _dt <= _today_ts:
-                                _adj_total += float(_it.get("조정금액", 0))
-                        except Exception:
-                            continue
-                    if _adj_total != 0:
-                        res["cash"] = float(res.get("cash", 0)) + _adj_total
-                        if "current_asset" in res:
-                            res["current_asset"] = float(res.get("current_asset", 0)) + _adj_total
-                        # 예상수량 재계산 (엔진의 pending_buys[0]["수량"]은 조정 미반영)
-                        try:
-                            _buy_p_tx = float(res.get("next_buy_primary", 0))
-                            if _buy_p_tx > 0 and _divisions > 0:
-                                _chunk_tx = res.get("current_asset", 0) / _divisions
-                                # 조정으로 현금이 음수면 매수 불가 → 0으로 클램프 (음수 수량 방지)
-                                _qty_tx = int(math.floor(max(0.0, min(_chunk_tx, res["cash"])) / _buy_p_tx + 1e-9))
-                                if "pending_buys" in res and res["pending_buys"]:
-                                    res["pending_buys"][0]["수량"] = _qty_tx
-                                    res["pending_buys"][0]["금액"] = _qty_tx * _buy_p_tx
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+        # 자본 조정 합산 + 매수 수량 현금 한도 제한 — 공용 헬퍼 (웹 ordersheet와 일관성)
+        _apply_avg_sim_adjust(res, _divisions, capital_adj_history)
 
         # ── 원장(매매기록) 기준 override — 공용 헬퍼 (웹·텔레그램·시트 전송 일관) ──
         _apply_avg_ledger_override(ticker_name, res, _divisions, _sell_ratio,
@@ -3971,6 +3988,10 @@ def render_settings_tab():
                                 if _res is None:
                                     st.error(f"❌ {_gs_tk}: 시뮬레이션 데이터가 없습니다.")
                                 else:
+                                    # 시뮬 보정: 자본 조정 합산 + 매수 수량 현금 한도 제한
+                                    # (원장 없는 계좌도 웹 주문표·텔레그램과 같은 수량)
+                                    _apply_avg_sim_adjust(
+                                        _res, _gs_div, _gs_cfg.get("capital_adj_history"))
                                     # 원장 기준 수량으로 덮어쓰기 (웹 주문표·텔레그램·자동발송과 동일)
                                     _led_stat = _apply_avg_ledger_override(
                                         _gs_tk, _res, _gs_div, _gs_sr,
