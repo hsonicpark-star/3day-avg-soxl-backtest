@@ -262,6 +262,93 @@ def _bake_adj_into_avg_ledger(tk: str, amount: float):
     return True, "ok"
 
 
+def _apply_avg_ledger_override(ticker_name: str, res: dict, divisions: int,
+                               sell_ratio: float, capital_adj_history=None) -> str:
+    """원장(매매기록) 기준으로 res의 보유/현금/총자산/평단/매수·매도 수량을 덮어씀
+    (조회만, 쓰기 없음 — 예정 행 정산도 메모리에서만).
+
+    텔레그램 주문표(_build_order_text)와 개인 설정의 수동 '주문 시트 전송'이 모두
+    이 함수를 거쳐야 웹 주문표·자동발송과 수량이 일치한다 (수동 시트 전송이 시뮬
+    수량을 기록하던 버그 — 표준편차 _apply_sd_ledger_override 와 같은 패턴).
+    매도 수량은 res["ledger_sell_qty"] 에 담는다 (오늘 예정 행이 있으면 그 수량).
+
+    Returns:
+      "applied" — 원장 값으로 덮어씀
+      "none"    — 원장 없음(no_url / 빈 원장 / 오늘 이전 기록 없음) → res는 시뮬 그대로
+      "error"   — 원장이 있는데 읽기·계산 실패 → res는 시뮬 값 (호출부가 판단)
+    """
+    today = datetime.today().date()
+    res.pop("ledger_sell_qty", None)
+    _status = "none"
+    # ── 원장(매매기록) 기준 override — 표시 일관성 (조회만, 쓰기 없음) ──
+    # 웹 주문표·자동발송과 동일하게 실제 체결 기준 수량 표시
+    try:
+        _today_led = today.strftime("%Y-%m-%d")
+        _df_led, _led_st = _load_ticker_ledger(ticker_name)
+        if _led_st == "error":
+            _status = "error"
+        if _led_st == "ok" and not _df_led.empty:
+            _status = "error"      # 아래에서 예외가 나면 이 값으로 남는다
+            _rows_led = _df_led.to_dict("records")
+            _closes_led = {str(r0.get("날짜", "")): float(r0.get("종가(x)", 0))
+                           for r0 in res.get("daily_log", [])}
+            settle_avg_pending_rows(
+                _rows_led,
+                {d: c for d, c in _closes_led.items() if d < _today_led})
+            _prev_led = sorted(
+                [r0 for r0 in _rows_led
+                 if str(r0.get("날짜", "")).strip() < _today_led],
+                key=lambda r0: str(r0.get("날짜", "")))
+            _stg_led = calc_avg_record_state(_prev_led)
+            if not _stg_led:
+                _status = "none"
+            else:
+                # 마지막 기록 이후 입출금만 현금에 가산
+                _extra_led = 0.0
+                if capital_adj_history:
+                    try:
+                        _al = (json.loads(capital_adj_history)
+                               if isinstance(capital_adj_history, str)
+                               else capital_adj_history)
+                        for _it in (_al if isinstance(_al, list) else []):
+                            if _it.get("원장반영"):
+                                continue   # 이미 원장에 가산됨
+                            _da = str(pd.Timestamp(_it.get("날짜")).date())
+                            if _stg_led["last_date"] < _da <= _today_led:
+                                _extra_led += float(_it.get("조정금액", 0))
+                    except Exception:
+                        pass
+                _cash_led = _stg_led["cash"] + _extra_led
+                _og_led = calc_avg_order_from_state(
+                    _stg_led["shares"], _cash_led,
+                    float(res.get("p1_now", 0)),
+                    float(res.get("next_buy_primary", 0)),
+                    float(res.get("next_sell_target", 0)),
+                    divisions, sell_ratio)
+                # 오늘 예정 행이 이미 있으면 그 수량 사용 (자동발송분과 일치)
+                _tr_led = next((r0 for r0 in _rows_led
+                                if str(r0.get("날짜", "")).strip() == _today_led),
+                               None)
+                if _tr_led is not None:
+                    _pq_led = parse_avg_pending_label(_tr_led.get("매매", ""))
+                    if _pq_led:
+                        _og_led["buy_qty"], _og_led["sell_qty"] = _pq_led
+                res["shares"] = _stg_led["shares"]
+                res["cash"] = round(_cash_led, 2)
+                res["current_asset"] = round(_og_led["prev_asset"], 2)
+                if _stg_led.get("avg_cost", 0) > 0:
+                    res["avg_cost"] = round(_stg_led["avg_cost"], 4)
+                if "pending_buys" in res and res["pending_buys"]:
+                    res["pending_buys"][0]["수량"] = _og_led["buy_qty"]
+                    res["pending_buys"][0]["금액"] = (
+                        _og_led["buy_qty"] * float(res.get("next_buy_primary", 0)))
+                res["ledger_sell_qty"] = _og_led["sell_qty"]
+                _status = "applied"
+    except Exception:
+        pass
+    return _status
+
+
 def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
                   _sell_ratio: float, _divisions: int, _n_days: int = 2,
                   _os_start=None, _os_capital: float = 10000.0,
@@ -324,67 +411,9 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
             except Exception:
                 pass
 
-        # ── 원장(매매기록) 기준 override — 표시 일관성 (조회만, 쓰기 없음) ──
-        # 웹 주문표·자동발송과 동일하게 실제 체결 기준 수량 표시
-        # (표준편차 _build_sd_order_text와 동일 패턴)
-        try:
-            _today_led = today.strftime("%Y-%m-%d")
-            _df_led, _led_st = _load_ticker_ledger(ticker_name)
-            if _led_st == "ok" and not _df_led.empty:
-                _rows_led = _df_led.to_dict("records")
-                _closes_led = {str(r0.get("날짜", "")): float(r0.get("종가(x)", 0))
-                               for r0 in res.get("daily_log", [])}
-                settle_avg_pending_rows(
-                    _rows_led,
-                    {d: c for d, c in _closes_led.items() if d < _today_led})
-                _prev_led = sorted(
-                    [r0 for r0 in _rows_led
-                     if str(r0.get("날짜", "")).strip() < _today_led],
-                    key=lambda r0: str(r0.get("날짜", "")))
-                _stg_led = calc_avg_record_state(_prev_led)
-                if _stg_led:
-                    # 마지막 기록 이후 입출금만 현금에 가산
-                    _extra_led = 0.0
-                    if capital_adj_history:
-                        try:
-                            _al = (json.loads(capital_adj_history)
-                                   if isinstance(capital_adj_history, str)
-                                   else capital_adj_history)
-                            for _it in (_al if isinstance(_al, list) else []):
-                                if _it.get("원장반영"):
-                                    continue   # 이미 원장에 가산됨
-                                _da = str(pd.Timestamp(_it.get("날짜")).date())
-                                if _stg_led["last_date"] < _da <= _today_led:
-                                    _extra_led += float(_it.get("조정금액", 0))
-                        except Exception:
-                            pass
-                    _cash_led = _stg_led["cash"] + _extra_led
-                    _og_led = calc_avg_order_from_state(
-                        _stg_led["shares"], _cash_led,
-                        float(res.get("p1_now", 0)),
-                        float(res.get("next_buy_primary", 0)),
-                        float(res.get("next_sell_target", 0)),
-                        _divisions, _sell_ratio)
-                    # 오늘 예정 행이 이미 있으면 그 수량 사용 (자동발송분과 일치)
-                    _tr_led = next((r0 for r0 in _rows_led
-                                    if str(r0.get("날짜", "")).strip() == _today_led),
-                                   None)
-                    if _tr_led is not None:
-                        _pq_led = parse_avg_pending_label(_tr_led.get("매매", ""))
-                        if _pq_led:
-                            _og_led["buy_qty"], _og_led["sell_qty"] = _pq_led
-                    res["shares"] = _stg_led["shares"]
-                    res["cash"] = round(_cash_led, 2)
-                    res["current_asset"] = round(_og_led["prev_asset"], 2)
-                    if _stg_led.get("avg_cost", 0) > 0:
-                        res["avg_cost"] = round(_stg_led["avg_cost"], 4)
-                    if "pending_buys" in res and res["pending_buys"]:
-                        res["pending_buys"][0]["수량"] = _og_led["buy_qty"]
-                        res["pending_buys"][0]["금액"] = (
-                            _og_led["buy_qty"] * float(res.get("next_buy_primary", 0)))
-                    res["ledger_sell_qty"] = _og_led["sell_qty"]
-        except Exception:
-            pass
+        # ── 원장(매매기록) 기준 override — 공용 헬퍼 (웹·텔레그램·시트 전송 일관) ──
+        _apply_avg_ledger_override(ticker_name, res, _divisions, _sell_ratio,
+                                   capital_adj_history)
 
         lp   = res["latest_price"]
         p1   = res["p1_now"]
@@ -455,7 +484,10 @@ def _build_order_text(ticker_name: str, _a_buy: float, _a_sell: float,
 def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
                        _sell_ratio: float, _divisions: int, ticker_name: str,
                        use_tungchigi: bool = False):
-    """시뮬레이션 결과를 구글시트 지정 탭 L4부터 기록."""
+    """주문표(res)를 구글시트 지정 탭 L4부터 기록.
+
+    res는 호출 전에 _apply_avg_ledger_override 를 거쳐야 한다 — 원장이 있으면
+    매수 수량(pending_buys)·매도 수량(ledger_sell_qty)이 원장 기준으로 들어온다."""
     gc = _get_gspread_client()
     sh = gc.open_by_url(gs_url)
     ws = sh.worksheet(gs_sheet)
@@ -470,9 +502,11 @@ def _write_orders_to_sheet(gs_url: str, gs_sheet: str, res: dict,
     if int(buy_qty) > 0:
         rows.append(["매수", "LOC", round(buy_tgt, 2), int(buy_qty)])
 
-    # 매도 LOC (보유 시에만)
+    # 매도 LOC (보유 시에만) — 원장 확정 수량 우선 (웹 주문표·텔레그램과 동일 규칙)
     if res["shares"] > 0:
-        sell_qty = math.floor(res["shares"] * (_sell_ratio / 100.0))
+        _lsq = res.get("ledger_sell_qty")
+        sell_qty = (int(_lsq) if _lsq is not None
+                    else math.floor(res["shares"] * (_sell_ratio / 100.0)))
         sell_tgt = res["next_sell_target"]
         if sell_qty > 0:
             rows.append(["매도", "LOC", round(sell_tgt, 2), sell_qty])
@@ -3937,9 +3971,21 @@ def render_settings_tab():
                                 if _res is None:
                                     st.error(f"❌ {_gs_tk}: 시뮬레이션 데이터가 없습니다.")
                                 else:
-                                    n = _write_orders_to_sheet(gs_url, _sheet_name, _res, _gs_sr, _gs_div, _gs_tk,
-                                                               use_tungchigi=use_tungchigi_avg)
-                                    st.success(f"✅ {_gs_tk} → '{_sheet_name}' 탭 L4에 {n}건 전송 완료!")
+                                    # 원장 기준 수량으로 덮어쓰기 (웹 주문표·텔레그램·자동발송과 동일)
+                                    _led_stat = _apply_avg_ledger_override(
+                                        _gs_tk, _res, _gs_div, _gs_sr,
+                                        _gs_cfg.get("capital_adj_history"))
+                                    if _led_stat == "error":
+                                        # 원장이 있는데 못 읽음 → 시뮬 수량을 시트에 쓰지 않는다
+                                        # (자동매매 봇이 시트를 읽음 — 주문은 원장 반영된 값으로만)
+                                        st.error(f"⛔ {_gs_tk}: 원장(매매기록)을 읽지 못해 전송하지 "
+                                                 f"않았습니다 — 시뮬 수량을 시트에 쓰지 않습니다. "
+                                                 f"잠시 후 다시 눌러주세요.")
+                                    else:
+                                        n = _write_orders_to_sheet(gs_url, _sheet_name, _res, _gs_sr, _gs_div, _gs_tk,
+                                                                   use_tungchigi=use_tungchigi_avg)
+                                        _led_note = "원장 기준" if _led_stat == "applied" else "시뮬 기준 · 원장 없음"
+                                        st.success(f"✅ {_gs_tk} → '{_sheet_name}' 탭 L4에 {n}건 전송 완료! ({_led_note})")
                             except Exception as e:
                                 st.error(f"❌ {_gs_tk} 전송 실패: {e}")
 
