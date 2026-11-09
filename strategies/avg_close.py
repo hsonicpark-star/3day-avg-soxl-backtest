@@ -88,6 +88,9 @@ _AVG_PRESETS_DB = {
 from common.preset_stats import apply_db as _apply_preset_stats_db
 _apply_preset_stats_db("avg", _AVG_PRESETS_DB)
 
+# 성과 분석 탭의 종목별 기본 시작일 (없는 종목은 사이드바 시작일). 값 = 상장일.
+_AN_START_DEFAULT = {"TQQQ": datetime(2010, 2, 11).date()}
+
 
 # ══════════════════════════════════════════════
 # Engine Functions (engine.py로 이전됨)
@@ -3312,6 +3315,18 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         "분석 종목", _an_opts, index=0, key=f"avg_intro_ticker_{ticker}",   # 사이드바 종목이 바뀌면 그 종목으로 초기화
         help="사이드바 종목이 기본값입니다. 계좌를 등록하지 않은 종목도 여기서 골라 분석할 수 있습니다.")
 
+    # ── 분석 시작일 (종목별 기본값) ──
+    # 사이드바 기본 시작일(2014-01-02)은 종목 공통이라, 상장이 더 이른 종목은 전체 역사를
+    # 못 봄. 여기 등록한 종목은 상장일부터가 기본값 (사이드바 값을 바꿔도 유지).
+    _an_sd_default = _AN_START_DEFAULT.get(_an_tk, start_date)
+    _an_start = st.date_input(
+        "분석 시작일", value=_an_sd_default,
+        key=f"avg_intro_start_{_an_tk}_{start_date}",
+        help="선택한 분석 종목에만 적용됩니다. 기본값은 사이드바 시작일이며, "
+             "TQQQ는 상장일(2010-02-11)부터입니다. 다른 종목 탭과 종목 간 비교는 사이드바 기간을 씁니다.")
+    if _an_start != start_date:
+        st.caption(f"📅 {_an_tk}는 **{_an_start}**부터 분석합니다 (사이드바 시작일 {start_date}과 다름).")
+
     # ── 파라미터 소스 선택 (사이드바 or 프리셋) ──
     _avg_presets_for_tk = _AVG_PRESETS_DB.get(_an_tk, [])
     _src_options = ["📐 사이드바 설정값"] + [pr["label"] for pr in _avg_presets_for_tk]
@@ -3355,7 +3370,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         _pv5.markdown(f"**분할수**: `{_use_dv}회`")
         _pv6.markdown(f"**대상 종목**: `{_an_tk}`")
         st.caption(
-            f"기간 {start_date} ~ {end_date} · 자본 ${initial_capital:,.0f}"
+            f"기간 {_an_start} ~ {end_date} · 자본 ${initial_capital:,.0f}"
             + (f"  |  등록된 계좌: **{', '.join(_perf_tk_settings.keys())}** (각자 저장된 파라미터 적용)"
                if _perf_tk_settings else "")
         )
@@ -3368,7 +3383,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             "sell_ratio": _use_sr, "divisions": _use_dv,
             "n_days": _use_nd,
             "initial_capital": initial_capital,
-            "start_date": start_date, "end_date": end_date,
+            "start_date": _an_start, "start_date_others": start_date, "end_date": end_date,
             "source_label": _src_sel,
         }
 
@@ -3381,7 +3396,10 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         _p_ab          = _prm["a_buy"];   _p_as = _prm["a_sell"]
         _p_sr          = _prm["sell_ratio"]; _p_dv = _prm["divisions"]
         _p_cap         = _prm["initial_capital"]
-        _p_sd          = _prm["start_date"]; _p_ed = _prm["end_date"]
+        _p_sd_sel      = _prm["start_date"]; _p_ed = _prm["end_date"]
+        # 다른 종목 탭과 종목 간 비교는 사이드바 기간 (공통 기간이어야 비교가 성립)
+        _p_sd          = _prm.get("start_date_others", _p_sd_sel)
+        _sd_of         = lambda _t: _p_sd_sel if _t == _p_ticker else _p_sd
 
         def _resolve_saved(ptk, pcfg):
             if ptk == _p_ticker:
@@ -3405,12 +3423,12 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                     with _perf_tabs[_pi]:
                         _pcfg = _p_tk_settings[_ptk]
                         _pb, _ps, _psr, _pdv = _resolve_saved(_ptk, _pcfg)
-                        _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _p_sd, _p_ed)
+                        _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _sd_of(_ptk), _p_ed)
             else:
                 _ptk  = _tk_list[0]
                 _pcfg = _p_tk_settings[_ptk]
                 _pb, _ps, _psr, _pdv = _resolve_saved(_ptk, _pcfg)
-                _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _p_sd, _p_ed)
+                _render_perf_analysis(_ptk, _pb, _ps, _psr, _pdv, _p_cap, _sd_of(_ptk), _p_ed)
 
             # ── 종목 간 비교 ──────────────────────────────────────
             # 미등록 종목의 비교용 기본값 = 프리셋 DB 의 추천(⭐) 프리셋, 없으면 첫 프리셋
@@ -3430,7 +3448,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
             if len(_cmp_all_keys) > 1:
                 st.divider()
                 st.subheader("🔄 종목 간 성과 비교")
-                st.caption("분석 종목·등록된 종목의 수익 곡선과 지표를 한 화면에서 비교합니다. (계좌가 없는 종목은 추천 프리셋 값 적용)")
+                st.caption("분석 종목·등록된 종목의 수익 곡선과 지표를 한 화면에서 비교합니다. (계좌가 없는 종목은 추천 프리셋 값 적용 · 비교는 사이드바 기간 기준)")
                 _colors = ["#1565C0", "#E53935", "#2E7D32", "#F57F17", "#6A1B9A"]
                 _fig_cmp = go.Figure()
                 _cmp_rows = []
@@ -3470,7 +3488,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
                 if _cmp_rows:
                     st.dataframe(pd.DataFrame(_cmp_rows), hide_index=True, use_container_width=True)
         else:
-            _render_perf_analysis(_p_ticker, _p_ab, _p_as, _p_sr, _p_dv, _p_cap, _p_sd, _p_ed)
+            _render_perf_analysis(_p_ticker, _p_ab, _p_as, _p_sr, _p_dv, _p_cap, _p_sd_sel, _p_ed)
 
     _do_render_perf()
 

@@ -290,9 +290,13 @@ with st.sidebar:
         st.markdown("---")
         st.subheader("백테스트 설정")
         col1, col2 = st.columns(2)
+        # TQQQ 는 상장일(2010-02-11)부터가 기본값 — 그 외 종목은 기존대로 2014-01-02.
+        # (기본값이 바뀌면 위젯이 새로 만들어져, 종목을 바꿀 때 시작일도 그 종목 기본값으로 돌아감)
+        _bt_start_default = (datetime(2010, 2, 11).date() if ticker == "TQQQ"
+                             else datetime(2014, 1, 2).date())
         start_date = col1.date_input(
             "시작 일",
-            datetime(2014, 1, 2).date(),
+            _bt_start_default,
         )
         end_date = col2.date_input("종료 일", datetime.today().date())
         initial_capital = st.number_input(
