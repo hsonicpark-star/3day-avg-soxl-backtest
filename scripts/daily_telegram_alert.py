@@ -1,5 +1,5 @@
 """
-매일 15:00 KST에 GitHub Actions로 실행되는 텔레그램 자동 알림 스크립트.
+매일 12:00 KST(03:00 UTC, 월~금)에 GitHub Actions로 실행되는 텔레그램 자동 알림 스크립트.
 Google Sheets users 탭의 모든 사용자에게
 각자 등록된 ticker_settings 기준으로 ticker별 LOC 주문을 발송.
 
@@ -13,6 +13,7 @@ Google Sheets users 탭의 모든 사용자에게
   7. 카마릴라 오버레이 (cam_config 계좌별 — 출처 전략 유휴현금 기반,
                        텔레그램: 계좌 전용 → 출처 전략 순)
   8. 만능 스위치  (ms_tg_chat_id / ms_tg_token + manse_config 종목별)
+  9. TQ200        (tq200_config 내 tg_chat_id / tg_token — 매수·매도 신호가 난 날에만)
 """
 
 import os, sys, json, math, time, requests
@@ -2243,6 +2244,107 @@ def build_cam_message(name, ov_ticker, ov, src_strat, src_acct) -> str:
     return "\n".join(lines)
 
 
+
+# ══════════════════════════════════════════════════════════════
+# TQ200 (200일선 이격도 매매) — 매수·매도 신호가 난 날에만 발송
+# ══════════════════════════════════════════════════════════════
+#   · 설정/텔레그램/포지션 : users 시트의 tq200_config JSON
+#       {"params": {...}, "positions": {티커: {...}}, "tg_chat_id", "tg_token"}
+#   · 대상 종목 : positions 에 저장된 티커들 (없으면 TQQQ)
+#   · 발송 조건 : tq200_engine.daily_signal() — 백테스트 모델의 '매수 신호'/'매도 신호' 날
+#   · 가격      : 웹앱과 같은 기준 — 무조정 OHLC (price_mode 가 수정주가면 auto_adjust=True)
+_TQ200_PRICE_ADJ = "배당 수정주가"
+
+
+def parse_tq200_config(user: dict) -> dict:
+    """users 행에서 tq200_config JSON 파싱. 실패/미설정이면 {}."""
+    raw = str(user.get("tq200_config", "")).strip()
+    if not raw:
+        return {}
+    try:
+        cfg = json.loads(raw)
+        return cfg if isinstance(cfg, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def tq200_expected_last_close():
+    """지금 시점에 종가가 확정돼 있어야 하는 가장 최근 NYSE 거래일 (date)."""
+    from dss_engine import _is_us_trading_day
+    now_ny = pd.Timestamp.now(tz="America/New_York")
+    d = now_ny.date()
+    if (now_ny.hour, now_ny.minute) < (16, 30):
+        d -= timedelta(days=1)
+    while not _is_us_trading_day(d):
+        d -= timedelta(days=1)
+    return d
+
+
+def tq200_next_trading_day(d):
+    """d(date) 다음의 첫 NYSE 거래일."""
+    from dss_engine import _is_us_trading_day
+    d = d + timedelta(days=1)
+    while not _is_us_trading_day(d):
+        d += timedelta(days=1)
+    return d
+
+
+def tq200_fetch_ohlc(ticker: str, adjusted: bool = False) -> pd.DataFrame:
+    """TQ200 용 OHLC (Open/Close). 낡았거나 구멍 난 데이터면 raise.
+
+    신호가 난 날에만 보내는 전략이라 낡은 데이터는 '신호 없음'으로 조용히
+    넘어가 버린다 → 매도 신호를 놓치지 않도록 반드시 실패로 처리한다.
+    """
+    from dss_engine import _is_us_trading_day
+    end = datetime.today() + timedelta(days=2)
+    df = None
+    for _attempt in range(3):
+        try:
+            df = yf.download(ticker, start="2009-01-01",
+                             end=end.strftime("%Y-%m-%d"), progress=False,
+                             auto_adjust=adjusted)
+            if df is not None and not df.empty:
+                break
+        except Exception:
+            df = None
+        time.sleep(3 + 3 * _attempt)
+    if df is None or df.empty:
+        raise RuntimeError(f"⛔ {ticker} 가격 데이터를 받지 못했습니다 (yfinance)")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df[["Open", "Close"]].astype(float).dropna()
+    df.index = pd.to_datetime(df.index)
+    df = _filter_incomplete_today(df)
+    if df.empty:
+        raise RuntimeError(f"⛔ {ticker} 가격 데이터가 비어 있습니다")
+
+    _last_d = pd.Timestamp(df.index[-1]).normalize()
+    _exp = tq200_expected_last_close()
+    if _last_d.date() < _exp:
+        raise RuntimeError(f"⛔ {ticker} 전일 종가 미확보: 마지막 {_last_d.date()} "
+                           f"(필요 {_exp}) — 신호 판단 불가")
+    _chk = [d for d in pd.bdate_range(_last_d - timedelta(days=30), _last_d)
+            if _is_us_trading_day(d)]
+    _have = {pd.Timestamp(d).normalize() for d in df.index}
+    _holes = [d.strftime("%m/%d") for d in _chk if d not in _have]
+    if _holes:
+        raise RuntimeError(f"⛔ 가격 데이터 중간 누락({ticker}): {', '.join(_holes)} "
+                           f"— 신호 왜곡 방지를 위해 발송 차단 (yfinance 이상)")
+    return df
+
+
+def calc_tq200_signal(ticker: str, tq_cfg: dict) -> dict:
+    """한 종목의 TQ200 일일 신호. tq200_engine.daily_signal() 결과 dict 반환."""
+    from tq200_engine import daily_signal
+    params = dict(tq_cfg.get("params", {}) or {})
+    adjusted = (params.get("price_mode") == _TQ200_PRICE_ADJ)
+    df = tq200_fetch_ohlc(ticker, adjusted=adjusted)
+    next_day = tq200_next_trading_day(pd.Timestamp(df.index[-1]).date())
+    saved_pos = (tq_cfg.get("positions", {}) or {}).get(ticker)
+    return daily_signal(df, params, saved_pos if isinstance(saved_pos, dict) else None,
+                        ticker, next_day)
+
+
 def main():
     sheet_url = os.environ.get("ADMIN_SHEET_URL", "")
     if not sheet_url:
@@ -3216,10 +3318,45 @@ def main():
                 print(f"  ⏭️  {username} [만능스위치]: 미설정 → 건너뜀")
                 skip_count += 1
 
+            # ── 6.9 TQ200 발송 (매수·매도 신호가 난 날에만) ─────────
+            tq_cfg = parse_tq200_config(user)
+            tq_chat_id = str(tq_cfg.get("tg_chat_id", "")).strip()
+            tq_token   = str(tq_cfg.get("tg_token",   "")).strip()
+
+            if not ds_only and tq_chat_id and tq_token:
+                _tq_pos = tq_cfg.get("positions", {})
+                _tq_tickers = [str(t).strip().upper()
+                               for t in (_tq_pos if isinstance(_tq_pos, dict) else {})
+                               if str(t).strip()] or ["TQQQ"]
+                print(f"  👤 {username} [TQ200]: {_tq_tickers} 처리 중...")
+                for tk in _tq_tickers:
+                    _label = f"TQ200/{tk}"
+                    try:
+                        _tq = calc_tq200_signal(tk, tq_cfg)
+                    except Exception as e:
+                        print(f"    ❌ [{_label}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[{_label}] ❌ 신호 확인 실패: {e}")
+                        continue
+                    if not _tq.get("send"):
+                        print(f"    ⏭️  [{_label}] {_tq.get('reason', '신호 없음')} → 발송 안 함")
+                        continue
+                    ok, resp = send_telegram(tq_chat_id, tq_token, _tq["text"],
+                                             parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [{_label}] {_tq.get('action')} 신호 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [{_label}] 발송 실패 → {resp}")
+                        fail_count += 1
+            else:
+                print(f"  ⏭️  {username} [TQ200]: 미설정 → 건너뜀")
+                skip_count += 1
+
             # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
             if user_warnings:
                 # 텔레그램 채널: 등록된 전략 중 하나 선택
-                # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO → 듀얼 → 만능
+                # 우선순위: 종가평균 → 표준편차 → DSS → Sigma → IUO → 듀얼 → 만능 → TQ200
                 _candidates = [
                     (avg_chat_id, avg_token),
                     (sd_chat_id, sd_token),
@@ -3228,6 +3365,7 @@ def main():
                     (iuo_chat_id, iuo_token),
                     (ds_chat_id, ds_token),
                     (ms_chat_id, ms_token),
+                    (tq_chat_id, tq_token),
                 ]
                 _alert_chat_id = ""
                 _alert_token = ""

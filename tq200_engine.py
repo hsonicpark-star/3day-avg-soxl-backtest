@@ -19,6 +19,7 @@
 - 시가 매수한 날 종가가 −1% 를 이탈하면 그날 바로 매도 신호 (다음날 청산)
 
 Streamlit 비의존 — 순수 pandas/numpy. 검증: 14.TQ200/verify_tq200.py
+일일 자동 발송(scripts/daily_telegram_alert.py)도 이 모듈의 daily_signal() 을 쓴다.
 """
 from __future__ import annotations
 
@@ -349,3 +350,168 @@ def latest_signal(df: pd.DataFrame, holding: bool,
         "다음_매수하한": trigger_closes(closes, ma_window, buy_lo),
         "다음_매수상한": trigger_closes(closes, ma_window, buy_hi),
     }
+
+
+# ──────────────────────────────────────────────
+# 주문표 (앱 '오늘의 신호' 탭 · 텔레그램 · 일일 자동 발송 공용 — streamlit 비의존)
+# ──────────────────────────────────────────────
+def engine_kwargs(P: dict) -> dict:
+    """저장/사이드바 params(% 단위) → 엔진 인자(소수 단위). 빠진 키는 DEFAULTS."""
+    g = lambda k: P.get(k, DEFAULTS[k])   # noqa: E731
+    return dict(ma_window=int(g("ma_window")),
+                slope_window=int(g("slope_window")),
+                buy_lo=float(g("buy_lo")) / 100,
+                buy_hi=float(g("buy_hi")) / 100,
+                exit_disp=float(g("exit_disp")) / 100,
+                tp_disp=float(g("tp_disp")) / 100,
+                use_slope=bool(g("use_slope")), use_tp=bool(g("use_tp")))
+
+
+def build_order_plan(ticker: str, sig: dict, pos: dict, next_day) -> dict:
+    """신호 + 포지션 → 다음 거래일 MOO 주문 계획.
+
+    pos: {"holding", "shares", "avg_price", "cash", "gap_buf"}
+    Returns: action · headline(한 줄 요약) · detail(설명 문장) · rows(주문표 행, 없으면 [])
+    """
+    close = sig["종가"]
+    shares = int(pos.get("shares", 0) or 0)
+    avg_px = float(pos.get("avg_price", 0.0) or 0.0)
+    cash = float(pos.get("cash", 0.0) or 0.0)
+    gap_buf = float(pos.get("gap_buf", 3.0) or 0.0)
+    pnl = ((close / avg_px - 1) * 100) if avg_px > 0 else None
+    action, rows = sig["action"], []
+
+    if action == "buy":
+        ref_px = close * (1 + gap_buf / 100)
+        qty = int(cash // ref_px) if ref_px > 0 else 0
+        headline = f"🟢 {next_day} MOO 매수 — {ticker} {qty:,}주"
+        detail = (f"{sig['reason']}. 예수금 ${cash:,.0f} ÷ (종가 ${close:,.2f} "
+                  f"× 갭 여유 {gap_buf:g}%) = **{qty:,}주**. "
+                  "개장 전에 **MOO(시가 시장가)** 로 주문하세요.")
+        rows.append({
+            "구분": "🟢 MOO매수", "종목": ticker, "수량": f"{qty:,}",
+            "기준가(전일 종가)": f"${close:,.2f}",
+            "예상 금액": f"${qty * close:,.0f}",
+            "비고": f"시가 ${ref_px:,.2f} 까지 예수금 내 체결"})
+    elif action == "sell":
+        qty_txt = f"{shares:,}주 전량" if shares > 0 else "보유 전량"
+        headline = f"🔴 {next_day} MOO 매도 — {ticker} {qty_txt}"
+        detail = (f"{sig['reason']}. 개장 전에 **MOO(시가 시장가)** 로 전량 매도 "
+                  "주문하세요."
+                  + (f" 종가 기준 손익 {pnl:+.2f}%." if pnl is not None else ""))
+        rows.append({
+            "구분": "🔴 MOO매도", "종목": ticker, "수량": f"{shares:,}",
+            "기준가(전일 종가)": f"${close:,.2f}",
+            "예상 금액": f"${shares * close:,.0f}",
+            "비고": "전량 · " + sig["reason"]})
+    elif action == "hold":
+        headline = f"🟦 홀딩 유지 — {ticker} 주문 없음"
+        detail = (f"{sig['reason']}."
+                  + (f" 종가 기준 평가손익 {pnl:+.2f}%." if pnl is not None else ""))
+    else:
+        headline = f"⚪ 관망 — {ticker} 주문 없음"
+        detail = f"{sig['reason']}."
+    return {"action": action, "headline": headline, "detail": detail,
+            "rows": rows}
+
+
+def build_order_text(ticker: str, P: dict, sig: dict, plan: dict, pos: dict,
+                     next_day, notes=None) -> str:
+    """텔레그램용 주문표 메시지 (HTML parse_mode). notes = 끝에 붙일 안내 줄 목록."""
+    close = sig["종가"]
+    holding = bool(pos.get("holding"))
+    ma_n = int(P.get("ma_window", DEFAULTS["ma_window"]))
+    sl_n = int(P.get("slope_window", DEFAULTS["slope_window"]))
+    use_tp = bool(P.get("use_tp", DEFAULTS["use_tp"]))
+    use_slope = bool(P.get("use_slope", DEFAULTS["use_slope"]))
+    if holding:
+        shares = int(pos.get("shares", 0) or 0)
+        avg_px = float(pos.get("avg_price", 0) or 0)
+        pos_line = ("포지션: 보유" + (f" {shares:,}주" if shares > 0 else " 중")
+                    + (f" (단가 ${avg_px:,.2f})" if avg_px > 0 else ""))
+    else:
+        pos_line = f"포지션: 무포지션 (예수금 ${float(pos.get('cash', 0) or 0):,.0f})"
+    slope_txt = "상승" if sig["Slope"] > 0 else "하락/횡보"
+    lines = [
+        f"<b>📋 TQ200 — {ticker} 주문표</b>",
+        f"📅 {next_day} 주문 (기준 종가 {sig['기준일'].date()})",
+        "",
+        f"전일종가: <b>${close:,.2f}</b>",
+        f"{ma_n}MA: ${sig['200MA']:,.2f} · 이격도 "
+        f"<b>{sig['이격도'] * 100:+.2f}%</b>",
+        f"MA 기울기({sl_n}일): {sig['Slope']:+.4f} ({slope_txt})",
+        pos_line,
+        "",
+        f"<b>{plan['headline']}</b>",
+        f"사유: {sig['reason']}",
+    ]
+    if plan["rows"]:
+        lines.append("주문: 개장 전 MOO(시가 시장가) 접수")
+    # 주문이 체결된 뒤의 포지션 기준 (매수 체결 → 보유, 매도 체결 → 무포지션)
+    will_hold = (plan["action"] == "buy") or (holding and plan["action"] != "sell")
+    lines += ["", f"<b>{next_day} 종가 트리거</b>"]
+    if will_hold:
+        lines.append(f"• 청산: ${sig['다음_청산가']:,.2f} 미만 "
+                     f"({(sig['다음_청산가'] / close - 1) * 100:+.1f}%)")
+        if use_tp:
+            lines.append(f"• 과열 익절: ${sig['다음_익절가']:,.2f} 초과 "
+                         f"({(sig['다음_익절가'] / close - 1) * 100:+.1f}%)")
+    else:
+        lines.append(f"• 매수 구간: ${sig['다음_매수하한']:,.2f} 초과 ~ "
+                     f"${sig['다음_매수상한']:,.2f} 미만")
+        if use_slope and sig["Slope"] <= 0:
+            lines.append("  (MA 기울기가 양수로 돌아서야 매수)")
+    if notes:
+        lines += [""] + list(notes)
+    return "\n".join(lines)
+
+
+def daily_signal(df: pd.DataFrame, P: dict, saved_pos: dict | None,
+                 ticker: str, next_day) -> dict:
+    """일일 자동 발송용 — **백테스트 모델에 매수/매도 신호가 난 날에만** send=True.
+
+    판단 기준은 전체 구간 백테스트의 마지막 날 신호(run_backtest()["pending"]) =
+    원본 시트의 '매수 신호'/'매도 신호' 와 같은 날. 한 신호당 한 번만 나온다.
+    수량은 저장된 실제 포지션(saved_pos)으로 계산하고, 저장된 포지션이 모델과
+    다르면(예: 모델은 보유인데 저장은 무포지션) 안내 줄을 붙인다.
+
+    P: params(% 단위, 빠진 키는 DEFAULTS) + 선택 "capital"/"fee".
+    Returns: {"send": bool, "text": str, "action": "buy"/"sell"/None,
+              "base_day": Timestamp|None, "reason": str}
+    """
+    kw = engine_kwargs(P)
+    model = run_backtest(df, **kw)
+    log = model["log"]
+    if log is None or log.empty:
+        return {"send": False, "text": "", "action": None, "base_day": None,
+                "reason": "이동평균 계산에 필요한 데이터 부족"}
+    pending = model["pending"]
+    base_day = log.index[-1]
+    if pending not in ("buy", "sell"):
+        return {"send": False, "text": "", "action": None, "base_day": base_day,
+                "reason": f"신호 없음 (모델 상태: {log['상태'].iloc[-1]})"}
+
+    model_hold = (pending == "sell")        # 매도 신호 = 모델 보유 중, 매수 신호 = 모델 무포지션
+    sig = latest_signal(df, holding=model_hold, **kw)
+    pos = dict(saved_pos or {})
+    pos.setdefault("cash", float(P.get("capital", 10000.0)))
+    saved_hold = bool(pos.get("holding")) if saved_pos else None
+    pos["holding"] = model_hold
+    plan = build_order_plan(ticker, sig, pos, next_day)
+
+    notes = []
+    if saved_pos is None:
+        notes.append("ℹ️ 저장된 포지션이 없어 "
+                     + (f"초기 투자금 ${pos['cash']:,.0f} 기준으로 수량을 계산했습니다."
+                        if pending == "buy" else "수량 없이 '보유 전량'으로 안내합니다."))
+    elif saved_hold != model_hold:
+        notes.append("⚠️ 저장된 포지션("
+                     + ("보유 중" if saved_hold else "무포지션")
+                     + ")이 백테스트 모델("
+                     + ("보유 중" if model_hold else "무포지션")
+                     + ")과 다릅니다. 실제 계좌 상태를 확인하고 주문하세요.")
+    notes.append("체결 후 앱 [오늘의 신호] 탭에서 포지션을 저장해 두면 다음 주문 수량이 "
+                 "정확해집니다.")
+    return {"send": True, "action": pending, "base_day": base_day,
+            "reason": sig["reason"],
+            "text": build_order_text(ticker, P, sig, plan, pos, next_day, notes)}

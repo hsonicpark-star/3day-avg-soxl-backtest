@@ -24,9 +24,12 @@ import yfinance as yf
 from common.analysis import monthly_perf_table
 from common.config import _IS_CLOUD
 from common.data import filter_incomplete_today, next_trading_date
-from common.telegram import _send_telegram
-from tq200_engine import (DEFAULTS, EXIT_BREAK, EXIT_TP, compute_stats,
-                          latest_signal, run_backtest, yearly_returns)
+from common.telegram import _send_telegram, render_telegram_help_popover
+from tq200_engine import (DEFAULTS, compute_stats, latest_signal,
+                          run_backtest, yearly_returns)
+from tq200_engine import build_order_plan as _order_plan
+from tq200_engine import build_order_text as _order_text
+from tq200_engine import engine_kwargs as _engine_kwargs
 
 # ──────────────────────────────────────────────
 # 설정 저장 (Cloud: users.tq200_config / 로컬: ~/.tq200/config.json)
@@ -111,17 +114,6 @@ def _coerce(pkey: str, val, default):
         return float(val)
     except (TypeError, ValueError):
         return default
-
-
-def _engine_kwargs(P: dict) -> dict:
-    """사이드바 params(% 단위) → 엔진 인자(소수 단위)."""
-    return dict(ma_window=int(P["ma_window"]),
-                slope_window=int(P["slope_window"]),
-                buy_lo=float(P["buy_lo"]) / 100,
-                buy_hi=float(P["buy_hi"]) / 100,
-                exit_disp=float(P["exit_disp"]) / 100,
-                tp_disp=float(P["tp_disp"]) / 100,
-                use_slope=bool(P["use_slope"]), use_tp=bool(P["use_tp"]))
 
 
 # ──────────────────────────────────────────────
@@ -309,7 +301,7 @@ def render_sidebar() -> dict:
                                "일치). 수정주가: 배당을 재투자한 것으로 환산 — "
                                "과거 200일선이 미세하게 달라져 일부 신호가 바뀝니다.")
 
-    return {
+    params = {
         "bt_ticker": ticker, "bt_start_date": bt_start, "bt_end_date": bt_end,
         "bt_initial_capital": float(capital), "capital": float(capital),
         "ma_window": int(ma_window), "slope_window": int(slope_window),
@@ -318,6 +310,9 @@ def render_sidebar() -> dict:
         "use_slope": bool(use_slope), "use_tp": bool(use_tp),
         "fee": float(fee), "price_mode": price_mode,
     }
+    # 개인 설정 탭(인자 없음)의 '주문표 테스트 발송'이 현재 세팅을 쓰도록 보관
+    st.session_state["tq_last_params"] = params
+    return params
 
 
 # ══════════════════════════════════════════════
@@ -699,13 +694,9 @@ def render_optimization_tab(params: dict):
 # 오늘의 신호 탭
 # ══════════════════════════════════════════════
 def _tg_creds(cfg: dict):
-    tok = str(cfg.get("tg_token", "")).strip()
-    chat = str(cfg.get("tg_chat_id", "")).strip()
-    if not (tok and chat) and _IS_CLOUD:
-        us = st.session_state.get("user_settings", {})
-        tok = tok or str(us.get("tg_token", "")).strip()
-        chat = chat or str(us.get("tg_chat_id", "")).strip()
-    return tok, chat
+    """TQ200 전용 텔레그램 (개인 설정 탭에서 저장 — tq200_config 안에 보관)."""
+    return (str(cfg.get("tg_token", "")).strip(),
+            str(cfg.get("tg_chat_id", "")).strip())
 
 
 def render_ordersheet_tab(params: dict):
@@ -785,41 +776,14 @@ def render_ordersheet_tab(params: dict):
          _COL_BUY if sig["Slope"] > 0 else _COL_SELL),
     ], tone="blue"), unsafe_allow_html=True)
 
-    action = sig["action"]
-    order_rows = []
-    if action == "buy":
-        ref_px = close * (1 + gap_buf / 100)
-        qty = int(cash // ref_px) if ref_px > 0 else 0
-        headline = f"🟢 {next_day} MOO 매수 — {ticker} {qty:,}주"
-        st.success(f"### {headline}\n"
-                   f"{sig['reason']}. 예수금 ${cash:,.0f} ÷ (종가 ${close:,.2f} "
-                   f"× 갭 여유 {gap_buf:g}%) = **{qty:,}주**. "
-                   "개장 전에 **MOO(시가 시장가)** 로 주문하세요.")
-        order_rows.append({
-            "구분": "🟢 MOO매수", "종목": ticker, "수량": f"{qty:,}",
-            "기준가(전일 종가)": f"${close:,.2f}",
-            "예상 금액": f"${qty * close:,.0f}",
-            "비고": f"시가 ${ref_px:,.2f} 까지 예수금 내 체결"})
-    elif action == "sell":
-        headline = f"🔴 {next_day} MOO 매도 — {ticker} {int(shares):,}주 전량"
-        pnl = ((close / avg_px - 1) * 100) if avg_px > 0 else None
-        st.error(f"### {headline}\n"
-                 f"{sig['reason']}. 개장 전에 **MOO(시가 시장가)** 로 전량 매도 "
-                 "주문하세요."
-                 + (f" 종가 기준 손익 {pnl:+.2f}%." if pnl is not None else ""))
-        order_rows.append({
-            "구분": "🔴 MOO매도", "종목": ticker, "수량": f"{int(shares):,}",
-            "기준가(전일 종가)": f"${close:,.2f}",
-            "예상 금액": f"${int(shares) * close:,.0f}",
-            "비고": "전량 · " + sig["reason"]})
-    elif action == "hold":
-        headline = f"🟦 홀딩 유지 — {ticker} 주문 없음"
-        pnl = ((close / avg_px - 1) * 100) if avg_px > 0 else None
-        st.info(f"### {headline}\n{sig['reason']}."
-                + (f" 종가 기준 평가손익 {pnl:+.2f}%." if pnl is not None else ""))
-    else:
-        headline = f"⚪ 관망 — {ticker} 주문 없음"
-        st.info(f"### {headline}\n{sig['reason']}.")
+    # 화면에 입력된 값(저장 전이어도) 기준으로 주문 계획 계산
+    cur_pos = {"holding": bool(holding), "shares": int(shares),
+               "avg_price": float(avg_px), "cash": float(cash),
+               "gap_buf": float(gap_buf)}
+    plan = _order_plan(ticker, sig, cur_pos, next_day)
+    action, order_rows = plan["action"], plan["rows"]
+    _box = {"buy": st.success, "sell": st.error}.get(action, st.info)
+    _box(f"### {plan['headline']}\n{plan['detail']}")
 
     st.markdown(f"**📋 {next_day} 주문표**")
     if order_rows:
@@ -840,7 +804,9 @@ def render_ordersheet_tab(params: dict):
     st.markdown(f"**③ {next_day} 종가가 얼마면 신호가 바뀌나** "
                 "(그날 종가가 이동평균에 반영되는 것까지 계산한 값)")
     rows = []
-    if holding:
+    # 주문이 체결된 뒤의 포지션 기준 (매수 체결 → 보유, 매도 체결 → 무포지션)
+    will_hold = (action == "buy") or (holding and action != "sell")
+    if will_hold:
         rows.append({"신호": f"🔴 청산 (이격도 < {params['exit_disp']:g}%)",
                      "종가 조건": f"${sig['다음_청산가']:,.2f} 미만",
                      "현재가 대비": f"{(sig['다음_청산가'] / close - 1) * 100:+.2f}%"})
@@ -856,7 +822,7 @@ def render_ordersheet_tab(params: dict):
             "현재가 대비": f"{(sig['다음_매수하한'] / close - 1) * 100:+.2f}% ~ "
                         f"{(sig['다음_매수상한'] / close - 1) * 100:+.2f}%"})
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    if not holding and params["use_slope"] and sig["Slope"] <= 0:
+    if not will_hold and params["use_slope"] and sig["Slope"] <= 0:
         st.caption("※ 현재 이동평균 기울기가 0 이하라, 종가가 매수 구간에 들어와도 "
                    "기울기가 양수로 돌아서기 전에는 매수하지 않습니다.")
 
@@ -893,21 +859,17 @@ def render_ordersheet_tab(params: dict):
     # ── 텔레그램 ──
     st.divider()
     tok, chat = _tg_creds(cfg)
-    msg = (f"<b>[TQ200] {ticker} — {base_day} 종가 기준</b>\n"
-           f"{headline}\n\n"
-           f"종가 ${close:,.2f} · {params['ma_window']}MA ${sig['200MA']:,.2f}\n"
-           f"이격도 {d_pct:+.2f}% · 기울기 {sig['Slope']:+.4f}\n"
-           f"사유: {sig['reason']}")
+    msg = _order_text(ticker, params, sig, plan, cur_pos, next_day)
     if tok and chat:
-        if st.button("📨 텔레그램으로 신호 전송", key="tq_tg_send"):
+        if st.button("📨 텔레그램으로 주문표 전송", key="tq_tg_send"):
             r = _send_telegram(tok, chat, msg)
             if r.get("ok"):
                 st.success("전송 완료")
             else:
-                st.error(f"전송 실패: {r.get('description')}")
+                st.error(f"전송 실패: {r.get('description', '알 수 없는 오류')}")
     else:
-        st.caption("📨 텔레그램 전송은 [⚙️ 개인 설정] 탭에서 Bot Token · Chat ID 를 "
-                   "저장하면 사용할 수 있습니다.")
+        st.caption("📨 텔레그램 전송은 [⚙️ 개인 설정] 탭의 **텔레그램 알림 설정**에서 "
+                   "Chat ID · Bot Token 을 저장하면 사용할 수 있습니다.")
 
 
 # ══════════════════════════════════════════════
@@ -994,12 +956,116 @@ Sharpe 1.17 · 승률 53.8% · 평균 이익 +67.4% / 평균 손실 −5.3% · �
 # ══════════════════════════════════════════════
 # 개인 설정 탭
 # ══════════════════════════════════════════════
+def _send_test_ordersheet(tg_token: str, tg_chat_id: str, cfg: dict):
+    """현재 사이드바 세팅 + 저장된 포지션으로 주문표를 만들어 발송.
+
+    Returns (ok: bool, 메시지: str)."""
+    params = st.session_state.get("tq_last_params")
+    if not params or not params.get("bt_ticker"):
+        return False, "사이드바를 한 번 불러온 뒤 다시 시도해주세요."
+    ticker = params["bt_ticker"]
+    df = _get_data(params, end=date.today())
+    if df.empty:
+        return False, f"{ticker} 가격 데이터를 불러오지 못했습니다."
+    pos = dict(cfg.get("positions", {}).get(ticker, {}))
+    pos.setdefault("cash", params["capital"])
+    sig = latest_signal(df, holding=bool(pos.get("holding")),
+                        **_engine_kwargs(params))
+    if not sig:
+        return False, "이동평균 계산에 필요한 데이터가 부족합니다."
+    next_day = next_trading_date(sig["기준일"].date() + timedelta(days=1))
+    plan = _order_plan(ticker, sig, pos, next_day)
+    res = _send_telegram(tg_token, tg_chat_id,
+                         _order_text(ticker, params, sig, plan, pos, next_day))
+    if res.get("ok"):
+        return True, f"{ticker} 주문표 발송 성공!"
+    return False, f"발송 실패: {res.get('description', '알 수 없는 오류')}"
+
+
+def _render_telegram_settings(cfg: dict):
+    """텔레그램 알림 설정 (DSS·만능 스위치 등 기존 전략과 동일한 구성).
+
+    Chat ID · Bot Token 은 tq200_config 안에 저장 —
+    Cloud = users.tq200_config / 로컬 = ~/.tq200/config.json
+    """
+    with st.container(border=True):
+        col_title, col_help = st.columns([3, 1])
+        with col_title:
+            st.markdown("#### 💬 텔레그램 알림 설정")
+            st.caption("TQ200 주문표(오늘의 신호)를 텔레그램으로 받을 수 있습니다.")
+        with col_help:
+            with st.popover("❓ Chat ID & Bot Token 확인 방법",
+                            use_container_width=True):
+                render_telegram_help_popover(
+                    strategy_name="TQ200",
+                    example_bot_display="TQ200 알림봇",
+                    example_bot_username="tq200_alert_bot",
+                    example_bot_username2="my_tqqq_bot",
+                    test_button_label="📨 주문표 테스트 발송")
+
+        c1, c2 = st.columns(2)
+        tg_chat_id = c1.text_input(
+            "텔레그램 Chat ID", value=cfg.get("tg_chat_id", ""),
+            placeholder="예: 1234567890", key="tq_tg_chat_id").strip()
+        tg_token = c2.text_input(
+            "Bot Token", value=cfg.get("tg_token", ""),
+            placeholder="예: 123456789:AAF...", type="password",
+            key="tq_tg_token").strip()
+
+        st.caption("📅 저장해 두면 **매수·매도 신호가 난 날에만** 월~금 낮 12:00 (KST)에 "
+                   "주문표가 자동 발송됩니다. 신호가 없는 날은 보내지 않습니다.")
+
+        btn1, btn2, _sp = st.columns([1, 1, 4])
+        with btn1:
+            if st.button("📨 주문표 테스트 발송", use_container_width=True,
+                         key="tq_tg_test"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 먼저 입력해주세요.")
+                else:
+                    with st.spinner("주문표 생성 & 발송 중..."):
+                        try:
+                            ok, text = _send_test_ordersheet(
+                                tg_token, tg_chat_id, cfg)
+                        except Exception as e:
+                            ok, text = False, f"발송 실패: {e}"
+                    (st.success if ok else st.error)(
+                        ("✅ " if ok else "") + text)
+        with btn2:
+            if st.button("💾 저장하기", use_container_width=True,
+                         key="tq_tg_save", type="primary"):
+                if not tg_chat_id or not tg_token:
+                    st.warning("Chat ID와 Bot Token을 모두 입력해주세요.")
+                else:
+                    cfg["tg_chat_id"] = tg_chat_id
+                    cfg["tg_token"] = tg_token
+                    _save_cfg(cfg)
+                    _loc = ("Google Sheets"
+                            if (_IS_CLOUD and st.session_state.get("logged_in"))
+                            else _TQ_CONFIG_PATH)
+                    st.success(f"✅ 저장 완료! `{_loc}`")
+
+
 def render_settings_tab():
     st.subheader("⚙️ TQ200 개인 설정")
     cfg = _load_cfg()
     where = ("Google Sheets `users.tq200_config`" if _IS_CLOUD
              else "`~/.tq200/config.json`")
     st.caption(f"저장 위치: {where}")
+
+    _render_telegram_settings(cfg)
+    with st.expander("ℹ️ 자동 발송은 어떻게 동작하나요?"):
+        st.markdown("""
+- **언제**: 미국 장 다음 날 낮 12:00 (KST, 월~금·미국 휴장일 제외). 전일 종가로 판단한
+  주문을 그날 밤 개장 전에 MOO 로 넣을 수 있게 미리 보냅니다.
+- **어떤 날**: 백테스트와 같은 기준으로 **매수 신호 / 매도 신호가 난 날에만** 보냅니다
+  (원본 시트의 '매수 신호'·'매도 신호' 행과 같은 날). 한 신호당 한 번입니다.
+- **어떤 종목**: [📋 오늘의 신호] 탭에서 포지션을 저장한 종목들. 저장한 종목이 없으면 TQQQ.
+- **어떤 파라미터**: 아래 '전략 파라미터 기본값'에 저장한 값 (없으면 원본 시트 값).
+- **수량**: 저장된 포지션의 예수금(매수)·보유 수량(매도)으로 계산합니다. 체결 후 포지션을
+  저장해 두면 다음 주문 수량이 정확해집니다.
+- Cloud(로그인) 에서 저장한 설정만 자동 발송됩니다. 로컬 PC 에 저장한 값은 수동 발송용입니다.
+""")
+    st.write("")
 
     st.markdown("**전략 파라미터 기본값**")
     saved = cfg.get("params", {})
@@ -1030,37 +1096,7 @@ def render_settings_tab():
         st.session_state["_tq_reset"] = True   # 다음 실행의 사이드바가 반영
         st.rerun()
 
-    if not _IS_CLOUD:
-        st.divider()
-        st.markdown("**텔레그램 (신호 전송용)**")
-        tc1, tc2 = st.columns(2)
-        tg_token = tc1.text_input("Bot Token", value=cfg.get("tg_token", ""),
-                                  type="password", key="tq_set_tgt",
-                                  help="@BotFather 에서 발급")
-        tg_chat = tc2.text_input("Chat ID", value=cfg.get("tg_chat_id", ""),
-                                 key="tq_set_tgc",
-                                 help="@userinfobot 에게 말 걸면 확인 가능")
-        tb1, tb2 = st.columns(2)
-        if tb1.button("💾 텔레그램 저장", key="tq_set_tgsave",
-                      use_container_width=True):
-            cfg["tg_token"] = tg_token.strip()
-            cfg["tg_chat_id"] = tg_chat.strip()
-            _save_cfg(cfg)
-            st.success("저장 완료")
-        if tb2.button("📨 테스트 전송", key="tq_set_tgtest",
-                      use_container_width=True):
-            r = _send_telegram(tg_token.strip(), tg_chat.strip(),
-                               "✅ [TQ200] 텔레그램 연결 테스트")
-            if r.get("ok"):
-                st.success("전송 성공 — 텔레그램을 확인하세요")
-            else:
-                st.error(f"전송 실패: {r.get('description')}")
-    else:
-        st.divider()
-        st.caption("📨 Cloud 에서는 종가평균매매 개인 설정에 저장한 텔레그램 정보를 "
-                   "신호 전송에 사용합니다.")
-
-    st.divider()
+    st.write("")
     st.markdown("**저장된 포지션**")
     positions = cfg.get("positions", {})
     if not positions:
