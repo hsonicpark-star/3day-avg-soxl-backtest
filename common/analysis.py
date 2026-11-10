@@ -247,8 +247,11 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                 continue
             sub = (f'<div style="color:#AEB4BF;font-size:0.60em">{mix}</div>'
                    if mix else "")
+            # 카드형: 모드 줄이 없는 두 줄짜리 칸도 세 줄 칸과 같은 높이로 —
+            # 빠진 셋째 줄(0.60em × 줄높이 1.35 = 0.81em)을 위아래 여백으로 반씩 나눠 준다.
+            pad = ("calc(5px + 0.405em) 4px" if (card and not mix) else "5px 4px")
             h.append(
-                f'<td style="padding:5px 4px;{edge};'
+                f'<td style="padding:{pad};{edge};'
                 f'background:{ret_heat_color(ret, vmax)};text-align:center;'
                 f'line-height:1.35">'
                 f'<div style="color:#fff;font-weight:700;font-size:0.82em">{ret:+.1f}%</div>'
