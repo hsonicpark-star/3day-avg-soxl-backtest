@@ -50,7 +50,7 @@ if not getattr(st.date_input, "_wide_range_patched", False):
 # 실제 원인을 화면에 노출한다. 그러지 않으면 로그를 봐야만 진단이 가능하다.
 try:
     from common.config import _IS_CLOUD, _CONFIG, load_config, get_ticker_settings
-    from common.auth import render_login_gate, _cookie_mgr
+    from common.auth import render_login_gate, logout as _auth_logout
 except Exception as _common_err:
     import streamlit as _st, traceback as _tb
     _st.error(f"⚠️ 공통 모듈 로드 실패: {type(_common_err).__name__}: {_common_err}")
@@ -561,12 +561,7 @@ with st.sidebar:
         st.markdown("---")
         st.caption(f"👤 **{st.session_state.username}** 으로 로그인 중")
         if st.button("🚪 로그아웃", use_container_width=True):
-            try:
-                _cookie_mgr.remove("usd_avg_user")
-            except Exception:
-                pass
-            for k in ("logged_in", "username", "user_settings"):
-                st.session_state.pop(k, None)
+            _auth_logout()      # 세션 비우기 + 자동 로그인 쿠키 삭제 예약
             st.rerun()
 
     # ── 배포 버전 (push 가 반영됐는지 확인용) ──
