@@ -2357,7 +2357,8 @@ def _render_ds_performance(log, trades, cap, start, end, ds_p=None, mr=None, use
         _eq = log.set_index('날짜')['총자산'].astype(float)
         _md = log.set_index('날짜')['모드']
         st.markdown(monthly_perf_table(_eq, mode=_md,
-                                       mode_short={'공격': '공', '방어': '방'}),
+                                       mode_short={'공격': '공', '방어': '방'},
+                                       card=True),
                     unsafe_allow_html=True)
     except Exception:
         st.caption("월별 데이터 부족")

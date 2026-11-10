@@ -115,6 +115,7 @@ _HEAT_BG   = "#2A2E39"
 _HEAT_HEAD = "#1E2229"
 _HEAT_SIDE = "#171A20"
 _HEAT_LINE = "#3A3F4B"
+_HEAT_CARD_BG = "#12151B"   # 카드형 히트맵의 카드 뒤 배경 (어두운 판)
 
 
 def ret_heat_color(v, vmax: float = 12.0) -> str:
@@ -132,7 +133,7 @@ def ret_heat_color(v, vmax: float = 12.0) -> str:
 
 def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                        mode_short=None, idle_label=None,
-                       card: bool = False, card_bg=None) -> str:
+                       card: bool = False, card_bg=_HEAT_CARD_BG) -> str:
     """월별 수익률 히트맵 HTML 테이블.
 
     Args:
@@ -145,11 +146,12 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                     "" 이면 글자도 없는 완전한 공백 칸.
                     칸 배경은 투명 — 밝은 테마에서는 흰색, 어두운 테마에서는 배경색.
                     None(기본)이면 기존처럼 +0.0% 칸으로 그린다.
-        card      : True 면 카드형 — 칸마다 모서리를 둥글게 하고 사이를 띄운다 (선).
-                    카드형에서는 데이터 없는 달과 idle 달(idle_label 지정 시)에
-                    박스를 아예 그리지 않는다. False(기본)면 기존 격자형 표.
-        card_bg   : 카드형에서 카드 사이·뒤 배경색 (선택). None 이면 투명 —
-                    밝은 테마에서는 흰색. 어두운 색을 주면 둥근 어두운 판 위에 카드를 올린다.
+        card      : True 면 카드형 — 앱 화면의 표준 모양. 칸마다 모서리를 둥글게 하고
+                    사이를 띄우며, 데이터 없는 달과 한 달 내내 변동 없는 달에는
+                    박스를 아예 그리지 않는다 (idle_label 을 주면 그 자리에 글자만).
+                    False(기본)면 기존 격자형 표 — reports/ 스크립트가 이 모양을 쓴다.
+        card_bg   : 카드형에서 카드 뒤 배경색. 기본은 어두운 판(_HEAT_CARD_BG).
+                    None/"" 이면 투명 (밝은 테마에서는 흰색).
 
     Returns: HTML 문자열 (st.markdown(..., unsafe_allow_html=True) 로 렌더)
 
@@ -234,10 +236,10 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                              f'background:{_HEAT_BG};color:#666;text-align:center">-</td>')
                 continue
             ret, mdd, mix, flat = c
-            if idle_label is not None and flat:
+            if flat and (card or idle_label is not None):
                 if card:      # 한 달 내내 변동 없음 — 박스 없이 (라벨이 있으면 글자만)
                     h.append('<td style="border:none;color:#9AA0AA;text-align:center;'
-                             f'font-size:0.68em">{idle_label}</td>')
+                             f'font-size:0.68em">{idle_label or ""}</td>')
                 else:
                     h.append(f'<td style="padding:5px 4px;{edge};'
                              f'background:transparent;color:#9AA0AA;text-align:center;'
@@ -265,6 +267,7 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
               + (" / 모드 비율" if md is not None else "")
               + " · 우측 = 연간 수익률 · 연간 MDD"
               + ((" · 빈 칸" + (f"({idle_label})" if idle_label else "")
-                  + " = 한 달 내내 변동 없음") if idle_label is not None else ""))
+                  + " = 한 달 내내 변동 없음")
+                 if (card or idle_label is not None) else ""))
     h.append(f'<div style="margin-top:6px;font-size:0.7em;color:#888">{legend}</div>')
     return "".join(h)

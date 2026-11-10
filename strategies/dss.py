@@ -3454,7 +3454,8 @@ RSI   = RS / (1 + RS) × 100
                 break
         st.markdown(
             monthly_perf_table(_eq_h['총자산'].astype(float), _mode_h,
-                               mode_short={'안전': '방', '공세': '공'}),
+                               mode_short={'안전': '방', '공세': '공'},
+                               card=True),
             unsafe_allow_html=True)
         st.divider()
 

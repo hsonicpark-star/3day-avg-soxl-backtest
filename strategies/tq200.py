@@ -49,7 +49,6 @@ _COL_BH = "#888888"
 _COL_MA = "#f2a93b"
 _COL_BUY = "#22c55e"
 _COL_SELL = "#ef4444"
-_HEAT_DARK_BG = "#12151B"  # 월별 히트맵 카드 뒤 배경
 
 
 def _load_cfg() -> dict:
@@ -224,8 +223,7 @@ def _month_heatmap(log: pd.DataFrame):
                      index=log.index)
     st.markdown(monthly_perf_table(
         log["평가금"], mode, vmax=20.0,
-        mode_short={"보유": "보유", "현금": "현금"}, idle_label="",
-        card=True, card_bg=_HEAT_DARK_BG),
+        mode_short={"보유": "보유", "현금": "현금"}, card=True),
         unsafe_allow_html=True)
 
 

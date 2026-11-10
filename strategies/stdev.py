@@ -2493,7 +2493,7 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
     _eq4 = _hist4.copy()
     _eq4["날짜"] = pd.to_datetime(_eq4["날짜"])
     _eq4 = _eq4.set_index("날짜")["총자산($)"].astype(float)
-    st.markdown(monthly_perf_table(_eq4), unsafe_allow_html=True)
+    st.markdown(monthly_perf_table(_eq4, card=True), unsafe_allow_html=True)
     st.divider()
 
     # -- 종합 성과 요약 ---

@@ -2726,7 +2726,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
         _eq = _hist.copy()
         _eq["날짜"] = pd.to_datetime(_eq["날짜"])
         _eq = _eq.set_index("날짜")["총자산($)"].astype(float)
-        st.markdown(monthly_perf_table(_eq), unsafe_allow_html=True)
+        st.markdown(monthly_perf_table(_eq, card=True), unsafe_allow_html=True)
         st.divider()
 
         st.subheader("📋 종합 성과 요약")

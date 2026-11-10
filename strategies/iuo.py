@@ -1580,7 +1580,7 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
     # ── 월별 히트맵 ──
     st.subheader("🗓️ 월별 수익률 히트맵")
     _eq_i = df.set_index(pd.DatetimeIndex(df["날짜"]))["총자산"].astype(float)
-    st.markdown(monthly_perf_table(_eq_i), unsafe_allow_html=True)
+    st.markdown(monthly_perf_table(_eq_i, card=True), unsafe_allow_html=True)
     st.divider()
 
     # ── 종합 성과 요약 ──

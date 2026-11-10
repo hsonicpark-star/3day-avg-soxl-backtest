@@ -3183,7 +3183,8 @@ def render_portfolio_section(params: dict):
         st.markdown(monthly_perf_table(
             comb, _md,
             mode_short=({"바닥": "바", "중간": "중", "천장": "천"}
-                        if _md is not None else None)),
+                        if _md is not None else None),
+            card=True),
             unsafe_allow_html=True)
         st.caption("각 칸은 월수익률 / 월 MDD / 그달의 구간 비율입니다. "
                    "구간 비율은 첫 번째 전략 기준입니다.")
@@ -3781,7 +3782,8 @@ def render_perf_analysis(params: dict):
     # ── 월별 수익률 히트맵 ──
     st.markdown("#### 🗓️ 월별 수익률 히트맵")
     st.markdown(monthly_perf_table(df["총자산"], df["모드"],
-                                   mode_short={"바닥": "바", "중간": "중", "천장": "천"}),
+                                   mode_short={"바닥": "바", "중간": "중", "천장": "천"},
+                                   card=True),
                 unsafe_allow_html=True)
 
     # ── 총자산 추이 & 낙폭 ──
