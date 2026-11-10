@@ -215,6 +215,62 @@ def _stat_cards(items: list, tone: str = "gray") -> str:
             'margin:4px 0 12px 0;">' + "".join(boxes) + "</div>")
 
 
+def _signal_box_html(ticker: str, plan: dict, sig: dict, params: dict,
+                     holding: bool) -> str:
+    """'오늘의 신호' 안내 상자 — 왼쪽은 결론(매수/매도/홀딩/관망), 오른쪽은 매수 조건 신호등 3개.
+
+    신호등은 매수 조건 세 가지(미보유 · 200일선 상승 · 이격도 매수 구간)를 초록/빨강으로
+    보여 준다. 세 개가 모두 초록이면 = 매수 신호 (latest_signal 의 action == "buy" 와 같다).
+    HTML 블록이라 안의 글자는 마크다운으로 해석되지 않는다 ($ · ~ 를 그대로 써도 된다).
+    """
+    action = plan["action"]
+    tint, edge, head = {
+        "buy": ("rgba(34,197,94,.10)", "rgba(34,197,94,.45)", "#16a34a"),
+        "sell": ("rgba(239,68,68,.10)", "rgba(239,68,68,.45)", "#dc2626"),
+    }.get(action, ("rgba(59,130,246,.09)", "rgba(59,130,246,.40)", "#2563eb"))
+
+    # plan["detail"] 은 마크다운(**굵게**) — HTML 로 바꿔 넣는다
+    parts = plan["detail"].split("**")
+    detail = "".join(p if i % 2 == 0 else f"<b>{p}</b>" for i, p in enumerate(parts))
+
+    slope_ok = bool(sig["기울기조건"])
+    lights = [
+        (not holding, f"{ticker} 미보유", "현재 보유 중" if holding else "현재 미보유"),
+        (slope_ok, "장기추세 상승",
+         f"MA 기울기 {sig['Slope']:+.4f}"
+         + ("" if params["use_slope"] else " · 필터 OFF")),
+        (bool(sig["매수조건"]),
+         f"이격도 {params['buy_lo']:g}~{params['buy_hi']:g}% 사이",
+         f"현재 {sig['이격도'] * 100:+.2f}%"),
+    ]
+    n_ok = sum(1 for ok, _l, _v in lights if ok)
+    bulbs = []
+    for ok, label, value in lights:
+        c = "34,197,94" if ok else "239,68,68"
+        bulbs.append(
+            '<div style="text-align:center; min-width:112px;">'
+            '<div style="width:34px; height:34px; border-radius:50%; margin:0 auto 7px; '
+            f'background:rgb({c}); box-shadow:0 0 0 4px rgba({c},.22), '
+            f'0 0 12px rgba({c},.55); color:#fff; font-weight:700; font-size:16px; '
+            f'line-height:34px;">{"✓" if ok else "✕"}</div>'
+            f'<div style="font-size:13px; font-weight:600;">{label}</div>'
+            f'<div style="font-size:11.5px; color:#888; margin-top:2px;">{value}</div>'
+            '</div>')
+    return (
+        '<div style="display:flex; flex-wrap:wrap; gap:14px 28px; align-items:center; '
+        'justify-content:space-between; border-radius:10px; padding:16px 20px; '
+        f'margin:4px 0 14px 0; background:{tint}; border:1px solid {edge};">'
+        '<div style="flex:1 1 300px; min-width:240px;">'
+        f'<div style="font-size:1.55em; font-weight:700; line-height:1.3; color:{head};">'
+        f'{plan["headline"]}</div>'
+        f'<div style="margin-top:6px; font-size:0.95em;">{detail}</div></div>'
+        '<div style="flex:0 1 auto;">'
+        '<div style="font-size:12px; color:#888; text-align:center; margin-bottom:10px;">'
+        f'매수 조건 <b>{n_ok}/3</b> 충족 · 세 개 모두 초록이면 매수</div>'
+        '<div style="display:flex; gap:10px; justify-content:center;">'
+        + "".join(bulbs) + '</div></div></div>')
+
+
 def _month_heatmap(log: pd.DataFrame):
     """월별 수익률 히트맵 — 어두운 판 위의 카드형.
 
@@ -797,8 +853,8 @@ def render_ordersheet_tab(params: dict):
                "gap_buf": float(gap_buf)}
     plan = _order_plan(ticker, sig, cur_pos, next_day)
     action, order_rows = plan["action"], plan["rows"]
-    _box = {"buy": st.success, "sell": st.error}.get(action, st.info)
-    _box(f"### {plan['headline']}\n{plan['detail']}")
+    st.markdown(_signal_box_html(ticker, plan, sig, params, bool(holding)),
+                unsafe_allow_html=True)
 
     st.markdown(f"**📋 {next_day} 주문표**")
     if order_rows:
