@@ -133,7 +133,8 @@ def ret_heat_color(v, vmax: float = 12.0) -> str:
 
 def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                        mode_short=None, idle_label=None,
-                       card: bool = False, card_bg=_HEAT_CARD_BG) -> str:
+                       card: bool = False, card_bg=_HEAT_CARD_BG,
+                       mode_days=None) -> str:
     """월별 수익률 히트맵 HTML 테이블.
 
     Args:
@@ -152,6 +153,9 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                     False(기본)면 기존 격자형 표 — reports/ 스크립트가 이 모양을 쓴다.
         card_bg   : 카드형에서 카드 뒤 배경색. 기본은 어두운 판(_HEAT_CARD_BG).
                     None/"" 이면 투명 (밝은 테마에서는 흰색).
+        mode_days : 모드 라벨 하나 (선택). 주면 셀 셋째 줄에 모드 비율(%) 대신
+                    그 모드였던 일수를 '보유 7/22일'(해당 일수/그 달 거래일 수)로 적는다.
+                    전량 매수·전량 매도 전략은 % 가 보유 비중으로 읽히기 쉬워 일수가 낫다.
 
     Returns: HTML 문자열 (st.markdown(..., unsafe_allow_html=True) 로 렌더)
 
@@ -186,7 +190,10 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                 vc = md[sel].dropna()
                 vc = vc[vc.astype(str) != ""].value_counts()
                 tot = int(vc.sum())
-                if tot:
+                if tot and mode_days is not None:
+                    mix = (f"{(mode_short or {}).get(mode_days, str(mode_days))} "
+                           f"{int(vc.get(mode_days, 0))}/{tot}일")
+                elif tot:
                     mix = " / ".join(
                         f"{(mode_short or {}).get(k, str(k)[:1])}"
                         f"{int(v) / tot * 100:.0f}%"
@@ -267,7 +274,9 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                  f'text-align:center;font-size:0.85em">{ymdd:.1f}%</td></tr>')
     h.append("</table></div>")
     legend = ("셀 = 월수익률 / 월 MDD"
-              + (" / 모드 비율" if md is not None else "")
+              + ((" / " + (mode_short or {}).get(mode_days, str(mode_days))
+                  + " 일수(그 달 거래일 중)") if (md is not None and mode_days is not None)
+                 else " / 모드 비율" if md is not None else "")
               + " · 우측 = 연간 수익률 · 연간 MDD"
               + ((" · 빈 칸" + (f"({idle_label})" if idle_label else "")
                   + " = 한 달 내내 변동 없음")

@@ -218,12 +218,14 @@ def _stat_cards(items: list, tone: str = "gray") -> str:
 def _month_heatmap(log: pd.DataFrame):
     """월별 수익률 히트맵 — 어두운 판 위의 카드형.
 
-    한 달 내내 현금이던 달은 박스를 그리지 않는다 (흰 배경과 비교 후 어두운 배경으로 결정)."""
+    한 달 내내 현금이던 달은 박스를 그리지 않는다 (흰 배경과 비교 후 어두운 배경으로 결정).
+    셋째 줄은 '보유 7/22일' — 전량 매매라 % 로 적으면 보유 비중으로 오해하기 쉽다."""
     mode = pd.Series(np.where(log["보유수량"] > 0, "보유", "현금"),
                      index=log.index)
     st.markdown(monthly_perf_table(
         log["평가금"], mode, vmax=20.0,
-        mode_short={"보유": "보유", "현금": "현금"}, card=True),
+        mode_short={"보유": "보유", "현금": "현금"}, card=True,
+        mode_days="보유"),
         unsafe_allow_html=True)
 
 
