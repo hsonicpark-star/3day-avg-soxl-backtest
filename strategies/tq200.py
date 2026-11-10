@@ -890,6 +890,60 @@ def render_ordersheet_tab(params: dict):
 # ══════════════════════════════════════════════
 # 전략 소개 탭
 # ══════════════════════════════════════════════
+def _fig_rule_diagram(P: dict | None = None) -> go.Figure:
+    """규칙 개념도 — 200일선을 $100 으로 놓았을 때의 매수 구간 · 청산선 · 과열 익절선.
+
+    세로 간격은 실제 비율이 아니다. $99 · $100 · $101 이 겹치지 않도록 일정 간격으로
+    벌려 그리고, 축 눈금에는 실제 가격을 적는다. P 는 % 단위 params (기본 DEFAULTS)."""
+    P = P or DEFAULTS
+    lo, hi = float(P["buy_lo"]), float(P["buy_hi"])
+    ex, tp = float(P["exit_disp"]), float(P["tp_disp"])
+
+    def _price(d):
+        return f"${100 + d:g}"
+
+    def _pct(d):
+        return f"{'+' if d > 0 else '−'}{abs(d):g}%"
+
+    y_ex, y_ma, y_lo, y_hi, y_tp = 1.0, 2.0, 3.0, 5.0, 7.2
+    c_tp, c_ex, c_ma, c_note = "#e45756", "#d97706", "#64748b", "#94a3b8"
+
+    fig = go.Figure()
+    fig.add_shape(type="rect", xref="paper", x0=0, x1=1, y0=y_lo, y1=y_hi,
+                  fillcolor=_COL_BUY, opacity=0.14, line_width=0, layer="below")
+    for y, col, dash, w in [(y_tp, c_tp, "dash", 2.5), (y_hi, _COL_BUY, "dash", 1.5),
+                            (y_lo, _COL_BUY, "dash", 1.5), (y_ma, c_ma, "dot", 4.5),
+                            (y_ex, c_ex, "dash", 3)]:
+        fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=y, y1=y,
+                      line=dict(color=col, dash=dash, width=w))
+
+    def _label(y, text, color, yshift=0, size=15, **kw):
+        fig.add_annotation(xref="paper", x=0.5, y=y, yshift=yshift, text=text,
+                           showarrow=False, font=dict(size=size, color=color), **kw)
+
+    _label(y_tp, f"<b>과열 익절 — 이격도 {_pct(tp)} 초과</b>", c_tp, yshift=15)
+    _label((y_hi + y_tp) / 2, "보유 중이면 계속 보유 · 새로 사지는 않음", c_note, size=12.5)
+    _label((y_lo + y_hi) / 2, f"<b>매수 구간  {_pct(lo)} ~ {_pct(hi)}</b>", "#ffffff",
+           bgcolor="#3f9d57", borderpad=9, bordercolor="#3f9d57")
+    _label(y_ma, f"<b>200일 이동평균선 ({_price(0)})</b>", c_ma, yshift=15)
+    _label(y_ex, f"<b>청산 — 이격도 {_pct(ex)} 미만</b>", c_ex, yshift=-15)
+
+    fig.update_xaxes(visible=False, range=[0, 1], fixedrange=True)
+    # 가격 눈금 — 축 눈금 대신 선과 같은 색의 굵은 글자로 (테마 기본 눈금은 작고 흐리다)
+    c_zone = "#2f9e55"
+    for y, d, col in [(y_tp, tp, c_tp), (y_hi, hi, c_zone), (y_lo, lo, c_zone),
+                      (y_ma, 0, c_ma), (y_ex, ex, c_ex)]:
+        fig.add_annotation(xref="paper", x=0, xanchor="right", xshift=-10, y=y,
+                           text=f"<b>{_price(d)}</b>", showarrow=False,
+                           font=dict(size=17, color=col))
+    fig.update_yaxes(range=[0.15, 8.1], fixedrange=True, showgrid=False, zeroline=False,
+                     showticklabels=False, ticks="")
+    fig.update_layout(height=400, margin=dict(l=70, r=20, t=10, b=10),
+                      showlegend=False, plot_bgcolor="rgba(0,0,0,0)",
+                      paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
 def render_intro_tab(params: dict):
     st.subheader("📖 TQ200 — 200일선 이격도 매매란")
     st.markdown("""
@@ -912,10 +966,15 @@ def render_intro_tab(params: dict):
 | 🔴 **청산** | 보유 중 + 이격도 **−1% 미만**으로 이탈 | 다음 거래일 **MOO 전량 매도** |
 | 🟠 **과열 익절** | 보유 중 + 이격도 **50% 초과** | 다음 거래일 **MOO 전량 매도** |
 
-예) 200일선이 $100 이면 — 종가 $101 초과 ~ $110 미만에서 매수, $99 미만이면 청산,
-$150 초과면 과열 익절. 매도는 구간에 머무는 동안 매일 나오는 게 아니라 경계선을
-**처음 넘는 날 한 번** 발생합니다.
-
+""")
+    st.markdown("**예시 — 200일선이 100달러일 때**")
+    st.plotly_chart(_fig_rule_diagram(), use_container_width=True,
+                    config={"staticPlot": True})
+    st.caption("개념도입니다. 매수에는 200일선 자체가 상승 중(Slope > 0)이어야 한다는 조건이 "
+               "더 있고, 매도는 경계선을 **처음 넘는 날 한 번**만 발생합니다 (구간에 머무는 "
+               "동안 매일 나오지 않음). 선 사이 간격은 보기 쉽게 벌린 것으로 실제 비율과 "
+               "다릅니다.")
+    st.markdown("""
 #### 왜 이렇게 설계됐나
 - **이격도 1% 초과** — 200일선을 살짝 넘은 정도의 가짜 돌파(휩쏘)를 걸러냅니다.
 - **이격도 10% 미만** — 이미 많이 오른 뒤의 추격 매수를 막습니다. 과열 익절 후에는
