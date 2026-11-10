@@ -476,31 +476,42 @@ def build_order_text(ticker: str, P: dict, sig: dict, plan: dict, pos: dict,
 
 
 def daily_signal(df: pd.DataFrame, P: dict, saved_pos: dict | None,
-                 ticker: str, next_day) -> dict:
-    """일일 자동 발송용 — **백테스트 모델에 매수/매도 신호가 난 날에만** send=True.
+                 ticker: str, next_day, signal_only: bool = False) -> dict:
+    """일일 자동 발송용 — **매 거래일** send=True (신호가 드물어 매일 현황을 보낸다).
 
-    판단 기준은 전체 구간 백테스트의 마지막 날 신호(run_backtest()["pending"]) =
-    원본 시트의 '매수 신호'/'매도 신호' 와 같은 날. 한 신호당 한 번만 나온다.
+    · 매수/매도 신호가 난 날 : 맨 위에 '주문이 있는 날' 표시 + MOO 주문표
+    · 신호가 없는 날         : 홀딩 유지 / 관망 현황 + 다음 종가 트리거 가격
+
+    판단 기준은 전체 구간 백테스트 모델이다. 신호 여부는 마지막 날의
+    run_backtest()["pending"] (= 원본 시트의 '매수 신호'/'매도 신호' 와 같은 날, 한 신호당
+    한 번), 신호가 없는 날의 보유 여부는 모델의 마지막 날 보유 상태.
     수량은 저장된 실제 포지션(saved_pos)으로 계산하고, 저장된 포지션이 모델과
     다르면(예: 모델은 보유인데 저장은 무포지션) 안내 줄을 붙인다.
 
     P: params(% 단위, 빠진 키는 DEFAULTS) + 선택 "capital"/"fee".
-    Returns: {"send": bool, "text": str, "action": "buy"/"sell"/None,
-              "base_day": Timestamp|None, "reason": str}
+    signal_only: True 면 예전 방식 — 신호가 난 날에만 send=True.
+    Returns: {"send": bool, "text": str, "action": "buy"/"sell"/None(신호 없음),
+              "status": "buy"/"sell"/"hold"/"wait", "base_day": Timestamp|None,
+              "reason": str}
     """
     kw = engine_kwargs(P)
     model = run_backtest(df, **kw)
     log = model["log"]
     if log is None or log.empty:
-        return {"send": False, "text": "", "action": None, "base_day": None,
-                "reason": "이동평균 계산에 필요한 데이터 부족"}
+        return {"send": False, "text": "", "action": None, "status": None,
+                "base_day": None, "reason": "이동평균 계산에 필요한 데이터 부족"}
     pending = model["pending"]
     base_day = log.index[-1]
-    if pending not in ("buy", "sell"):
-        return {"send": False, "text": "", "action": None, "base_day": base_day,
+    is_signal = pending in ("buy", "sell")
+    if signal_only and not is_signal:
+        return {"send": False, "text": "", "action": None, "status": None,
+                "base_day": base_day,
                 "reason": f"신호 없음 (모델 상태: {log['상태'].iloc[-1]})"}
 
-    model_hold = (pending == "sell")        # 매도 신호 = 모델 보유 중, 매수 신호 = 모델 무포지션
+    if is_signal:       # 매도 신호 = 모델 보유 중, 매수 신호 = 모델 무포지션
+        model_hold = (pending == "sell")
+    else:
+        model_hold = bool(log["보유수량"].iloc[-1] > 0)
     sig = latest_signal(df, holding=model_hold, **kw)
     pos = dict(saved_pos or {})
     pos.setdefault("cash", float(P.get("capital", 10000.0)))
@@ -509,18 +520,25 @@ def daily_signal(df: pd.DataFrame, P: dict, saved_pos: dict | None,
     plan = build_order_plan(ticker, sig, pos, next_day)
 
     notes = []
-    if saved_pos is None:
-        notes.append("ℹ️ 저장된 포지션이 없어 "
-                     + (f"초기 투자금 ${pos['cash']:,.0f} 기준으로 수량을 계산했습니다."
-                        if pending == "buy" else "수량 없이 '보유 전량'으로 안내합니다."))
-    elif saved_hold != model_hold:
+    if saved_pos is not None and saved_hold != model_hold:
         notes.append("⚠️ 저장된 포지션("
                      + ("보유 중" if saved_hold else "무포지션")
                      + ")이 백테스트 모델("
                      + ("보유 중" if model_hold else "무포지션")
-                     + ")과 다릅니다. 실제 계좌 상태를 확인하고 주문하세요.")
-    notes.append("체결 후 앱 [오늘의 신호] 탭에서 포지션을 저장해 두면 다음 주문 수량이 "
-                 "정확해집니다.")
-    return {"send": True, "action": pending, "base_day": base_day,
-            "reason": sig["reason"],
-            "text": build_order_text(ticker, P, sig, plan, pos, next_day, notes)}
+                     + ")과 다릅니다. "
+                     + ("실제 계좌 상태를 확인하고 주문하세요." if is_signal
+                        else "이 메시지는 모델 기준입니다."))
+    if is_signal:
+        if saved_pos is None:
+            notes.append("ℹ️ 저장된 포지션이 없어 "
+                         + (f"초기 투자금 ${pos['cash']:,.0f} 기준으로 수량을 계산했습니다."
+                            if pending == "buy" else "수량 없이 '보유 전량'으로 안내합니다."))
+        notes.append("체결 후 앱 [오늘의 신호] 탭에서 포지션을 저장해 두면 다음 주문 수량이 "
+                     "정확해집니다.")
+    text = build_order_text(ticker, P, sig, plan, pos, next_day, notes)
+    if is_signal:       # 매일 오는 현황 메시지 속에서 주문 있는 날이 묻히지 않게
+        text = ("🚨 <b>매수 신호 — 오늘 밤 개장 전 주문</b>" if pending == "buy"
+                else "🚨 <b>매도 신호 — 오늘 밤 개장 전 주문</b>") + "\n\n" + text
+    return {"send": True, "action": pending if is_signal else None,
+            "status": plan["action"], "base_day": base_day,
+            "reason": sig["reason"], "text": text}

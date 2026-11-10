@@ -13,7 +13,7 @@ Google Sheets users 탭의 모든 사용자에게
   7. 카마릴라 오버레이 (cam_config 계좌별 — 출처 전략 유휴현금 기반,
                        텔레그램: 계좌 전용 → 출처 전략 순)
   8. 만능 스위치  (ms_tg_chat_id / ms_tg_token + manse_config 종목별)
-  9. TQ200        (tq200_config 내 tg_chat_id / tg_token — 매수·매도 신호가 난 날에만)
+  9. TQ200        (tq200_config 내 tg_chat_id / tg_token — 매일: 신호일은 주문표, 그 외는 현황)
 """
 
 import os, sys, json, math, time, requests
@@ -2282,12 +2282,13 @@ def build_cam_message(name, ov_ticker, ov, src_strat, src_acct) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-# TQ200 (200일선 이격도 매매) — 매수·매도 신호가 난 날에만 발송
+# TQ200 (200일선 이격도 매매) — 매일 발송 (신호일 = 주문표, 그 외 = 홀딩/관망 현황)
 # ══════════════════════════════════════════════════════════════
 #   · 설정/텔레그램/포지션 : users 시트의 tq200_config JSON
 #       {"params": {...}, "positions": {티커: {...}}, "tg_chat_id", "tg_token"}
 #   · 대상 종목 : positions 에 저장된 티커들 (없으면 TQQQ)
-#   · 발송 조건 : tq200_engine.daily_signal() — 백테스트 모델의 '매수 신호'/'매도 신호' 날
+#   · 발송 내용 : tq200_engine.daily_signal() — 백테스트 모델 기준.
+#                 '매수 신호'/'매도 신호' 날은 🚨 주문표, 나머지 날은 현황 + 다음 종가 트리거
 #   · 가격      : 웹앱과 같은 기준 — 무조정 OHLC (price_mode 가 수정주가면 auto_adjust=True)
 _TQ200_PRICE_ADJ = "배당 수정주가"
 
@@ -2328,8 +2329,8 @@ def tq200_next_trading_day(d):
 def tq200_fetch_ohlc(ticker: str, adjusted: bool = False) -> pd.DataFrame:
     """TQ200 용 OHLC (Open/Close). 낡았거나 구멍 난 데이터면 raise.
 
-    신호가 난 날에만 보내는 전략이라 낡은 데이터는 '신호 없음'으로 조용히
-    넘어가 버린다 → 매도 신호를 놓치지 않도록 반드시 실패로 처리한다.
+    낡은 데이터로 판단하면 신호가 난 날을 '홀딩 유지/관망'으로 잘못 안내한다
+    → 매도 신호를 놓치지 않도록 반드시 실패로 처리한다.
     """
     from dss_engine import _is_us_trading_day
     end = datetime.today() + timedelta(days=2)
@@ -3355,7 +3356,7 @@ def main():
                 print(f"  ⏭️  {username} [만능스위치]: 미설정 → 건너뜀")
                 skip_count += 1
 
-            # ── 6.9 TQ200 발송 (매수·매도 신호가 난 날에만) ─────────
+            # ── 6.9 TQ200 발송 (매일 — 신호일은 주문표, 그 외는 현황) ──
             tq_cfg = parse_tq200_config(user)
             tq_chat_id = str(tq_cfg.get("tg_chat_id", "")).strip()
             tq_token   = str(tq_cfg.get("tg_token",   "")).strip()
@@ -3376,12 +3377,18 @@ def main():
                         user_warnings.append(f"[{_label}] ❌ 신호 확인 실패: {e}")
                         continue
                     if not _tq.get("send"):
-                        print(f"    ⏭️  [{_label}] {_tq.get('reason', '신호 없음')} → 발송 안 함")
+                        print(f"    ⏭️  [{_label}] {_tq.get('reason', '발송 불가')} → 발송 안 함")
+                        user_warnings.append(
+                            f"[{_label}] ⚠️ 오늘 메시지를 만들지 못했습니다: "
+                            f"{_tq.get('reason', '원인 불명')}")
                         continue
                     ok, resp = send_telegram(tq_chat_id, tq_token, _tq["text"],
                                              parse_mode="HTML")
                     if ok:
-                        print(f"    ✅ [{_label}] {_tq.get('action')} 신호 발송 성공")
+                        print(f"    ✅ [{_label}] "
+                              + (f"{_tq['action']} 신호 주문표" if _tq.get("action")
+                                 else f"일일 현황({_tq.get('status')})")
+                              + " 발송 성공")
                         ok_count += 1
                     else:
                         print(f"    ❌ [{_label}] 발송 실패 → {resp}")
