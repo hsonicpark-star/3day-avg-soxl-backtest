@@ -50,7 +50,24 @@ if not getattr(st.date_input, "_wide_range_patched", False):
 # 실제 원인을 화면에 노출한다. 그러지 않으면 로그를 봐야만 진단이 가능하다.
 try:
     from common.config import _IS_CLOUD, _CONFIG, load_config, get_ticker_settings
-    from common.auth import render_login_gate, logout as _auth_logout
+    import common.auth as _auth_mod
+    # 배포 직후 ImportError 방지: Cloud 는 새 커밋을 받아도 프로세스를 유지한 채 스크립트만
+    # 다시 실행하는 경우가 있어, 메모리에는 옛 common.auth 가 남아 있다 (2026-11-10:
+    # logout 을 추가한 커밋 직후 "cannot import name 'logout'" 으로 앱 전체가 멈춤).
+    # auth 는 이제 모듈 레벨 상태가 없으므로(쿠키 상태는 st.session_state) 다시 읽어도 안전하다.
+    # → 파일이 바뀌었거나 필요한 함수가 없으면 reload.
+    import importlib as _il_auth, os as _os_auth, common as _common_auth_pkg
+    try:
+        _auth_mtime = _os_auth.path.getmtime(_auth_mod.__file__)
+    except OSError:
+        _auth_mtime = None
+    _auth_seen = _common_auth_pkg.__dict__.get("_auth_mtime_seen")
+    if (not hasattr(_auth_mod, "logout")
+            or (_auth_seen is not None and _auth_seen != _auth_mtime)):
+        _auth_mod = _il_auth.reload(_auth_mod)
+    _common_auth_pkg.__dict__["_auth_mtime_seen"] = _auth_mtime
+    render_login_gate = _auth_mod.render_login_gate
+    _auth_logout = _auth_mod.logout
 except Exception as _common_err:
     import streamlit as _st, traceback as _tb
     _st.error(f"⚠️ 공통 모듈 로드 실패: {type(_common_err).__name__}: {_common_err}")
@@ -73,7 +90,8 @@ if _IS_CLOUD:
 #     (2026-09-01 monthly_perf_table 추가 시 실제 발생)
 # 부작용 없는 순수 함수 모듈만 먼저 reload 해 둔다.
 #   · analysis/pricedb : 모듈 레벨 상태·캐시 데코레이터 없음 → 안전
-#   · config/auth      : _IS_CLOUD·세션 의존 → reload 하지 않는다
+#   · config           : _IS_CLOUD·설정 캐시 의존 → reload 하지 않는다
+#   · auth             : 위 import 블록에서 파일이 바뀌었을 때만 따로 reload 한다
 import importlib as _importlib
 
 for _cm in ("common.analysis", "common.pricedb", "common.telegram"):
