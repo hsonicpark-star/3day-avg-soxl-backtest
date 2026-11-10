@@ -131,7 +131,8 @@ def ret_heat_color(v, vmax: float = 12.0) -> str:
 
 
 def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
-                       mode_short=None, idle_label=None) -> str:
+                       mode_short=None, idle_label=None,
+                       card: bool = False, card_bg=None) -> str:
     """월별 수익률 히트맵 HTML 테이블.
 
     Args:
@@ -141,8 +142,14 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
         mode_short: {라벨: 축약문자} dict (선택). 미지정 시 라벨 첫 글자.
         idle_label: 주면, 한 달 내내 총자산이 변하지 않은 달(전량 현금 대기)을
                     색·MDD·모드 비율 없이 이 글자만 있는 빈 칸으로 그린다 (선택).
+                    "" 이면 글자도 없는 완전한 공백 칸.
                     칸 배경은 투명 — 밝은 테마에서는 흰색, 어두운 테마에서는 배경색.
-                    미지정이면 기존처럼 +0.0% 칸으로 그린다.
+                    None(기본)이면 기존처럼 +0.0% 칸으로 그린다.
+        card      : True 면 카드형 — 칸마다 모서리를 둥글게 하고 사이를 띄운다 (선).
+                    카드형에서는 데이터 없는 달과 idle 달(idle_label 지정 시)에
+                    박스를 아예 그리지 않는다. False(기본)면 기존 격자형 표.
+        card_bg   : 카드형에서 카드 사이·뒤 배경색 (선택). None 이면 투명 —
+                    밝은 테마에서는 흰색. 어두운 색을 주면 둥근 어두운 판 위에 카드를 올린다.
 
     Returns: HTML 문자열 (st.markdown(..., unsafe_allow_html=True) 로 렌더)
 
@@ -194,9 +201,19 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
         ydata[y] = ((float(g.iloc[-1]) / base - 1) * 100 if base > 0 else 0.0,
                     float((g / peak - 1).min()) * 100)
 
-    th = (f"padding:6px 4px;border:1px solid {_HEAT_LINE};background:{_HEAT_HEAD};"
+    if card:
+        # 카드형: 테두리 선 대신 둥근 모서리 + 칸 사이 간격. 얇은 반투명 테두리로 윤곽만 살린다.
+        edge = "border-radius:9px;border:1px solid rgba(255,255,255,0.10)"
+        _wrap = "overflow-x:auto" + (
+            f";background:{card_bg};padding:6px;border-radius:14px" if card_bg else "")
+        _tbl = "border-collapse:separate;border-spacing:5px;border:none;"
+    else:
+        edge = f"border:1px solid {_HEAT_LINE}"
+        _wrap = "overflow-x:auto"
+        _tbl = "border-collapse:collapse;"
+    th = (f"padding:6px 4px;{edge};background:{_HEAT_HEAD};"
           "color:#C8CDD6;font-size:0.72em;font-weight:700;text-align:center")
-    h = ['<div style="overflow-x:auto"><table style="border-collapse:collapse;'
+    h = [f'<div style="{_wrap}"><table style="{_tbl}'
          'width:100%;min-width:1100px;font-family:inherit">',
          f'<tr><th style="{th}">연도</th>']
     for m in range(1, 13):
@@ -209,19 +226,27 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
         for m in range(1, 13):
             c = cells.get((y, m))
             if c is None:
-                h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
-                         f'background:{_HEAT_BG};color:#666;text-align:center">-</td>')
+                if card:      # 데이터 없는 달 — 박스 없음
+                    # (border:none 필수 — st.markdown 기본 표 스타일이 칸마다 선을 그린다)
+                    h.append('<td style="border:none"></td>')
+                else:
+                    h.append(f'<td style="padding:6px 4px;{edge};'
+                             f'background:{_HEAT_BG};color:#666;text-align:center">-</td>')
                 continue
             ret, mdd, mix, flat = c
-            if idle_label and flat:
-                h.append(f'<td style="padding:5px 4px;border:1px solid {_HEAT_LINE};'
-                         f'background:transparent;color:#9AA0AA;text-align:center;'
-                         f'font-size:0.68em">{idle_label}</td>')
+            if idle_label is not None and flat:
+                if card:      # 한 달 내내 변동 없음 — 박스 없이 (라벨이 있으면 글자만)
+                    h.append('<td style="border:none;color:#9AA0AA;text-align:center;'
+                             f'font-size:0.68em">{idle_label}</td>')
+                else:
+                    h.append(f'<td style="padding:5px 4px;{edge};'
+                             f'background:transparent;color:#9AA0AA;text-align:center;'
+                             f'font-size:0.68em">{idle_label}</td>')
                 continue
             sub = (f'<div style="color:#AEB4BF;font-size:0.60em">{mix}</div>'
                    if mix else "")
             h.append(
-                f'<td style="padding:5px 4px;border:1px solid {_HEAT_LINE};'
+                f'<td style="padding:5px 4px;{edge};'
                 f'background:{ret_heat_color(ret, vmax)};text-align:center;'
                 f'line-height:1.35">'
                 f'<div style="color:#fff;font-weight:700;font-size:0.82em">{ret:+.1f}%</div>'
@@ -229,17 +254,17 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                 f'{sub}</td>')
         yret, ymdd = ydata[y]
         yc = "#4ADE80" if yret >= 0 else "#F87171"
-        h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
+        h.append(f'<td style="padding:6px 4px;{edge};'
                  f'background:{_HEAT_SIDE};color:{yc};font-weight:700;'
                  f'text-align:center;font-size:0.85em">{yret:+.1f}%</td>')
-        h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
+        h.append(f'<td style="padding:6px 4px;{edge};'
                  f'background:{_HEAT_SIDE};color:#F87171;font-weight:700;'
                  f'text-align:center;font-size:0.85em">{ymdd:.1f}%</td></tr>')
     h.append("</table></div>")
     legend = ("셀 = 월수익률 / 월 MDD"
               + (" / 모드 비율" if md is not None else "")
               + " · 우측 = 연간 수익률 · 연간 MDD"
-              + (f" · 빈 칸({idle_label}) = 한 달 내내 변동 없음"
-                 if idle_label else ""))
+              + ((" · 빈 칸" + (f"({idle_label})" if idle_label else "")
+                  + " = 한 달 내내 변동 없음") if idle_label is not None else ""))
     h.append(f'<div style="margin-top:6px;font-size:0.7em;color:#888">{legend}</div>')
     return "".join(h)

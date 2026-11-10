@@ -49,6 +49,7 @@ _COL_BH = "#888888"
 _COL_MA = "#f2a93b"
 _COL_BUY = "#22c55e"
 _COL_SELL = "#ef4444"
+_HEAT_DARK_BG = "#12151B"  # 월별 히트맵 카드 뒤 배경
 
 
 def _load_cfg() -> dict:
@@ -213,6 +214,19 @@ def _stat_cards(items: list, tone: str = "gray") -> str:
             f'line-height:1.15;">{value}</div>{sub_html}</div>')
     return ('<div style="display:flex; gap:10px; flex-wrap:wrap; '
             'margin:4px 0 12px 0;">' + "".join(boxes) + "</div>")
+
+
+def _month_heatmap(log: pd.DataFrame):
+    """월별 수익률 히트맵 — 어두운 판 위의 카드형.
+
+    한 달 내내 현금이던 달은 박스를 그리지 않는다 (흰 배경과 비교 후 어두운 배경으로 결정)."""
+    mode = pd.Series(np.where(log["보유수량"] > 0, "보유", "현금"),
+                     index=log.index)
+    st.markdown(monthly_perf_table(
+        log["평가금"], mode, vmax=20.0,
+        mode_short={"보유": "보유", "현금": "현금"}, idle_label="",
+        card=True, card_bg=_HEAT_DARK_BG),
+        unsafe_allow_html=True)
 
 
 def _rule_text(P: dict) -> str:
@@ -537,12 +551,7 @@ def render_backtest_tab(params: dict):
             st.info("완료된 사이클이 없습니다.")
 
     st.subheader("📅 월별 수익률")
-    _mode = pd.Series(np.where(log["보유수량"] > 0, "보유", "현금"),
-                      index=log.index)
-    st.markdown(monthly_perf_table(log["평가금"], _mode, vmax=20.0,
-                                   mode_short={"보유": "보유", "현금": "현금"},
-                                   idle_label="현금"),
-                unsafe_allow_html=True)
+    _month_heatmap(log)
 
     with st.expander("📜 일별 로그 (원본 시트 '최근로그' 형식 — 최신순)"):
         show = log.iloc[::-1].copy()
@@ -1221,11 +1230,7 @@ def _render_perf_analysis(params: dict):
 
     # ── 월별 수익률 히트맵 ──
     st.subheader("🗓️ 월별 수익률 히트맵")
-    _mode = pd.Series(np.where(_held, "보유", "현금"), index=dates)
-    st.markdown(monthly_perf_table(log["평가금"], _mode, vmax=20.0,
-                                   mode_short={"보유": "보유", "현금": "현금"},
-                                   idle_label="현금"),
-                unsafe_allow_html=True)
+    _month_heatmap(log)
     st.divider()
 
     # ── 총자산 추이 & 낙폭 ──
