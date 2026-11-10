@@ -592,7 +592,7 @@ if _is_portfolio:
 if _is_tq200 and tq200:
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 백테스트", "🔍 파라미터 최적화", "📋 오늘의 신호",
-        "📖 전략 소개", "⚙️ 개인 설정",
+        "📖 전략 소개 & 성과", "⚙️ 개인 설정",
     ])
 elif _is_tq200 and not tq200:
     st.warning("⚠️ TQ200 모듈을 로드하지 못했습니다.")
