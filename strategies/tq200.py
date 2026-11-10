@@ -540,7 +540,8 @@ def render_backtest_tab(params: dict):
     _mode = pd.Series(np.where(log["보유수량"] > 0, "보유", "현금"),
                       index=log.index)
     st.markdown(monthly_perf_table(log["평가금"], _mode, vmax=20.0,
-                                   mode_short={"보유": "보유", "현금": "현금"}),
+                                   mode_short={"보유": "보유", "현금": "현금"},
+                                   idle_label="현금"),
                 unsafe_allow_html=True)
 
     with st.expander("📜 일별 로그 (원본 시트 '최근로그' 형식 — 최신순)"):
@@ -1222,7 +1223,8 @@ def _render_perf_analysis(params: dict):
     st.subheader("🗓️ 월별 수익률 히트맵")
     _mode = pd.Series(np.where(_held, "보유", "현금"), index=dates)
     st.markdown(monthly_perf_table(log["평가금"], _mode, vmax=20.0,
-                                   mode_short={"보유": "보유", "현금": "현금"}),
+                                   mode_short={"보유": "보유", "현금": "현금"},
+                                   idle_label="현금"),
                 unsafe_allow_html=True)
     st.divider()
 

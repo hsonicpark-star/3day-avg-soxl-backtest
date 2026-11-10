@@ -131,7 +131,7 @@ def ret_heat_color(v, vmax: float = 12.0) -> str:
 
 
 def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
-                       mode_short=None) -> str:
+                       mode_short=None, idle_label=None) -> str:
     """월별 수익률 히트맵 HTML 테이블.
 
     Args:
@@ -139,6 +139,10 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
         mode  : 같은 인덱스의 모드/구간 라벨 Series (선택). 주면 셀에 비율 표시.
         vmax  : 색상 포화 기준 수익률(%) — ±vmax 에서 최대 채도.
         mode_short: {라벨: 축약문자} dict (선택). 미지정 시 라벨 첫 글자.
+        idle_label: 주면, 한 달 내내 총자산이 변하지 않은 달(전량 현금 대기)을
+                    색·MDD·모드 비율 없이 이 글자만 있는 빈 칸으로 그린다 (선택).
+                    칸 배경은 투명 — 밝은 테마에서는 흰색, 어두운 테마에서는 배경색.
+                    미지정이면 기존처럼 +0.0% 칸으로 그린다.
 
     Returns: HTML 문자열 (st.markdown(..., unsafe_allow_html=True) 로 렌더)
 
@@ -178,7 +182,11 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                         f"{(mode_short or {}).get(k, str(k)[:1])}"
                         f"{int(v) / tot * 100:.0f}%"
                         for k, v in vc.items())
-            cells[(y, m)] = (ret, mdd, mix)
+            # 한 달 내내 전월 말 값 그대로 = 포지션 없이 현금으로만 보낸 달
+            flat = bool(base > 0
+                        and np.isclose(float(g.max()), base, rtol=1e-12, atol=0.0)
+                        and np.isclose(float(g.min()), base, rtol=1e-12, atol=0.0))
+            cells[(y, m)] = (ret, mdd, mix, flat)
         g = eq[ymask]
         pos = eq.index.get_loc(g.index[0])
         base = _base_at(pos, g.iloc[0])
@@ -204,7 +212,12 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
                 h.append(f'<td style="padding:6px 4px;border:1px solid {_HEAT_LINE};'
                          f'background:{_HEAT_BG};color:#666;text-align:center">-</td>')
                 continue
-            ret, mdd, mix = c
+            ret, mdd, mix, flat = c
+            if idle_label and flat:
+                h.append(f'<td style="padding:5px 4px;border:1px solid {_HEAT_LINE};'
+                         f'background:transparent;color:#9AA0AA;text-align:center;'
+                         f'font-size:0.68em">{idle_label}</td>')
+                continue
             sub = (f'<div style="color:#AEB4BF;font-size:0.60em">{mix}</div>'
                    if mix else "")
             h.append(
@@ -225,6 +238,8 @@ def monthly_perf_table(equity, mode=None, vmax: float = 12.0,
     h.append("</table></div>")
     legend = ("셀 = 월수익률 / 월 MDD"
               + (" / 모드 비율" if md is not None else "")
-              + " · 우측 = 연간 수익률 · 연간 MDD")
+              + " · 우측 = 연간 수익률 · 연간 MDD"
+              + (f" · 빈 칸({idle_label}) = 한 달 내내 변동 없음"
+                 if idle_label else ""))
     h.append(f'<div style="margin-top:6px;font-size:0.7em;color:#888">{legend}</div>')
     return "".join(h)
