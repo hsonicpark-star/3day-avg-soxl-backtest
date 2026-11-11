@@ -20,12 +20,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from plotly.subplots import make_subplots
 
 from common.analysis import monthly_perf_table, recalc_adj_history
 from common.config import _IS_CLOUD
 from common.data import filter_incomplete_today, next_trading_date
 from common.telegram import _send_telegram, render_telegram_help_popover
-from dstq_engine import (DEFAULTS, MODE_DEF, MODE_HOLD, account_adjustments,
+from dstq_engine import (DEFAULTS, EXIT_BREAK, EXIT_TP, MODE_DEF, MODE_HOLD, account_adjustments,
                          account_params, build_order_text, can_tungchigi,
                          compute_account_orders, compute_stats, daily_view,
                          normalize_accounts, order_rows, run_backtest,
@@ -1107,42 +1108,432 @@ def render_intro_tab(params: dict):
 | CAGR / MDD | **60.8% / −32.0%** (원본과 동일) |
 """)
     st.divider()
-    st.subheader("📊 성과 분석")
+    st.subheader("📊 전략 성과 분석")
+    st.caption("파라미터를 고르고 실행하면 핵심 지표부터 회복력·롤링·모드별 성과·민감도·강건성까지 분석합니다.")
     src = st.radio("파라미터", ["🧭 사이드바 설정값", "🛳️ 항공모함셋 (원본)"], horizontal=True,
                    key="dq_intro_src")
     P = dict(params)
     if src.startswith("🛳️"):
         P.update({k: (list(v) if isinstance(v, tuple) else v) for k, v in DEFAULTS.items()
                   if k in _STRAT_KEYS})
-    df = _load_ohlc(P["bt_ticker"], str(P["bt_end_date"]))
-    if df.empty:
-        st.error("가격 데이터를 불러오지 못했습니다.")
+    with st.expander("🔎 적용 파라미터 확인"):
+        st.markdown(
+            f"- **종목 / 기간**: {P['bt_ticker']} · {P['bt_start_date']} ~ {P['bt_end_date']} · "
+            f"초기자본 ${P['capital']:,.0f}\n"
+            f"- **홀딩**: 매수 이격도 {P['buy_lo']:g}%\\~{P['buy_hi']:g}% · "
+            f"매도 {P['exit_disp']:g}% 미만 / {P['tp_disp']:g}% 초과\n"
+            f"- **방어**: 분할 {P['sf_div']} · 보유 {P['sf_hold']}일 · 매수1 {P['sf_buy1']:g}% · "
+            f"매수2 {P['sf_buy2']:g}% · 매도 {P['sf_sell']:g}% · MA{P['sf_ma_base']}\n"
+            f"- **티어비중**: {', '.join(f'{w:g}' for w in P['sf_weights'])}")
+    if st.button("▶ 성과 분석 실행", type="primary", key="dq_intro_run", use_container_width=True):
+        df = _load_ohlc(P["bt_ticker"], str(P["bt_end_date"]))
+        if df.empty:
+            st.error("가격 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.")
+            return
+        with st.spinner("백테스트 실행 중..."):
+            log, trades = _run(P, df)
+        if log.empty:
+            st.warning("백테스트 구간에 데이터가 없습니다. 시작일/종료일을 확인하세요.")
+            return
+        st.session_state["dq_perf"] = (log, trades, P)
+        for k in ("dq_sens", "dq_mc"):
+            st.session_state.pop(k, None)
+    perf = st.session_state.get("dq_perf")
+    if not perf:
+        st.info("👆 '성과 분석 실행' 버튼을 클릭하면 종합 성과를 확인할 수 있습니다.")
         return
-    log, trades = _run(P, df)
-    if log.empty:
-        st.warning("백테스트 구간에 데이터가 없습니다.")
-        return
-    _summary_cards(log, trades)
-    st.plotly_chart(_fig_equity(log, P["bt_ticker"], True), use_container_width=True,
-                    key="dq_ch_intro_eq")
+    _render_perf(*perf)
 
-    st.markdown("**구간별 성과** — 어느 시기에 시작했어도 통했는지")
-    rows = []
-    last = pd.Timestamp(log["날짜"].iloc[-1])
-    for s_ in ("2011-01-03", "2016-01-04", "2019-01-02", "2021-01-04", "2023-01-03"):
-        if pd.Timestamp(s_) < pd.Timestamp(log["날짜"].iloc[0]) or pd.Timestamp(s_) >= last:
-            continue
-        lg, _t = _run(P, df, start=s_)
-        if lg.empty:
-            continue
-        s = compute_stats(lg)
-        bc, bm = _bh_stats(lg)
-        rows.append({"시작": s_, "CAGR(%)": round(s["CAGR"], 1), "MDD(%)": round(s["MDD"], 1),
-                     "Calmar": round(s["Calmar"], 2), "B&H CAGR(%)": round(bc, 1),
-                     "B&H MDD(%)": round(bm, 1), "홀딩일(%)": round(s["홀딩일비중"], 0)})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-    st.dataframe(yearly_returns(log), hide_index=True, use_container_width=True,
-                 key="dq_tbl_intro_year")
+
+def _episodes(dates, assets, thr: float = -10.0) -> list:
+    """고점 대비 thr% 이상 하락한 에피소드 (고점·저점·회복 시점)."""
+    rec = []
+    pv, pi, indd, tv, ti = float(assets[0]), 0, False, float(assets[0]), 0
+    for i in range(1, len(assets)):
+        cur = float(assets[i])
+        if not indd:
+            if cur > pv:
+                pv, pi = cur, i
+            elif (cur - pv) / pv * 100 <= thr:
+                indd, tv, ti = True, cur, i
+        else:
+            if cur < tv:
+                tv, ti = cur, i
+            if cur >= pv:
+                rec.append((pi, ti, i, pv, tv))
+                indd, pv, pi, tv, ti = False, cur, i, cur, i
+    if indd:
+        rec.append((pi, ti, None, pv, tv))
+    return [{"고점": str(dates[a].date()), "고점 자산": f"${p_:,.0f}",
+             "최대하락 시점": str(dates[b].date()), "저점 자산": f"${t_:,.0f}",
+             "하락율": f"{(t_ - p_) / p_ * 100:.1f}%",
+             "회복 시점": str(dates[c].date()) if c is not None else "미회복 ⏳",
+             "기간(일)": ((dates[c] if c is not None else dates[-1]) - dates[a]).days}
+            for a, b, c, p_, t_ in rec]
+
+
+def _render_perf(log: pd.DataFrame, trades: pd.DataFrame, P: dict):
+    from common.analysis import compute_sharpe_sortino
+    ticker = P["bt_ticker"]
+    cap = float(P["capital"])
+    dates = pd.to_datetime(log["날짜"]).reset_index(drop=True)
+    assets = log["총자산"].to_numpy(dtype=float)
+    px = log["종가"].to_numpy(dtype=float)
+    bh = px / px[0] * cap
+    s = compute_stats(log)
+    bh_cagr, bh_mdd = _bh_stats(log)
+    sharpe, sortino = compute_sharpe_sortino(assets)
+    sells = trades[trades["구분"] == "매도"].copy() if len(trades) else pd.DataFrame()
+    hold_s = sells[sells["모드"] == MODE_HOLD] if len(sells) else sells
+    def_s = sells[sells["모드"] == MODE_DEF] if len(sells) else sells
+    n_days = len(log)
+    win = float((sells["실현손익"] > 0).mean() * 100) if len(sells) else 0.0
+
+    # ── 요약 인사이트 ──
+    dd_all = assets / np.maximum.accumulate(assets) - 1
+    worst_i = int(np.argmin(dd_all))
+    yr = yearly_returns(log)
+    neg_years = int((yr["수익률(%)"] < 0).sum()) if len(yr) else 0
+    hold_pnl = float(hold_s["실현손익"].sum()) if len(hold_s) else 0.0
+    def_pnl = float(def_s["실현손익"].sum()) if len(def_s) else 0.0
+    tot_pnl = hold_pnl + def_pnl
+    st.markdown(f"""
+> **💡 한눈에 보기**
+> - 연평균 **{s['CAGR']:.1f}%** · 최대 낙폭 **{s['MDD']:.1f}%** (가장 깊었던 날 {dates[worst_i].date()}) —
+>   같은 기간 {ticker} 보유는 연 {bh_cagr:.1f}% · 낙폭 {bh_mdd:.1f}%
+> - {len(yr)}개 연도 중 손실 연도 **{neg_years}회** · 전체 기간의 **{s['홀딩일비중']:.0f}%** 를 홀딩 모드로 보냄
+> - 실현손익의 **{(hold_pnl / tot_pnl * 100 if tot_pnl else 0):.0f}%** 는 홀딩(추세), **{(def_pnl / tot_pnl * 100 if tot_pnl else 0):.0f}%** 는 방어(역추세)에서 나옴
+""")
+
+    # ── 핵심 지표 ──
+    st.markdown("##### 📈 핵심 지표")
+    c = st.columns(5)
+    c[0].metric("최종 자산", f"${s['최종자산']:,.0f}")
+    c[1].metric("총수익률", f"{s['수익률']:,.0f}%")
+    c[2].metric("CAGR", f"{s['CAGR']:.1f}%", delta=f"B&H 대비 {s['CAGR'] - bh_cagr:+.1f}%p")
+    c[3].metric("MDD", f"{s['MDD']:.1f}%", delta=f"B&H {bh_mdd:.1f}%", delta_color="off")
+    c[4].metric("Calmar", f"{s['Calmar']:.2f}")
+    c = st.columns(5)
+    c[0].metric("Sharpe", f"{sharpe:.2f}")
+    c[1].metric("Sortino", f"{sortino:.2f}")
+    c[2].metric("승률 (매도 기준)", f"{win:.1f}%")
+    c[3].metric("매도횟수", f"{len(sells):,}회")
+    c[4].metric("평균보유", f"{sells['보유일'].mean():.1f}일" if len(sells) else "-")
+    c = st.columns(5)
+    c[0].metric("거래일수", f"{n_days:,}일")
+    c[1].metric("투자기간", f"{s['기간(년)']:.1f}년")
+    c[2].metric("홀딩일 비중", f"{s['홀딩일비중']:.0f}%")
+    c[3].metric("평균손익/건", f"${sells['실현손익'].mean():,.0f}" if len(sells) else "-")
+    bh_ret = (bh[-1] / cap - 1) * 100
+    c[4].metric("B&H 수익률", f"{bh_ret:,.0f}%", delta=f"{s['수익률'] - bh_ret:+,.0f}%p")
+
+    # ── 자산 곡선 · 드로다운 ──
+    st.markdown("##### 💰 자산 곡선 (로그 스케일)")
+    st.plotly_chart(_fig_equity(log, ticker, True), use_container_width=True, key="dq_pf_eq")
+    st.markdown("##### 📉 드로다운")
+    st.plotly_chart(_fig_dd(log), use_container_width=True, key="dq_pf_dd")
+
+    # ── 연도별 ──
+    st.markdown("##### 📅 연도별 성과")
+    ca1, ca2 = st.columns([1, 1])
+    h_ = min(38 + 35 * len(yr), 600)
+    ca1.dataframe(yr, use_container_width=True, hide_index=True, height=h_, key="dq_pf_year")
+    figY = go.Figure()
+    figY.add_trace(go.Bar(x=yr["연도"], y=yr["수익률(%)"], name="전략",
+                          marker_color=[_COL_BUY if v >= 0 else _COL_SELL for v in yr["수익률(%)"]],
+                          text=[f"{v:.0f}" for v in yr["수익률(%)"]], textposition="outside"))
+    figY.add_trace(go.Scatter(x=yr["연도"], y=yr["종목(%)"], name=f"{ticker} 보유", mode="lines+markers",
+                              line=dict(color=_COL_BH, dash="dot")))
+    figY.add_hline(y=0, line_dash="dash", line_color="gray")
+    figY.update_layout(height=h_, margin=dict(l=0, r=0, t=10, b=0),
+                       legend=dict(orientation="h", y=1.05))
+    ca2.plotly_chart(figY, use_container_width=True, key="dq_pf_ybar")
+
+    # ── 월별 히트맵 ──
+    st.markdown("##### 🗓️ 월별 수익률 히트맵")
+    eq = pd.Series(assets, index=dates)
+    md = pd.Series(log["모드"].to_numpy(), index=dates)
+    st.markdown(monthly_perf_table(eq, md, vmax=20.0, mode_short={MODE_HOLD: "홀", MODE_DEF: "방"},
+                                   card=True), unsafe_allow_html=True)
+
+    # ── 거래 통계 ──
+    if len(sells):
+        st.markdown("##### 🧾 거래 통계")
+        wins, losses = sells[sells["실현손익"] > 0], sells[sells["실현손익"] <= 0]
+        t = st.columns(4)
+        t[0].metric("익절 / 손절", f"{len(wins)} / {len(losses)}")
+        t[1].metric("평균 익절 / 손절",
+                    f"${wins['실현손익'].mean():,.0f} / ${losses['실현손익'].mean():,.0f}"
+                    if len(wins) and len(losses) else "-")
+        t[2].metric("홀딩 청산", f"{len(hold_s):,}회")
+        t[3].metric("방어 매도", f"{len(def_s):,}건")
+        with st.expander(f"📋 전체 체결 기록 ({len(trades):,}건)"):
+            td = trades.copy()
+            for col in ("날짜", "매수일"):
+                td[col] = pd.to_datetime(td[col]).dt.strftime("%Y-%m-%d")
+            st.dataframe(td, use_container_width=True, hide_index=True, height=400,
+                         column_config={"가격": st.column_config.NumberColumn(format="%.4f"),
+                                        "금액": st.column_config.NumberColumn(format="%.0f"),
+                                        "실현손익": st.column_config.NumberColumn(format="%.0f"),
+                                        "수익률(%)": st.column_config.NumberColumn(format="%.2f")})
+            st.download_button("📥 체결기록 CSV", td.to_csv(index=False).encode("utf-8-sig"),
+                               f"dstq_{ticker}_trades.csv", "text/csv", key="dq_pf_dl")
+
+    # ── 회복력 ──
+    st.divider()
+    st.markdown("##### 🛡️ 회복력 분석 (10% 이상 하락 에피소드)")
+    st.caption("고점 대비 10% 이상 하락한 구간별로, 어디까지 빠지고 얼마 만에 회복했는지 분석합니다.")
+    rec = _episodes(list(dates), assets)
+    if rec:
+        def _clr(v):
+            sv = str(v)
+            return ("color:#C62828;font-weight:bold"
+                    if (("%" in sv and sv.startswith("-")) or "미회복" in sv) else "")
+        rdf = pd.DataFrame(rec)
+        done = rdf[rdf["회복 시점"] != "미회복 ⏳"]
+        q = st.columns(4)
+        q[0].metric("하락 에피소드", f"{len(rdf)}회")
+        q[1].metric("평균 회복 기간", f"{done['기간(일)'].mean():.0f}일" if len(done) else "-")
+        q[2].metric("최장 회복 기간", f"{done['기간(일)'].max():.0f}일" if len(done) else "-")
+        q[3].metric("가장 깊은 하락", f"{s['MDD']:.1f}%")
+        st.dataframe(rdf.style.map(_clr), hide_index=True, use_container_width=True,
+                     height=min(38 + 35 * len(rdf), 420))
+        top = rdf.assign(_v=rdf["하락율"].str.rstrip("%").astype(float)).nsmallest(5, "_v").drop(columns="_v")
+        st.markdown("**Top 5 최대 낙폭 구간**")
+        st.dataframe(top.reset_index(drop=True).style.map(_clr), hide_index=True, use_container_width=True)
+    else:
+        st.info("10% 이상 하락 에피소드가 없습니다.")
+
+    # ── 롤링 성과 ──
+    st.divider()
+    st.markdown("##### 🔄 롤링 성과 분석")
+    st.caption("구간별 성과 추이. 특정 시기에만 좋은 게 아닌지 검증합니다.")
+    for win_n, rt in zip([252, 504, 756], st.tabs(["1년 롤링", "2년 롤링", "3년 롤링"])):
+        with rt:
+            if len(assets) <= win_n:
+                st.info(f"분석 기간이 {win_n // 252}년보다 짧습니다.")
+                continue
+            yrs = win_n / 252
+            ser = pd.Series(assets)
+            rc = ((ser / ser.shift(win_n)) ** (1 / yrs) - 1).to_numpy() * 100
+            rm = np.full(len(assets), np.nan)
+            for ri in range(win_n, len(assets)):
+                seg = assets[ri - win_n: ri + 1]
+                rm[ri] = float((seg / np.maximum.accumulate(seg) - 1).min()) * 100
+            vm = ~np.isnan(rc)
+            figr = make_subplots(specs=[[{"secondary_y": True}]])
+            figr.add_trace(go.Scatter(x=dates[vm], y=rc[vm], name="롤링 CAGR(%)",
+                                      line=dict(color="#1565C0", width=2)), secondary_y=False)
+            figr.add_trace(go.Scatter(x=dates[vm], y=rm[vm], name="롤링 MDD(%)",
+                                      line=dict(color="#EF5350", width=1.5, dash="dot")),
+                           secondary_y=True)
+            figr.add_hline(y=0, line_dash="dash", line_color="#aaa")
+            figr.update_layout(height=320, legend=dict(orientation="h", y=1.1),
+                               margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(figr, use_container_width=True, key=f"dq_pf_roll{win_n}")
+            rr = st.columns(4)
+            rr[0].metric("평균 CAGR", f"{np.nanmean(rc):+.1f}%")
+            rr[1].metric("최고 CAGR", f"{np.nanmax(rc):+.1f}%")
+            rr[2].metric("최저 CAGR", f"{np.nanmin(rc):+.1f}%")
+            rr[3].metric("손실 구간 비율", f"{float((rc[vm] < 0).mean() * 100):.1f}%",
+                         help=f"임의 시점에 시작해 {win_n // 252}년 뒤 손실이었던 비율")
+
+    # ── 모드별 성과 ──
+    if len(sells):
+        st.divider()
+        st.markdown("##### 🔄 홀딩 vs 방어 매매 성과")
+
+        def _ms(d, nm):
+            if not len(d):
+                return {"구분": nm, "매도 횟수": 0, "승률": "-", "평균 수익률": "-",
+                        "평균손익": "-", "총손익": "-", "평균 보유일": "-"}
+            return {"구분": nm, "매도 횟수": len(d), "승률": f"{(d['실현손익'] > 0).mean() * 100:.1f}%",
+                    "평균 수익률": f"{d['수익률(%)'].mean():+.2f}%",
+                    "평균손익": f"${d['실현손익'].mean():+,.0f}",
+                    "총손익": f"${d['실현손익'].sum():+,.0f}",
+                    "평균 보유일": f"{d['보유일'].mean():.1f}일"}
+        rows_ = [_ms(hold_s, "🟧 홀딩 (전체)")]
+        for rs in (EXIT_BREAK, EXIT_TP):
+            rows_.append(_ms(hold_s[hold_s["사유"] == rs], f"　└ {rs} 청산"))
+        rows_.append(_ms(def_s, "🟩 방어 (전체)"))
+        rows_.append(_ms(def_s[def_s["사유"] == "MA"], "　└ MA 일괄 매도"))
+        rows_.append(_ms(def_s[def_s["사유"] == "MOC"], "　└ 만기 MOC"))
+        rows_.append(_ms(sells, "📊 전체"))
+        st.dataframe(pd.DataFrame(rows_), hide_index=True, use_container_width=True)
+        st.caption("홀딩 청산 손익에는 홀딩으로 전환된 방어 물량의 손익도 포함됩니다. "
+                   "홀딩은 '손실은 작게 자주, 수익은 크게 가끔', 방어는 '작은 수익을 자주' 내는 구조입니다.")
+
+        if len(hold_s):
+            st.markdown("##### 🟧 홀딩 사이클 내역")
+            hc = hold_s[["매수일", "날짜", "보유일", "가격", "수익률(%)", "실현손익", "사유"]].copy()
+            hc.columns = ["진입일", "청산일", "보유일(달력)", "청산가", "수익률(%)", "실현손익($)", "청산 사유"]
+            hc["진입일"] = pd.to_datetime(hc["진입일"]).dt.date
+            hc["청산일"] = pd.to_datetime(hc["청산일"]).dt.date
+            hc.insert(0, "사이클", range(1, len(hc) + 1))
+
+            def _pm(v):
+                return f"color:{'#2E7D32' if v >= 0 else '#C62828'};font-weight:600"
+            st.dataframe(hc.style.map(_pm, subset=["수익률(%)", "실현손익($)"])
+                         .format({"청산가": "{:.2f}", "수익률(%)": "{:+.1f}", "실현손익($)": "{:+,.0f}",
+                                  "보유일(달력)": "{:.0f}"}),
+                         hide_index=True, use_container_width=True,
+                         height=min(38 + 35 * len(hc), 420))
+
+        st.markdown("##### 📊 매도 수익률 분포")
+        dsel = st.radio("대상", ["전체", "홀딩", "방어"], horizontal=True, key="dq_pf_dist")
+        dd_ = {"전체": sells, "홀딩": hold_s, "방어": def_s}[dsel]
+        pr = dd_["수익률(%)"].to_numpy(dtype=float)
+        if len(pr) >= 2:
+            figh = go.Figure(go.Histogram(x=pr.tolist(), nbinsx=40, marker_color="#3498DB"))
+            figh.add_vline(x=0, line_dash="dash", line_color="#333")
+            figh.add_vline(x=float(np.mean(pr)), line_dash="dot", line_color="#1565C0",
+                           annotation_text=f"평균 {np.mean(pr):+.2f}%")
+            figh.update_layout(height=300, xaxis_title="수익률(%)", yaxis_title="빈도(회)",
+                               margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(figh, use_container_width=True, key="dq_pf_hist")
+            pq = st.columns(4)
+            pq[0].metric("평균 수익률", f"{np.mean(pr):+.2f}%")
+            pq[1].metric("중앙값", f"{np.median(pr):+.2f}%")
+            pq[2].metric("왜도(Skew)", f"{float(pd.Series(pr).skew()):.2f}", help="양수=가끔 큰 수익")
+            pq[3].metric("첨도(Kurt)", f"{float(pd.Series(pr).kurtosis()):.2f}",
+                         help="높을수록 극단값 빈번")
+        else:
+            st.info("분포를 그리기에 매도 건수가 부족합니다.")
+
+    # ── 현금 활용률 ──
+    st.divider()
+    st.markdown("##### 💵 현금 활용률 (투자 비율)")
+    invr = np.clip((1 - log["현금"].to_numpy(dtype=float) / assets) * 100, 0, 100)
+    is_def = (log["모드"] == MODE_DEF).to_numpy()
+    cu = st.columns(4)
+    cu[0].metric("평균 투자비율", f"{np.mean(invr):.1f}%")
+    cu[1].metric("방어 모드 평균", f"{np.mean(invr[is_def]):.1f}%" if is_def.any() else "-")
+    cu[2].metric("홀딩 모드 평균", f"{np.mean(invr[~is_def]):.1f}%" if (~is_def).any() else "-")
+    cu[3].metric("평균 현금비율", f"{100 - np.mean(invr):.1f}%")
+    figc = go.Figure(go.Scatter(x=dates, y=invr, fill="tozeroy",
+                                line=dict(color="rgba(255,179,0,0.9)", width=1),
+                                fillcolor="rgba(255,179,0,0.4)"))
+    figc.update_layout(height=240, yaxis=dict(range=[0, 100], title="투자비율(%)"),
+                       margin=dict(l=0, r=0, t=10, b=0), hovermode="x unified")
+    st.plotly_chart(figc, use_container_width=True, key="dq_pf_cash")
+
+    # ── 파라미터 민감도 ──
+    base = _engine_params(P)
+    start_s, end_s = str(P["bt_start_date"]), str(P["bt_end_date"])
+    st.divider()
+    st.markdown("##### 🎛️ 파라미터 민감도 분석")
+    st.caption("현재 값 주변의 Calmar 분포. 현재값 주변이 고르게 녹색이면 과최적화 위험이 낮습니다.")
+    with st.expander("🔍 민감도 히트맵 보기 (클릭하여 실행)"):
+        smode = st.radio("분석 대상", ["🟧 홀딩 (매수 상한 × 매도 하한)", "🟩 방어 (매수1 × 매도)"],
+                         horizontal=True, key="dq_sens_mode")
+        if st.button("▶ 민감도 분석 실행 (25회)", key="dq_sens_run"):
+            df = _load_ohlc(ticker, end_s)
+            if smode.startswith("🟧"):
+                ky, kx, ny, nx = "buy_hi", "exit_disp", "매수 이격도 상한(%)", "매도 이격도 하한(%)"
+                yr_ = np.round(np.linspace(max(base["buy_lo"] + 1, base["buy_hi"] - 4), base["buy_hi"] + 4, 5), 1)
+                xr_ = np.round(np.linspace(base["exit_disp"] - 2, min(base["buy_lo"] - 0.5, base["exit_disp"] + 2), 5), 2)
+            else:
+                ky, kx, ny, nx = "sf_buy1", "sf_sell", "방어 매수조건1(MA%)", "방어 매도조건(MA%)"
+                yr_ = np.round(np.linspace(base["sf_buy1"] - 1, base["sf_buy1"] + 1, 5), 2)
+                xr_ = np.round(np.linspace(max(0.1, base["sf_sell"] - 1), base["sf_sell"] + 1, 5), 2)
+            heat, prog = np.zeros((5, 5)), st.progress(0.0)
+            for yi, yv in enumerate(yr_):
+                for xi, xv in enumerate(xr_):
+                    lg = run_backtest(df, {**base, ky: float(yv), kx: float(xv)}, cap,
+                                      start=start_s, end=end_s)["log"]
+                    cs = compute_stats(lg)
+                    heat[yi][xi] = cs.get("Calmar", 0) if np.isfinite(cs.get("Calmar", 0)) else 0
+                    prog.progress((yi * 5 + xi + 1) / 25)
+            prog.empty()
+            st.session_state["dq_sens"] = (heat, yr_, xr_, ny, nx, base[ky], base[kx])
+        sd = st.session_state.get("dq_sens")
+        if sd:
+            heat, yr_, xr_, ny, nx, cy, cx = sd
+            fh = go.Figure(go.Heatmap(z=heat, x=[f"{v:g}" for v in xr_], y=[f"{v:g}" for v in yr_],
+                                      colorscale="RdYlGn", text=np.round(heat, 2),
+                                      texttemplate="%{text}", colorbar=dict(title="Calmar")))
+            fh.update_layout(height=380, xaxis_title=nx, yaxis_title=ny,
+                             xaxis_type="category", yaxis_type="category",
+                             margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fh, use_container_width=True, key="dq_pf_sens")
+            st.caption(f"현재값: {ny} = {cy:g} · {nx} = {cx:g} (가운데 칸)")
+
+    # ── 무작위 기간 강건성 ──
+    st.divider()
+    st.markdown("##### 🎲 무작위 기간 강건성 분석")
+    st.caption("분석 기간 안에서 1년(252거래일) 구간 100개를 무작위로 뽑아, 그때 시작했다면 어땠을지 "
+               f"전략과 {ticker} 보유를 비교합니다.")
+    with st.expander("🔍 강건성 분석 실행 (클릭)"):
+        if st.button("▶ 무작위 100구간 분석 시작", key="dq_mc_run"):
+            import random
+            df = _load_ohlc(ticker, end_s)
+            idx = df.index
+            WIN = 252
+            lo = int(np.searchsorted(idx, pd.Timestamp(dates.iloc[0])))
+            valid = list(range(lo, len(idx) - WIN))
+            if len(valid) < 100:
+                st.warning("분석 기간이 짧아 100구간을 뽑을 수 없습니다 (약 1년 반 이상 필요).")
+            else:
+                random.seed(7)
+                out, prog = [], st.progress(0.0)
+                for ci, si in enumerate(random.sample(valid, 100)):
+                    sdt, edt = idx[si], idx[si + WIN - 1]
+                    lg = run_backtest(df, base, cap, start=str(sdt.date()), end=str(edt.date()))["log"]
+                    if len(lg) > 50:
+                        a = lg["총자산"].to_numpy(dtype=float)
+                        b = lg["종가"].to_numpy(dtype=float)
+                        out.append((str(sdt.date()), str(edt.date()), (a[-1] / cap - 1) * 100,
+                                    abs((a / np.maximum.accumulate(a) - 1).min()) * 100,
+                                    (b[-1] / b[0] - 1) * 100,
+                                    abs((b / np.maximum.accumulate(b) - 1).min()) * 100))
+                    prog.progress((ci + 1) / 100)
+                prog.empty()
+                st.session_state["dq_mc"] = pd.DataFrame(
+                    out, columns=["시작일", "종료일", "전략 수익률(%)", "전략 MDD(%)",
+                                  "B&H 수익률(%)", "B&H MDD(%)"])
+        mc = st.session_state.get("dq_mc")
+        if mc is not None and len(mc):
+            sr, sm = mc["전략 수익률(%)"].to_numpy(), mc["전략 MDD(%)"].to_numpy()
+            br, bm = mc["B&H 수익률(%)"].to_numpy(), mc["B&H MDD(%)"].to_numpy()
+
+            def _row(a, lbl, pos=True):
+                sg = "+" if pos else ""      # MDD 는 크기(양수)라 부호를 붙이지 않는다
+                return {"구분": lbl, "평균": f"{np.mean(a):{sg}.1f}%", "중앙값": f"{np.median(a):{sg}.1f}%",
+                        "표준편차": f"{np.std(a):.1f}%", "최솟값": f"{np.min(a):{sg}.1f}%",
+                        "최댓값": f"{np.max(a):{sg}.1f}%",
+                        "양(+) 비율": f"{(a > 0).mean() * 100:.0f}%" if pos else "-"}
+            st.markdown(f"**📋 요약 통계 (n={len(mc)})**")
+            st.dataframe(pd.DataFrame([
+                _row(sr, "전략 (1년 수익률)"), _row(br, f"{ticker} B&H (1년 수익률)"),
+                _row(sm, "전략 (MDD)", False), _row(bm, f"{ticker} B&H (MDD)", False)]),
+                hide_index=True, use_container_width=True)
+            figm = make_subplots(rows=1, cols=2, subplot_titles=["수익률 분포(1년)", "MDD 분포"],
+                                 horizontal_spacing=0.12)
+            for col_i, (b_, s_) in enumerate(((br, sr), (bm, sm)), 1):
+                figm.add_trace(go.Histogram(x=b_.tolist(), nbinsx=20, name=f"{ticker} B&H", opacity=0.55,
+                                            marker_color="#FB8C00", showlegend=(col_i == 1)), row=1, col=col_i)
+                figm.add_trace(go.Histogram(x=s_.tolist(), nbinsx=20, name="전략", opacity=0.6,
+                                            marker_color="#1565C0", showlegend=(col_i == 1)), row=1, col=col_i)
+            figm.update_layout(height=380, barmode="overlay", margin=dict(l=0, r=0, t=40, b=0),
+                               legend=dict(orientation="h", y=1.15))
+            st.plotly_chart(figm, use_container_width=True, key="dq_pf_mc")
+            st.caption("전략 수익률 분포가 오른쪽에, MDD 분포가 왼쪽(낮은 손실)에 모일수록 강건합니다.")
+            det = mc.copy()
+            det["전략-B&H(%p)"] = det["전략 수익률(%)"] - det["B&H 수익률(%)"]
+            sort_opt = st.selectbox("정렬 기준", ["시작일", "전략 수익률(%)", "전략 MDD(%)", "전략-B&H(%p)"],
+                                    key="dq_mc_sort")
+            det = det.sort_values(sort_opt, ascending=(sort_opt == "시작일")).reset_index(drop=True).round(1)
+            st.markdown(f"**📄 100구간 상세 결과** — 전략이 수익이었던 구간 "
+                        f"{int((det['전략 수익률(%)'] > 0).sum())}/{len(det)} · "
+                        f"B&H보다 나았던 구간 {int((det['전략-B&H(%p)'] > 0).sum())}/{len(det)}")
+
+            def _hl(row):
+                col_ = "#e8f5e9" if row["전략 수익률(%)"] > 0 else "#ffebee"
+                return [f"background-color:{col_};color:#222"] * len(row)
+            st.dataframe(det.style.apply(_hl, axis=1).format(precision=1), use_container_width=True,
+                         hide_index=True, height=min(38 + 35 * len(det), 560))
+            st.download_button("📥 100구간 결과 CSV", det.to_csv(index=False).encode("utf-8-sig"),
+                               f"dstq_{ticker}_robustness.csv", "text/csv", key="dq_mc_dl")
     st.caption("⚠️ 과거 성과가 미래를 보장하지 않습니다. 3배 레버리지 ETF 는 장기 횡보·급락 시 손실이 큽니다.")
 
 

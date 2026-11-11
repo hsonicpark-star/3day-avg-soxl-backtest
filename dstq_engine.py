@@ -216,7 +216,10 @@ def run_backtest(df: pd.DataFrame, P: dict | None = None,
                        매도가=o[i], 실현손익=pnl)
             trades.append({"날짜": date, "구분": "매도", "모드": MODE_HOLD, "티어": MODE_HOLD,
                            "가격": o[i], "수량": st.hold_qty, "금액": amt,
-                           "사유": st.pending_reason, "실현손익": pnl, "전환수량": 0})
+                           "사유": st.pending_reason, "실현손익": pnl, "전환수량": 0,
+                           "매수일": st.hold_start,
+                           "보유일": int((date - st.hold_start).days) if st.hold_start is not None else 0,
+                           "수익률(%)": pnl / st.hold_cost * 100 if st.hold_cost else 0.0})
             st.hold_qty, st.hold_cost, st.hold_start = 0, 0.0, None
             st.mode = MODE_DEF
         st.pending, st.pending_reason = None, None
@@ -253,7 +256,9 @@ def run_backtest(df: pd.DataFrame, P: dict | None = None,
                     q_tot += q; a_tot += amt; pnl_tot += pnl
                     trades.append({"날짜": date, "구분": "매도", "모드": MODE_DEF, "티어": f"방T{l.tier}",
                                    "가격": c[i], "수량": q, "금액": amt,
-                                   "사유": "MOC" if moc else "MA", "실현손익": pnl, "전환수량": 0})
+                                   "사유": "MOC" if moc else "MA", "실현손익": pnl, "전환수량": 0,
+                                   "매수일": l.buy_date, "보유일": int((date - l.buy_date).days),
+                                   "수익률(%)": pnl / (q * l.buy_price) * 100 if l.buy_price else 0.0})
                     if q < l.qty:
                         l.qty -= q; keep.append(l)
                 st.lots = sorted(keep, key=lambda l: l.tier)
@@ -296,7 +301,11 @@ def run_backtest(df: pd.DataFrame, P: dict | None = None,
         rows.append(row)
 
     log = pd.DataFrame(rows)
-    out = {"log": log, "trades": pd.DataFrame(trades),
+    tdf = pd.DataFrame(trades)
+    for col in ("매수일", "보유일", "수익률(%)"):      # 매수 행에는 없는 열 — 매도가 없어도 열은 둔다
+        if col not in tdf.columns:
+            tdf[col] = pd.Series(dtype="float64" if col != "매수일" else "datetime64[ns]")
+    out = {"log": log, "trades": tdf,
            "equity": log.set_index("날짜")["총자산"] if len(log) else pd.Series(dtype=float)}
     if return_state:
         out["state"] = st
