@@ -113,18 +113,13 @@ _OLD_COOKIE_NAME = "usd_avg_user"     # 예전 평문 아이디 쿠키 — 읽�
 _COOKIE_DAYS = 30
 _COOKIE_WAIT_SEC = 3.0                # 쿠키 컴포넌트 응답을 기다리는 최대 시간
 _COOKIE_OP_KEEP_SEC = 5.0             # 저장/삭제 컴포넌트를 계속 그려 두는 시간
-# 자동 로그인 시 세션에 올리는 users 시트 컬럼 (password_hash 는 올리지 않는다)
-_SESSION_KEYS = (
-    "tg_chat_id",    "tg_token",        # 종가평균매매 텔레그램
-    "sd_tg_chat_id", "sd_tg_token",     # 표준편차매매 텔레그램
-    "gs_url", "gs_sheet",
-    "a_buy", "a_sell", "sell_ratio", "divisions",
-    "ticker_settings", "sd_ticker_settings",
-    "dss_config",                       # DSS 동파법 설정
-    "pdan_config",                      # 평단법 설정
-    "tq200_config",                     # TQ200 설정
-    "dstq_config",                      # 듀얼스나이퍼 TQ 설정
-)
+# 자동 로그인 시 세션에 올리지 않는 users 시트 컬럼.
+# 나머지 컬럼은 **전부** 올린다 (수동 로그인과 같은 내용).
+# 2026-11-11 사고: 예전에는 '올릴 컬럼' 목록(화이트리스트)이었는데 dual_sniper_config ·
+# iuo_config · manse_config · cam_config · sigma 설정이 빠져 있어, 자동 로그인으로 들어오면
+# 그 전략들의 계좌·설정이 비어 보였다 (시트에는 그대로 있음). 전략이 늘 때마다 목록을
+# 고쳐야 하는 구조라 반대로 뒤집었다 — 새 전략 컬럼은 손대지 않아도 자동으로 올라온다.
+_SESSION_EXCLUDE = ("password_hash",)
 
 
 def _cookie_secret() -> bytes | None:
@@ -279,7 +274,7 @@ def render_login_gate():
                 st.session_state.logged_in = True
                 st.session_state.username = _name
                 st.session_state.user_settings = {
-                    k: _row.get(k, "") for k in _SESSION_KEYS}
+                    k: v for k, v in _row.items() if k not in _SESSION_EXCLUDE}
                 # 쓸 때마다 만료일을 30일 뒤로 다시 민다
                 _tok = _make_token(_name, str(_row.get("password_hash", "")))
                 if _tok:
