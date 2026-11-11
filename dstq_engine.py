@@ -480,12 +480,14 @@ def build_order_text(ticker: str, od: dict, next_day, acct: str = "") -> str:
     return "\n".join(lines)
 
 
-def build_order_html(ticker: str, od: dict, next_day, P: dict | None = None) -> str:
+def build_order_html(ticker: str, od: dict, next_day, P: dict | None = None,
+                     acct: str = "") -> str:
     """일일 자동 발송용 텔레그램 메시지 (parse_mode=HTML). 주문이 있으면 🚨 주문표, 없으면 현황."""
     esc = lambda s: str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     orders = od["orders"]
     icon = "🚨" if od["signal"] else ("📋" if orders else "🛳️")
-    lines = [f"{icon} <b>듀얼스나이퍼 TQ — {esc(ticker)}</b>",
+    lines = [f"{icon} <b>듀얼스나이퍼 TQ — {esc(ticker)}</b>"
+             + (f" [{esc(acct)}]" if acct else ""),
              f"주문일 <b>{next_day}</b> · 기준종가({pd.Timestamp(od['base_date']).date()}) "
              f"<b>${od['close']:,.2f}</b>",
              f"모드 <b>{od['mode']}</b> · 이격도 {od['disp'] * 100:+.2f}% · 200MA ${od['ma']:,.2f}", ""]
@@ -525,3 +527,116 @@ def build_order_html(ticker: str, od: dict, next_day, P: dict | None = None) -> 
         lines.append(f"다음 종가 ${t['buy_lo']:,.2f} 초과 ~ ${t['buy_hi']:,.2f} 미만이면 "
                      f"홀딩 진입 신호{note}")
     return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+# 계좌 (웹 주문표 · 일일 자동 발송 공용)
+# ──────────────────────────────────────────────
+def normalize_accounts(cfg: dict) -> dict:
+    """dstq_config → {계좌명: 계좌 dict}. 예전 단일 계좌(account) 형식도 받아 준다.
+
+    계좌 dict: {ticker, os_start, os_capital, params{...}, capital_adj_history(JSON 문자열), gs_sheet}
+    """
+    accts = cfg.get("accounts")
+    if isinstance(accts, dict) and accts:
+        return accts
+    old = cfg.get("account")
+    if isinstance(old, dict) and old.get("start"):
+        return {"기본계좌": {
+            "ticker": str(old.get("ticker", "TQQQ")),
+            "os_start": str(old.get("start")),
+            "os_capital": float(old.get("capital", 10000) or 10000),
+            "params": {k: v for k, v in (cfg.get("params") or {}).items() if k in DEFAULTS},
+        }}
+    return {}
+
+
+def account_adjustments(acct: dict) -> list:
+    """계좌의 자본 조정 이력 → [{날짜, 조정금액, 메모, ...}] (형식 오류면 빈 리스트)."""
+    raw = acct.get("capital_adj_history", "[]")
+    try:
+        import json as _json
+        adj = _json.loads(raw) if isinstance(raw, str) else raw
+        return adj if isinstance(adj, list) else []
+    except Exception:
+        return []
+
+
+def account_injections(acct: dict) -> dict:
+    """자본 조정 이력 → {날짜: 금액 합}. 날짜 = 미국장 종료일 기준(다음 거래일부터 반영)."""
+    out = {}
+    for it in account_adjustments(acct):
+        try:
+            d = str(it.get("날짜"))
+            out[d] = out.get(d, 0.0) + float(it.get("조정금액", 0))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def account_params(acct: dict) -> dict:
+    return norm_params({k: v for k, v in (acct.get("params") or {}).items() if k in DEFAULTS})
+
+
+def compute_account_orders(df: pd.DataFrame, acct: dict) -> dict:
+    """계좌 하나의 다음 거래일 주문 (build_today_orders + 자본 조정 + 누적 실현손익)."""
+    inj = account_injections(acct)
+    od = build_today_orders(df, account_params(acct), float(acct.get("os_capital", 10000)),
+                            start=str(acct.get("os_start")), capital_injections=inj or None)
+    if od.get("error"):
+        return od
+    tr = od["trades"]
+    od["cum_realized"] = float(tr["실현손익"].sum()) if len(tr) else 0.0
+    od["n_sells"] = int((tr["구분"] == "매도").sum()) if len(tr) else 0
+    base_d = pd.Timestamp(od["base_date"])
+    od["net_adj"] = float(sum(a for d, a in inj.items() if pd.Timestamp(d) <= base_d))
+    return od
+
+
+def order_rows(od: dict) -> list:
+    """주문 → 구글시트 L4 기록용 행 [[구분, 거래방법, 가격, 수량], ...] (수량 0 제외)."""
+    rows = []
+    for o in od.get("orders", []):
+        if int(o["수량"]) <= 0:
+            continue
+        rows.append([o["구분"], o["방법"],
+                     "" if o["가격"] is None else round(float(o["가격"]), 2), int(o["수량"])])
+    return rows
+
+
+def can_tungchigi(rows: list) -> bool:
+    """퉁치기(매수·매도 상계)는 종가 주문(LOC/MOC)끼리만 가능 — 시가 주문(LOO/MOO)이 섞이면 불가."""
+    return bool(rows) and all(r[1] in ("LOC", "MOC") for r in rows)
+
+
+DAILY_COLS = ["날짜", "매매", "시가", "종가", "모드", "이격도(%)", "매수LOC", "매도LOC",
+              "매수량", "매도량", "보유량", "실현손익", "예수금", "총자산", "손익률(%)", "티어"]
+
+
+def daily_view(log: pd.DataFrame) -> pd.DataFrame:
+    """엔진 일별 로그 → 일별 매매 상세표 (B방식 누적 저장용, 시간순)."""
+    if log is None or len(log) == 0:
+        return pd.DataFrame(columns=DAILY_COLS)
+    d = log.copy()
+    d["날짜"] = pd.to_datetime(d["날짜"]).dt.strftime("%Y-%m-%d")
+
+    def act(r):
+        parts = []
+        if r["매도량"] > 0:
+            px = r["시가"] if str(r["매도사유"]).startswith("이격도") else r["종가"]
+            parts.append(f"SELL (${px:.2f})")
+        if r["매수량"] > 0:
+            px = r["시가"] if r["매수티어"] == MODE_HOLD else r["종가"]
+            parts.append(f"BUY (${px:.2f})")
+        return " · ".join(parts) if parts else "-"
+    d["매매"] = d.apply(act, axis=1)
+    d["이격도(%)"] = (d["이격도"] * 100).round(2)
+    is_def = d["모드"] == MODE_DEF
+    d["매수LOC"] = d["매수가"].where(is_def & (d["매수티어"] != MODE_HOLD))
+    d["매도LOC"] = d["매도가"].where(is_def & ~d["매도사유"].astype(str).str.startswith("이격도"))
+    d["티어"] = d["매수티어"].where(d["매수티어"].astype(str) != "",
+                                 d["보유티어수"].astype(int).astype(str))
+    d = d.rename(columns={"현금": "예수금", "보유수량": "보유량"})
+    for c in ("시가", "종가", "매수LOC", "매도LOC", "실현손익", "예수금", "총자산", "손익률(%)"):
+        d[c] = pd.to_numeric(d[c], errors="coerce").round(2)
+    return d[DAILY_COLS].reset_index(drop=True)

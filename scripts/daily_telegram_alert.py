@@ -2387,8 +2387,9 @@ def calc_tq200_signal(ticker: str, tq_cfg: dict) -> dict:
 # 듀얼스나이퍼 TQ (200일선 홀딩 + 듀얼스나이퍼 방어) — 매일 발송
 # ══════════════════════════════════════════════════════════════
 #   · 설정 : users 시트의 dstq_config JSON
-#       {"account": {start, capital, ticker}, "params": {...}, "tg_chat_id", "tg_token"}
-#   · 계좌(account)를 저장한 사용자만 대상. 보유·현금은 시작일부터 굴린 모델 기준 (웹앱과 동일).
+#       {"accounts": {계좌명: {ticker, os_start, os_capital, params, capital_adj_history, gs_sheet}},
+#        "tg_chat_id", "tg_token", "gs_url", "use_tungchigi_gsheet"}  (예전 단일 "account" 형식도 지원)
+#   · 계좌를 등록한 사용자만 대상 · 계좌별 발송 + 시트 탭(gs_sheet) L4 기록. 보유·현금은 시작일부터 굴린 모델 기준 (웹앱과 동일).
 #   · 가격 : 무조정 OHLC — TQ200 과 같은 신선도·구멍 검사(tq200_fetch_ohlc) 사용
 def parse_dstq_config(user: dict) -> dict:
     """users 행에서 dstq_config JSON 파싱. 실패/미설정이면 {}."""
@@ -2402,23 +2403,23 @@ def parse_dstq_config(user: dict) -> dict:
         return {}
 
 
-def calc_dstq_order(dq_cfg: dict) -> dict:
-    """듀얼스나이퍼 TQ 다음 거래일 주문. {ticker, text, n_orders, signal, mode} 반환."""
-    from dstq_engine import DEFAULTS as _DQ_DEFAULTS, build_today_orders, build_order_html
-    acct = dq_cfg.get("account") or {}
+def calc_dstq_order(acct_name: str, acct: dict) -> dict:
+    """듀얼스나이퍼 TQ 계좌 하나의 다음 거래일 주문. {ticker, text, rows, signal, mode} 반환."""
+    from dstq_engine import (account_params, build_order_html, can_tungchigi,
+                             compute_account_orders, order_rows)
     ticker = str(acct.get("ticker", "TQQQ")).strip().upper() or "TQQQ"
-    start = str(acct.get("start", "")).strip()
-    capital = float(acct.get("capital", 0) or 0)
-    if not start or capital <= 0:
-        raise RuntimeError("계좌(운용 시작일·시작 자본) 미설정")
-    params = {k: v for k, v in (dq_cfg.get("params") or {}).items() if k in _DQ_DEFAULTS}
+    start = str(acct.get("os_start", "")).strip()
+    if not start or float(acct.get("os_capital", 0) or 0) <= 0:
+        raise RuntimeError("시작일·시작 자본 미설정")
     df = tq200_fetch_ohlc(ticker, adjusted=False)
-    od = build_today_orders(df, params, capital, start=start)
+    od = compute_account_orders(df, acct)
     if od.get("error") or od["log"].empty:
-        raise RuntimeError(f"운용 시작일({start}) 이후 확정 종가 없음")
+        raise RuntimeError(f"시작일({start}) 이후 확정 종가 없음")
     next_day = tq200_next_trading_day(pd.Timestamp(od["base_date"]).date())
-    return {"ticker": ticker, "text": build_order_html(ticker, od, next_day, params),
-            "n_orders": len(od["orders"]), "signal": od["signal"], "mode": od["mode"]}
+    rows = order_rows(od)
+    return {"ticker": ticker, "rows": rows, "can_tung": can_tungchigi(rows),
+            "text": build_order_html(ticker, od, next_day, account_params(acct), acct_name),
+            "signal": od["signal"], "mode": od["mode"]}
 
 
 def main():
@@ -3436,29 +3437,49 @@ def main():
                 print(f"  ⏭️  {username} [TQ200]: 미설정 → 건너뜀")
                 skip_count += 1
 
-            # ── 6.95 듀얼스나이퍼 TQ 발송 (매일 — 주문표 또는 현황) ──
+            # ── 6.95 듀얼스나이퍼 TQ 발송 (매일 · 계좌별 — 주문표 또는 현황) ──
             dq_cfg = parse_dstq_config(user)
             dq_chat_id = str(dq_cfg.get("tg_chat_id", "")).strip()
             dq_token   = str(dq_cfg.get("tg_token",   "")).strip()
+            dq_gs_url  = str(dq_cfg.get("gs_url", "")).strip()
+            try:
+                from dstq_engine import normalize_accounts as _dq_norm
+                dq_accounts = _dq_norm(dq_cfg)
+            except Exception:
+                dq_accounts = {}
 
-            if not ds_only and dq_chat_id and dq_token and dq_cfg.get("account"):
-                print(f"  👤 {username} [듀얼스나이퍼TQ]: 처리 중...")
-                try:
-                    _dq = calc_dstq_order(dq_cfg)
-                    ok, resp = send_telegram(dq_chat_id, dq_token, _dq["text"],
-                                             parse_mode="HTML")
+            if not ds_only and dq_chat_id and dq_token and dq_accounts:
+                print(f"  👤 {username} [듀얼스나이퍼TQ]: {list(dq_accounts.keys())} 처리 중...")
+                for _dq_name, _dq_acct in dq_accounts.items():
+                    _label = f"DSTQ/{_dq_name}"
+                    # 주문 시트(L4)는 탭 이름을 저장한 계좌만 기록 (예전 단일 계좌 형식은 탭 정보 없음)
+                    _dq_sheet = str(_dq_acct.get("gs_sheet", "")).strip()
+                    try:
+                        _dq = calc_dstq_order(_dq_name, _dq_acct)
+                    except Exception as e:
+                        print(f"    ❌ [{_label}] 계산 오류 → {e}")
+                        fail_count += 1
+                        user_warnings.append(f"[{_label}] ❌ 주문표 미발송: {e}")
+                        if dq_gs_url and _dq_sheet:
+                            write_gsheet_with_status(client, dq_gs_url, _dq_sheet, None, _label,
+                                                     status="ERROR", error_reason=f"계산 오류: {e}")
+                        continue
+                    ok, resp = send_telegram(dq_chat_id, dq_token, _dq["text"], parse_mode="HTML")
                     if ok:
-                        print(f"    ✅ [DSTQ/{_dq['ticker']}] {_dq['mode']} · 주문 {_dq['n_orders']}건"
-                              + (f" · {_dq['signal']} 신호" if _dq["signal"] else "")
-                              + " 발송 성공")
+                        print(f"    ✅ [{_label}] {_dq['mode']} · 주문 {len(_dq['rows'])}건"
+                              + (f" · {_dq['signal']} 신호" if _dq["signal"] else "") + " 발송 성공")
                         ok_count += 1
                     else:
-                        print(f"    ❌ [DSTQ/{_dq['ticker']}] 발송 실패 → {resp}")
+                        print(f"    ❌ [{_label}] 발송 실패 → {resp}")
                         fail_count += 1
-                except Exception as e:
-                    print(f"    ❌ [DSTQ] 계산 오류 → {e}")
-                    fail_count += 1
-                    user_warnings.append(f"[듀얼스나이퍼TQ] ❌ 주문 계산 실패: {e}")
+                    if dq_gs_url and _dq_sheet:
+                        _rows = _dq["rows"]
+                        if _flag_on(dq_cfg.get("use_tungchigi_gsheet")) and _dq["can_tung"]:
+                            from dss_engine import rows_to_tungchigi_rows
+                            _rows = rows_to_tungchigi_rows(_rows)
+                            _label = f"{_label}(퉁치기)"
+                        write_gsheet_with_status(client, dq_gs_url, _dq_sheet, _rows, _label,
+                                                 status="OK")
             else:
                 print(f"  ⏭️  {username} [듀얼스나이퍼TQ]: 미설정 → 건너뜀")
                 skip_count += 1
