@@ -539,26 +539,27 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
 # Presets DB
 # ══════════════════════════════════════════════
 _SD_PRESETS_DB = {
-    # 2026-11-11 재최적화 (2010-03 ~ 2026-11, 55,080 조합 · reports/sd_reopt_2010/):
-    #   전체 구간 1위가 아니라 '앞·뒤 절반 모두 Calmar>=1 + 주변 값에서도 성과 유지' 로 선별.
-    #   예전 값은 2011년 급락이 빠진 구간 기준이라 3분할(공격형·Sonic형)이 과대평가돼 있었다.
-    #   · 공격형  : 3분할 0.65/0.45/85 → 5분할 0.70/0.50/95 갱신10 (최악의 해 -27% → -5%)
-    #   · 안정형  : 0.65/0.45/85 → 0.90/0.50/90,  Ultra-Safe형: 0.55/0.30/95 → 0.90/0.55/85
-    #   · 균형형  : 유지,  Sonic형: 값 유지 + '고위험' 딱지(tag)
+    # 2026-11-11 재최적화 (2010-03 ~ 2026-11, 55,080 조합 · reports/sd_reopt_2010/).
+    #   전체 구간 1위가 아니라 '앞·뒤 절반 모두 양호 + 주변 값에서도 성과 유지' 로 선별.
+    # ⚠️ 갱신주기(renewal)는 반드시 분할수(divisions)와 같게 둔다.
+    #   원본 시트 수식은 '티어가 1로 돌아오는 날(=분할수마다)' 에 '최근 갱신주기 일수의 실현손익' 을
+    #   총투자금에 더한다. 두 값이 다르면 손익이 겹쳐(갱신>분할) 또는 빠져(갱신<분할) 반영된다.
+    #   예전 균형형(6분할·갱신 10)은 손익이 1.67배로 반영돼 총투자금이 실제 자산의 1.6배,
+    #   실질 3.7분할로 움직였다 → 같은 성과를 내는 4분할·갱신 4 로 교체.
     # tag: 버튼·배지에 이름 옆에 붙는 딱지 (label 은 통계 키라 바꾸지 않는다)
     "SOXL": [
-        {"label": "공격형",
-         "sigma_period": 2, "k_buy": 0.70, "k_sell": 0.50, "sell_ratio": 95.0,
-         "divisions": 5, "renewal": 10,
-         "help": "CAGR 67.60%  |  MDD 48.86%  |  Calmar 1.38\n5분할 + 95% 매도 · 갱신주기 10. 수익 추구형 — 낙폭도 가장 큼\n(σ기간=2일, 갱신주기=10 자동 적용)"},
+        {"label": "공격형", "tag": "⚠️ 고위험",
+         "sigma_period": 2, "k_buy": 0.70, "k_sell": 0.50, "sell_ratio": 80.0,
+         "divisions": 3, "renewal": 3,
+         "help": "CAGR 68.54%  |  MDD 50.50%  |  Calmar 1.36\n⚠️ 고위험 — 3분할이라 연속 하락에 약합니다 (손실로 끝난 해 있음 · 고점 회복 최장 500일 이상)\n3분할 + 80% 매도. 수익 추구형\n(σ기간=2일, 갱신주기=3 자동 적용)"},
         {"label": "균형형", "tag": "⭐",
-         "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 90.0,
-         "divisions": 6, "renewal": 10,
-         "help": "CAGR 60.62%  |  MDD 43.63%  |  Calmar 1.39\n⭐ 추천 — 6분할 + 90% 매도. 수익 대비 낙폭이 가장 좋은 축 (16년간 손실로 끝난 해 없음)\n(σ기간=2일, 갱신주기=10 자동 적용)"},
+         "sigma_period": 2, "k_buy": 0.90, "k_sell": 0.50, "sell_ratio": 80.0,
+         "divisions": 4, "renewal": 4,
+         "help": "CAGR 61.59%  |  MDD 43.60%  |  Calmar 1.41\n⭐ 추천 — 4분할 + 80% 매도. 수익 대비 낙폭이 가장 좋은 축\n(σ기간=2일, 갱신주기=4 자동 적용)"},
         {"label": "안정형",
          "sigma_period": 2, "k_buy": 0.90, "k_sell": 0.50, "sell_ratio": 90.0,
          "divisions": 5, "renewal": 5,
-         "help": "CAGR 50.32%  |  MDD 39.45%  |  Calmar 1.28\n5분할 + 90% 매도. 낙폭을 -40% 안쪽으로\n(σ기간=2일, 갱신주기=5 자동 적용)"},
+         "help": "CAGR 50.32%  |  MDD 39.45%  |  Calmar 1.28\n5분할 + 90% 매도. 낙폭을 -40% 안쪽으로 (16년간 손실로 끝난 해 없음)\n(σ기간=2일, 갱신주기=5 자동 적용)"},
         {"label": "Ultra-Safe형",
          "sigma_period": 2, "k_buy": 0.90, "k_sell": 0.55, "sell_ratio": 85.0,
          "divisions": 7, "renewal": 7,
@@ -573,6 +574,26 @@ _SD_PRESETS_DB = {
 #    preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체된다.
 from common.preset_stats import apply_db as _apply_preset_stats_db
 _apply_preset_stats_db("stdev", _SD_PRESETS_DB)
+
+
+def _sd_renewal_note(divisions, renewal) -> str:
+    """갱신주기 ≠ 분할수일 때의 경고 문구 (같으면 빈 문자열).
+
+    총투자금은 '티어가 1로 돌아오는 날(분할수마다)' 에 '최근 갱신주기 일수의 실현손익' 만큼 갱신된다
+    (원본 시트 수식 그대로). 두 값이 다르면 손익이 겹치거나 빠진다."""
+    try:
+        d, r = int(divisions), int(renewal)
+    except Exception:
+        return ""
+    if d == r or d <= 0:
+        return ""
+    if r > d:
+        return (f"⚠️ 갱신주기({r})가 분할수({d})보다 깁니다 — {d}일마다 갱신하면서 최근 {r}일치 실현손익을 더하므로 "
+                f"손익이 약 {r / d:.2f}배로 겹쳐 반영됩니다. 총투자금이 실제 자산보다 커져 1회 매수금이 "
+                f"{d}분할보다 커집니다. **갱신주기를 분할수와 같게({d}) 맞추는 것을 권장**합니다.")
+    return (f"⚠️ 갱신주기({r})가 분할수({d})보다 짧습니다 — {d}일마다 갱신하면서 최근 {r}일치 실현손익만 더하므로 "
+            f"나머지 {d - r}일치 손익이 총투자금에 반영되지 않습니다. "
+            f"**갱신주기를 분할수와 같게({d}) 맞추는 것을 권장**합니다.")
 
 
 def _sd_plabel(p) -> str:
@@ -602,7 +623,11 @@ def render_sidebar(usercfg, sfloat, sint):
     divisions  = st.number_input("분할수 (티어 수)", value=sint(usercfg.get("sd_divisions"), 5),
                                  min_value=1, step=1)
     sd_renewal = st.number_input("갱신 주기 (RENEWAL)", value=sint(usercfg.get("sd_renewal"), 5),
-                                 min_value=1, step=1)
+                                 min_value=1, step=1,
+                                 help="분할수와 같은 값으로 두세요. 다르면 실현손익이 겹치거나 빠져 반영됩니다.")
+    _sb_rn_note = _sd_renewal_note(divisions, sd_renewal)
+    if _sb_rn_note:
+        st.caption(_sb_rn_note)
     return {
         "sd_sigma_period": sd_sigma_period,
         "sd_k_buy": sd_k_buy,
@@ -1178,6 +1203,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _p4.metric("분할수",    f"{_div}회")
         _p5.metric("sigma 기간",   f"{_sp}일")
         _p6.metric("갱신 주기", f"{_rn}주기")
+        _rn_note = _sd_renewal_note(_div, _rn)
+        if _rn_note:
+            st.warning(_rn_note)
 
         with st.expander("파라미터 수정"):
             _param_presets = _SD_PRESETS_DB.get(_sd_symbol(tk), [])
@@ -1216,7 +1244,11 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _new_div = _ep2.number_input("분할수",        min_value=1, step=1,  key=f"sd_edv_{key_sfx}")
             _new_sp  = _ep1.number_input("sigma 계산 기간",  min_value=1, max_value=20, step=1,
                                           key=f"sd_esp_{key_sfx}")
-            _new_rn  = _ep2.number_input("갱신 주기",    min_value=1, step=1,  key=f"sd_ern_{key_sfx}")
+            _new_rn  = _ep2.number_input("갱신 주기",    min_value=1, step=1,  key=f"sd_ern_{key_sfx}",
+                                          help="분할수와 같은 값으로 두세요. 다르면 실현손익이 겹치거나 빠져 반영됩니다.")
+            _edit_rn_note = _sd_renewal_note(_new_div, _new_rn)
+            if _edit_rn_note:
+                st.warning(_edit_rn_note)
             if st.button("파라미터 저장", key=f"sd_save_{key_sfx}", type="primary",
                          use_container_width=True):
                 _save_sd_ticker_setting(tk, {
@@ -2372,7 +2404,11 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
         _sd_add_sp  = _add_c1.number_input("sigma 계산 기간", value=2, min_value=1, max_value=20, step=1,
                                             key="sd_add_sp_inp")
         _sd_add_rn  = _add_c2.number_input("갱신 주기",   value=5, min_value=1, step=1,
-                                            key="sd_add_rn_inp")
+                                            key="sd_add_rn_inp",
+                                            help="분할수와 같은 값으로 두세요. 다르면 실현손익이 겹치거나 빠져 반영됩니다.")
+        _add_rn_note = _sd_renewal_note(_sd_add_dv, _sd_add_rn)
+        if _add_rn_note:
+            st.warning(_add_rn_note)
 
         _sd_add_name = st.text_input(
             "계좌명 (선택) — 같은 종목의 추가 계좌를 만들 때 입력 (예: 신규, 아내)",
@@ -3061,7 +3097,7 @@ def render_intro_tab(ticker, params, data_source, excel_file, start_date, end_da
 | k_sell | 매도 LOC 배율 (양수 -> 상승폭의 배수만큼 올라야 매도) |
 | sigma 기간 | 표준편차 계산에 사용할 직전 N일 수익률 |
 | 분할수 N | 자산을 N등분하여 1회 매수 금액 결정 |
-| 갱신 주기 | 총투자금 갱신 기준 사이클 수 |
+| 갱신 주기 | 총투자금에 반영할 실현손익 기간(일). **분할수와 같게** 둡니다 (다르면 손익이 겹치거나 빠짐) |
 | 매도비율 | 보유량 중 매도 비율 (100% = 전량 매도) |
         """)
 

@@ -49,8 +49,8 @@ AVG_PRESETS = {
 
 STDEV_PRESETS = {
     # strategies/stdev.py 의 _SD_PRESETS_DB 와 같은 값 (2026-11-11 재최적화 반영)
-    "공격형":      dict(sigma_period=2, k_buy=0.70, k_sell=0.50, sell_ratio=95.0, divisions=5, renewal=10),
-    "균형형":      dict(sigma_period=2, k_buy=0.65, k_sell=0.55, sell_ratio=90.0, divisions=6, renewal=10),
+    "공격형":      dict(sigma_period=2, k_buy=0.70, k_sell=0.50, sell_ratio=80.0, divisions=3, renewal=3),
+    "균형형":      dict(sigma_period=2, k_buy=0.90, k_sell=0.50, sell_ratio=80.0, divisions=4, renewal=4),
     "안정형":      dict(sigma_period=2, k_buy=0.90, k_sell=0.50, sell_ratio=90.0, divisions=5, renewal=5),
     "Ultra-Safe형": dict(sigma_period=2, k_buy=0.90, k_sell=0.55, sell_ratio=85.0, divisions=7, renewal=7),
     "Sonic형":     dict(sigma_period=2, k_buy=0.55, k_sell=0.45, sell_ratio=95.0, divisions=3, renewal=3),
