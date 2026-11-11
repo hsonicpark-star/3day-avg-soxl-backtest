@@ -23,7 +23,7 @@ import os
 STATS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "preset_stats.json")
 
-_SKIP_KEYS = {"label", "help", "ticker"}
+_SKIP_KEYS = {"label", "help", "ticker", "tag"}   # tag = 표시용 딱지 (성과와 무관)
 _cache = {"mtime": None, "data": {}}
 
 

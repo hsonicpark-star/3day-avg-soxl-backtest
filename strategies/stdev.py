@@ -539,33 +539,45 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
 # Presets DB
 # ══════════════════════════════════════════════
 _SD_PRESETS_DB = {
+    # 2026-11-11 재최적화 (2010-03 ~ 2026-11, 55,080 조합 · reports/sd_reopt_2010/):
+    #   전체 구간 1위가 아니라 '앞·뒤 절반 모두 Calmar>=1 + 주변 값에서도 성과 유지' 로 선별.
+    #   예전 값은 2011년 급락이 빠진 구간 기준이라 3분할(공격형·Sonic형)이 과대평가돼 있었다.
+    #   · 공격형  : 3분할 0.65/0.45/85 → 5분할 0.70/0.50/95 갱신10 (최악의 해 -27% → -5%)
+    #   · 안정형  : 0.65/0.45/85 → 0.90/0.50/90,  Ultra-Safe형: 0.55/0.30/95 → 0.90/0.55/85
+    #   · 균형형  : 유지,  Sonic형: 값 유지 + '고위험' 딱지(tag)
+    # tag: 버튼·배지에 이름 옆에 붙는 딱지 (label 은 통계 키라 바꾸지 않는다)
     "SOXL": [
         {"label": "공격형",
-         "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0,
-         "divisions": 3, "renewal": 3,
-         "help": "CAGR 83.59%  |  MDD 41.06%  |  Calmar 2.04\n3분할 + 85% 매도로 매우 공격적\n(σ기간=2일, 갱신주기=3 자동 적용)"},
+         "sigma_period": 2, "k_buy": 0.70, "k_sell": 0.50, "sell_ratio": 95.0,
+         "divisions": 5, "renewal": 10,
+         "help": "CAGR 67.60%  |  MDD 48.86%  |  Calmar 1.38\n5분할 + 95% 매도 · 갱신주기 10. 수익 추구형 — 낙폭도 가장 큼\n(σ기간=2일, 갱신주기=10 자동 적용)"},
         {"label": "균형형",
          "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.55, "sell_ratio": 90.0,
          "divisions": 6, "renewal": 10,
-         "help": "CAGR 65.88%  |  MDD 31.29%  |  Calmar 2.11\n6분할 + 90% 매도로 균형. 다른 프리셋과 다른 매매 패턴\n(σ기간=2일, 갱신주기=10 자동 적용)"},
+         "help": "CAGR 60.62%  |  MDD 43.63%  |  Calmar 1.39\n6분할 + 90% 매도. 수익 대비 낙폭이 가장 좋은 축\n(σ기간=2일, 갱신주기=10 자동 적용)"},
         {"label": "안정형",
-         "sigma_period": 2, "k_buy": 0.65, "k_sell": 0.45, "sell_ratio": 85.0,
+         "sigma_period": 2, "k_buy": 0.90, "k_sell": 0.50, "sell_ratio": 90.0,
          "divisions": 5, "renewal": 5,
-         "help": "CAGR 57.40%  |  MDD 28.02%  |  Calmar 2.05\n안정적 운용 추천 (검증된 클래식)\n(σ기간=2일, 갱신주기=5 자동 적용)"},
+         "help": "CAGR 50.32%  |  MDD 39.45%  |  Calmar 1.28\n5분할 + 90% 매도. 낙폭을 -40% 안쪽으로\n(σ기간=2일, 갱신주기=5 자동 적용)"},
         {"label": "Ultra-Safe형",
-         "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.30, "sell_ratio": 95.0,
+         "sigma_period": 2, "k_buy": 0.90, "k_sell": 0.55, "sell_ratio": 85.0,
          "divisions": 7, "renewal": 7,
-         "help": "CAGR 35.81%  |  MDD 17.40%  |  Calmar 2.06\n7분할 + 95% 매도로 매우 보수적\n(σ기간=2일, 갱신주기=7 자동 적용)"},
-        {"label": "Sonic형",
+         "help": "CAGR 38.29%  |  MDD 34.51%  |  Calmar 1.11\n7분할 + 85% 매도로 가장 보수적\n(σ기간=2일, 갱신주기=7 자동 적용)"},
+        {"label": "Sonic형", "tag": "⚠️ 고위험",
          "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.45, "sell_ratio": 95.0,
          "divisions": 3, "renewal": 3,
-         "help": "CAGR 77.25%  |  MDD 35.80%  |  Calmar 2.16\n3분할 + 95% 매도. 최적화 당시 19,200개 조합 중 Calmar 1위\n(σ기간=2일, 갱신주기=3 자동 적용)"},
+         "help": "CAGR 61.15%  |  MDD 47.73%  |  Calmar 1.28\n⚠️ 고위험 — 3분할이라 연속 하락에 약합니다 (손실로 끝난 해 있음 · 고점 회복 최장 500일 이상)\n3분할 + 95% 매도\n(σ기간=2일, 갱신주기=3 자동 적용)"},
     ],
 }
 # ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다 — 모듈 로드 시
 #    preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체된다.
 from common.preset_stats import apply_db as _apply_preset_stats_db
 _apply_preset_stats_db("stdev", _SD_PRESETS_DB)
+
+
+def _sd_plabel(p) -> str:
+    """프리셋 표시 이름 — 딱지(tag)가 있으면 이름 옆에 붙인다 (예: 'Sonic형 ⚠️ 고위험')."""
+    return f"{p['label']} {p['tag']}" if p.get("tag") else str(p["label"])
 
 
 # ══════════════════════════════════════════════
@@ -1142,7 +1154,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 and int(_pp0["divisions"]) == int(_div)
                 and int(_pp0["sigma_period"]) == int(_sp)
                 and int(_pp0["renewal"]) == int(_rn)):
-            _cur_preset_sd = _pp0["label"]
+            _cur_preset_sd = _sd_plabel(_pp0)
             break
 
     with st.container(border=True):
@@ -1175,7 +1187,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 _n_presets = len(_param_presets)
                 _preset_cols = st.columns(_n_presets)
                 for _pi, (_ppc, _pp) in enumerate(zip(_preset_cols, _param_presets)):
-                    if _ppc.button(_pp["label"], key=f"sd_preset_{_pi}_{key_sfx}",
+                    if _ppc.button(_sd_plabel(_pp), key=f"sd_preset_{_pi}_{key_sfx}",
                                    help=_pp["help"], use_container_width=True):
                         st.session_state[f"sd_ekb_{key_sfx}"]  = _pp["k_buy"]
                         st.session_state[f"sd_eks_{key_sfx}"]  = _pp["k_sell"]
@@ -2333,7 +2345,7 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
             st.caption("추천 프리셋")
             _sap_cols = st.columns(len(_sd_ap))
             for _sai, (_sapc, _sapp) in enumerate(zip(_sap_cols, _sd_ap)):
-                if _sapc.button(_sapp["label"], key=f"sd_addp_{_sai}",
+                if _sapc.button(_sd_plabel(_sapp), key=f"sd_addp_{_sai}",
                                 help=_sapp["help"], use_container_width=True):
                     st.session_state["sd_add_kb_inp"]  = _sapp["k_buy"]
                     st.session_state["sd_add_ks_inp"]  = _sapp["k_sell"]
@@ -3164,8 +3176,8 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
     _src_options = ["📐 사이드바 설정값"]
     if _act_cfg:
         _src_options.append(f"📂 등록 계좌 ({_act_tk})")
-    _src_options.extend([f"{pr['label']}" if pr['label'].startswith(('🚀','⚖️','🛡️'))
-                          else f"🎯 {pr['label']}" for pr in _sd_presets_for_tk])
+    _src_options.extend([f"{_sd_plabel(pr)}" if pr['label'].startswith(('🚀','⚖️','🛡️'))
+                          else f"🎯 {_sd_plabel(pr)}" for pr in _sd_presets_for_tk])
 
     _src_sel = st.radio(
         "파라미터 소스", _src_options, index=0, horizontal=True,
