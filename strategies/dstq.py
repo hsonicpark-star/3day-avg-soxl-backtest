@@ -836,13 +836,15 @@ def _render_account(acct_key: str, acct: dict, cfg: dict, idx: int):
             df = _load_ohlc(ticker, str(date.today()))
             if df.empty:
                 raise RuntimeError(f"{ticker} 가격 데이터를 불러오지 못했습니다 (야후 일시 장애 가능)")
-            r = compute_account_orders(df, acct)
-            if r.get("error") or r["log"].empty:
-                raise RuntimeError(f"시작일({os_start}) 이후 확정 종가가 아직 없습니다")
-            try:        # B방식 누적: 이번 로드의 일별 행을 계좌 기록에 추가 (기존 날짜 불변)
-                _save_rec("daily", acct_key, daily_view(r["log"]), "일별매매")
-            except Exception:
-                pass
+            _nd = next_trading_date(pd.Timestamp(df.index[-1]).date() + timedelta(days=1))
+            r = compute_account_orders(df, acct, next_day=_nd)
+            if r.get("error"):
+                raise RuntimeError(r["error"])
+            if not r["log"].empty:
+                try:    # B방식 누적: 이번 로드의 일별 행을 계좌 기록에 추가 (기존 날짜 불변)
+                    _save_rec("daily", acct_key, daily_view(r["log"]), "일별매매")
+                except Exception:
+                    pass
         except Exception as e:
             st.error(f"주문표 생성 실패: {e}")
             return
@@ -858,6 +860,9 @@ def _render_account(acct_key: str, acct: dict, cfg: dict, idx: int):
     next_day = next_trading_date(base_day + timedelta(days=1))
     if (date.today() - base_day).days > 5:
         st.warning(f"⚠️ 마지막 확정 종가가 {base_day} 입니다. 데이터가 최신인지 확인하세요.")
+    if r.get("first_day"):
+        st.info(f"🚩 **운용 첫날** — 시작일({os_start})의 첫 주문입니다. 전액 현금·방어 모드에서 시작하며, "
+                "홀딩 진입 여부는 오늘 종가부터 판단합니다.")
     will_hold = r["signal"] == "buy" or (r["mode"] == MODE_HOLD and r["signal"] != "sell")
     is_hold = r["mode"] == MODE_HOLD
     buy_px = next((o["가격"] for o in r["orders"] if o["구분"] == "매수"), None)
@@ -1195,8 +1200,10 @@ def render_settings_tab():
                 for name, acct in accounts.items():
                     try:
                         df = _load_ohlc(str(acct.get("ticker", "TQQQ")), str(date.today()))
-                        od = compute_account_orders(df, acct)
-                        nd = next_trading_date(pd.Timestamp(od["base_date"]).date() + timedelta(days=1))
+                        nd = next_trading_date(pd.Timestamp(df.index[-1]).date() + timedelta(days=1))
+                        od = compute_account_orders(df, acct, next_day=nd)
+                        if od.get("error"):
+                            raise RuntimeError(od["error"])
                         msg = build_order_text(str(acct.get("ticker", "TQQQ")), od, nd, name)
                         ok += bool(_send_telegram(tok.strip(), chat.strip(), msg).get("ok"))
                     except Exception as e:
@@ -1260,7 +1267,11 @@ def render_settings_tab():
                         with st.spinner(f"{ak} → '{snm}' 전송 중..."):
                             try:
                                 df = _load_ohlc(str(ad.get("ticker", "TQQQ")), str(date.today()))
-                                od = compute_account_orders(df, ad)
+                                nd = next_trading_date(
+                                    pd.Timestamp(df.index[-1]).date() + timedelta(days=1))
+                                od = compute_account_orders(df, ad, next_day=nd)
+                                if od.get("error"):
+                                    raise RuntimeError(od["error"])
                                 rows = order_rows(od)
                                 if use_tung and can_tungchigi(rows):
                                     rows = _tung_rows(rows)

@@ -351,8 +351,9 @@ def trigger_close(closes, ma_window: int, level_pct: float) -> float:
 
 def build_today_orders(df: pd.DataFrame, P: dict | None = None,
                        initial_capital: float = 10000.0, start=None,
-                       capital_injections: dict | None = None) -> dict:
+                       capital_injections: dict | None = None, next_day=None) -> dict:
     """계좌 시작일부터 최신 확정 종가까지 모델을 굴린 뒤 **다음 거래일 주문**을 만든다.
+    next_day: 주문일(다음 거래일). 주면 자본 조정 반영 범위를 정확히 자른다 (없으면 다음 평일).
 
     Returns dict:
         base_date, close, mode, disp, slope, ma — 기준일 지표
@@ -367,16 +368,23 @@ def build_today_orders(df: pd.DataFrame, P: dict | None = None,
     r = run_backtest(df, p, initial_capital, start=start, return_state=True,
                      capital_injections=capital_injections)
     log = r["log"]
-    if log.empty:
-        return {"orders": [], "log": log, "trades": r["trades"], "error": "데이터 부족"}
     st: State = r["state"]
     ind, i = r["ind"], r["last_i"]
+    # 시작일 이후 종가가 아직 없음 = 시작일이 곧 첫 주문일. 전액 현금·방어 모드에서 첫 주문을 만든다
+    # (엔진도 시작일에는 방어 LOC 부터 시작한다 — 홀딩 진입은 시작일 종가를 본 뒤부터).
+    first_day = log.empty
+    if i < 0 or (first_day and (i < int(p["ma_window"]) or np.isnan(ind["MA"].iloc[i]))):
+        return {"orders": [], "log": log, "trades": r["trades"], "error": "데이터 부족"}
     c = ind["Close"].to_numpy()
     close = float(c[i])
     n_ma, div, wts = int(p["sf_ma_base"]), p["sf_div"], list(p["sf_weights"])
     cash = float(st.cash)
-    for d, amt in (capital_injections or {}).items():     # 마지막 종가 이후(장 종료 후) 조정분
-        if pd.Timestamp(d).normalize() >= ind.index[i]:
+    # 마지막 종가일 ~ 다음 거래일 전날 사이의 조정분 (장 종료 후 입출금 → 다음 거래일부터 가용).
+    # 그보다 미래 날짜의 조정은 아직 반영하지 않는다.
+    nd = pd.Timestamp(next_day) if next_day is not None else ind.index[i] + pd.offsets.BDay(1)
+    for d, amt in (capital_injections or {}).items():
+        dt_ = pd.Timestamp(d).normalize()
+        if ind.index[i] <= dt_ < nd and not first_day:
             cash += float(amt)
     orders = []
     prev = c[i - (n_ma - 2): i + 1]                        # 내일 기준 직전 (MA기준−1)일 종가
@@ -456,8 +464,9 @@ def build_today_orders(df: pd.DataFrame, P: dict | None = None,
         "hold_qty": int(st.hold_qty), "hold_cost": float(st.hold_cost),
         "hold_start": st.hold_start,
         "cash": cash, "total": total,
-        "unit_price": float(log["좌당가"].iloc[-1]),
-        "return_pct": float(log["손익률(%)"].iloc[-1]),
+        "unit_price": 1.0 if first_day else float(log["좌당가"].iloc[-1]),
+        "return_pct": 0.0 if first_day else float(log["손익률(%)"].iloc[-1]),
+        "first_day": first_day,
         "log": log, "trades": r["trades"],
     }
 
@@ -578,18 +587,27 @@ def account_params(acct: dict) -> dict:
     return norm_params({k: v for k, v in (acct.get("params") or {}).items() if k in DEFAULTS})
 
 
-def compute_account_orders(df: pd.DataFrame, acct: dict) -> dict:
-    """계좌 하나의 다음 거래일 주문 (build_today_orders + 자본 조정 + 누적 실현손익)."""
+def compute_account_orders(df: pd.DataFrame, acct: dict, next_day=None) -> dict:
+    """계좌 하나의 다음 거래일 주문 (build_today_orders + 자본 조정 + 누적 실현손익).
+
+    next_day(주문일)를 주면 시작일이 그보다 뒤인 계좌는 {"error": ...} 로 돌려준다."""
     inj = account_injections(acct)
+    if next_day is not None and pd.Timestamp(str(acct.get("os_start"))) > pd.Timestamp(next_day):
+        return {"orders": [], "log": pd.DataFrame(), "trades": pd.DataFrame(),
+                "error": f"시작일({acct.get('os_start')})이 아직 오지 않았습니다 "
+                         f"(다음 주문일 {pd.Timestamp(next_day).date()})"}
     od = build_today_orders(df, account_params(acct), float(acct.get("os_capital", 10000)),
-                            start=str(acct.get("os_start")), capital_injections=inj or None)
+                            start=str(acct.get("os_start")), capital_injections=inj or None,
+                            next_day=next_day)
     if od.get("error"):
         return od
     tr = od["trades"]
     od["cum_realized"] = float(tr["실현손익"].sum()) if len(tr) else 0.0
     od["n_sells"] = int((tr["구분"] == "매도").sum()) if len(tr) else 0
     base_d = pd.Timestamp(od["base_date"])
-    od["net_adj"] = float(sum(a for d, a in inj.items() if pd.Timestamp(d) <= base_d))
+    start_d = pd.Timestamp(str(acct.get("os_start")))
+    od["net_adj"] = float(sum(a for d, a in inj.items()
+                              if start_d <= pd.Timestamp(d) <= base_d and not od["first_day"]))
     return od
 
 

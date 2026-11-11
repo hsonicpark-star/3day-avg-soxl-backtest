@@ -2412,10 +2412,10 @@ def calc_dstq_order(acct_name: str, acct: dict) -> dict:
     if not start or float(acct.get("os_capital", 0) or 0) <= 0:
         raise RuntimeError("시작일·시작 자본 미설정")
     df = tq200_fetch_ohlc(ticker, adjusted=False)
-    od = compute_account_orders(df, acct)
-    if od.get("error") or od["log"].empty:
-        raise RuntimeError(f"시작일({start}) 이후 확정 종가 없음")
-    next_day = tq200_next_trading_day(pd.Timestamp(od["base_date"]).date())
+    next_day = tq200_next_trading_day(pd.Timestamp(df.index[-1]).date())
+    od = compute_account_orders(df, acct, next_day=next_day)
+    if od.get("error"):
+        raise RuntimeError(od["error"])
     rows = order_rows(od)
     return {"ticker": ticker, "rows": rows, "can_tung": can_tungchigi(rows),
             "text": build_order_html(ticker, od, next_day, account_params(acct), acct_name),
