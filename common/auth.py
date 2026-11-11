@@ -123,6 +123,7 @@ _SESSION_KEYS = (
     "dss_config",                       # DSS 동파법 설정
     "pdan_config",                      # 평단법 설정
     "tq200_config",                     # TQ200 설정
+    "dstq_config",                      # 듀얼스나이퍼 TQ 설정
 )
 
 
