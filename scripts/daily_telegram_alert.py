@@ -14,6 +14,7 @@ Google Sheets users 탭의 모든 사용자에게
                        텔레그램: 계좌 전용 → 출처 전략 순)
   8. 만능 스위치  (ms_tg_chat_id / ms_tg_token + manse_config 종목별)
   9. TQ200        (tq200_config 내 tg_chat_id / tg_token — 매일: 신호일은 주문표, 그 외는 현황)
+ 10. 듀얼스나이퍼 TQ (dstq_config 내 tg_chat_id / tg_token + account — 매일 주문표/현황)
 """
 
 import os, sys, json, math, time, requests
@@ -2382,6 +2383,44 @@ def calc_tq200_signal(ticker: str, tq_cfg: dict) -> dict:
                         ticker, next_day)
 
 
+# ══════════════════════════════════════════════════════════════
+# 듀얼스나이퍼 TQ (200일선 홀딩 + 듀얼스나이퍼 방어) — 매일 발송
+# ══════════════════════════════════════════════════════════════
+#   · 설정 : users 시트의 dstq_config JSON
+#       {"account": {start, capital, ticker}, "params": {...}, "tg_chat_id", "tg_token"}
+#   · 계좌(account)를 저장한 사용자만 대상. 보유·현금은 시작일부터 굴린 모델 기준 (웹앱과 동일).
+#   · 가격 : 무조정 OHLC — TQ200 과 같은 신선도·구멍 검사(tq200_fetch_ohlc) 사용
+def parse_dstq_config(user: dict) -> dict:
+    """users 행에서 dstq_config JSON 파싱. 실패/미설정이면 {}."""
+    raw = str(user.get("dstq_config", "")).strip()
+    if not raw:
+        return {}
+    try:
+        cfg = json.loads(raw)
+        return cfg if isinstance(cfg, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def calc_dstq_order(dq_cfg: dict) -> dict:
+    """듀얼스나이퍼 TQ 다음 거래일 주문. {ticker, text, n_orders, signal, mode} 반환."""
+    from dstq_engine import DEFAULTS as _DQ_DEFAULTS, build_today_orders, build_order_html
+    acct = dq_cfg.get("account") or {}
+    ticker = str(acct.get("ticker", "TQQQ")).strip().upper() or "TQQQ"
+    start = str(acct.get("start", "")).strip()
+    capital = float(acct.get("capital", 0) or 0)
+    if not start or capital <= 0:
+        raise RuntimeError("계좌(운용 시작일·시작 자본) 미설정")
+    params = {k: v for k, v in (dq_cfg.get("params") or {}).items() if k in _DQ_DEFAULTS}
+    df = tq200_fetch_ohlc(ticker, adjusted=False)
+    od = build_today_orders(df, params, capital, start=start)
+    if od.get("error") or od["log"].empty:
+        raise RuntimeError(f"운용 시작일({start}) 이후 확정 종가 없음")
+    next_day = tq200_next_trading_day(pd.Timestamp(od["base_date"]).date())
+    return {"ticker": ticker, "text": build_order_html(ticker, od, next_day, params),
+            "n_orders": len(od["orders"]), "signal": od["signal"], "mode": od["mode"]}
+
+
 def main():
     sheet_url = os.environ.get("ADMIN_SHEET_URL", "")
     if not sheet_url:
@@ -3397,6 +3436,33 @@ def main():
                 print(f"  ⏭️  {username} [TQ200]: 미설정 → 건너뜀")
                 skip_count += 1
 
+            # ── 6.95 듀얼스나이퍼 TQ 발송 (매일 — 주문표 또는 현황) ──
+            dq_cfg = parse_dstq_config(user)
+            dq_chat_id = str(dq_cfg.get("tg_chat_id", "")).strip()
+            dq_token   = str(dq_cfg.get("tg_token",   "")).strip()
+
+            if not ds_only and dq_chat_id and dq_token and dq_cfg.get("account"):
+                print(f"  👤 {username} [듀얼스나이퍼TQ]: 처리 중...")
+                try:
+                    _dq = calc_dstq_order(dq_cfg)
+                    ok, resp = send_telegram(dq_chat_id, dq_token, _dq["text"],
+                                             parse_mode="HTML")
+                    if ok:
+                        print(f"    ✅ [DSTQ/{_dq['ticker']}] {_dq['mode']} · 주문 {_dq['n_orders']}건"
+                              + (f" · {_dq['signal']} 신호" if _dq["signal"] else "")
+                              + " 발송 성공")
+                        ok_count += 1
+                    else:
+                        print(f"    ❌ [DSTQ/{_dq['ticker']}] 발송 실패 → {resp}")
+                        fail_count += 1
+                except Exception as e:
+                    print(f"    ❌ [DSTQ] 계산 오류 → {e}")
+                    fail_count += 1
+                    user_warnings.append(f"[듀얼스나이퍼TQ] ❌ 주문 계산 실패: {e}")
+            else:
+                print(f"  ⏭️  {username} [듀얼스나이퍼TQ]: 미설정 → 건너뜀")
+                skip_count += 1
+
             # ── 7. 이상치 알림 (유저 본인에게 발송) ─────────────────
             if user_warnings:
                 # 텔레그램 채널: 등록된 전략 중 하나 선택
@@ -3410,6 +3476,7 @@ def main():
                     (ds_chat_id, ds_token),
                     (ms_chat_id, ms_token),
                     (tq_chat_id, tq_token),
+                    (dq_chat_id, dq_token),
                 ]
                 _alert_chat_id = ""
                 _alert_token = ""

@@ -478,3 +478,50 @@ def build_order_text(ticker: str, od: dict, next_day, acct: str = "") -> str:
     lines += ["", f"총자산 ${od['total']:,.0f} · 현금 ${od['cash']:,.0f} · "
                   f"손익률 {od['return_pct']:+.2f}%"]
     return "\n".join(lines)
+
+
+def build_order_html(ticker: str, od: dict, next_day, P: dict | None = None) -> str:
+    """일일 자동 발송용 텔레그램 메시지 (parse_mode=HTML). 주문이 있으면 🚨 주문표, 없으면 현황."""
+    esc = lambda s: str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    orders = od["orders"]
+    icon = "🚨" if od["signal"] else ("📋" if orders else "🛳️")
+    lines = [f"{icon} <b>듀얼스나이퍼 TQ — {esc(ticker)}</b>",
+             f"주문일 <b>{next_day}</b> · 기준종가({pd.Timestamp(od['base_date']).date()}) "
+             f"<b>${od['close']:,.2f}</b>",
+             f"모드 <b>{od['mode']}</b> · 이격도 {od['disp'] * 100:+.2f}% · 200MA ${od['ma']:,.2f}", ""]
+    if od["signal"] == "buy":
+        lines.append("🟧 <b>홀딩 진입 신호</b> — 개장 전 LOO 주문을 넣으세요")
+    elif od["signal"] == "sell":
+        lines.append(f"🟩 <b>방어 전환 신호</b> ({od['signal_reason']}) — 개장 전 MOO 매도")
+    if orders:
+        for o in orders:
+            px = "시장가" if o["가격"] is None else f"${o['가격']:,.2f}"
+            lines.append(f"{'🔴' if o['구분'] == '매도' else '🟢'} <b>{o['방법']} {o['구분']}</b> "
+                         f"{esc(o['티어'])} · {px} · <b>{o['수량']:,}주</b>")
+            lines.append(f"   <i>{esc(o['비고'])}</i>")
+    else:
+        lines.append("주문 없음 — " + ("홀딩 유지" if od["mode"] == MODE_HOLD else "관망"))
+
+    lines.append("")
+    if od["hold_qty"]:
+        avg = od["hold_cost"] / od["hold_qty"]
+        lines.append(f"보유: 홀딩 {od['hold_qty']:,}주 (평단 ${avg:,.2f}, "
+                     f"{(od['close'] / avg - 1) * 100:+.1f}%)")
+    elif od["lots"]:
+        lines.append("보유: " + " · ".join(f"{l['티어']} {l['수량']:,}주(만기 {l['남은일']}일)"
+                                         for l in od["lots"]))
+    else:
+        lines.append("보유: 없음 (전액 현금)")
+    lines.append(f"총자산 ${od['total']:,.0f} · 현금 ${od['cash']:,.0f} · "
+                 f"손익률 {od['return_pct']:+.2f}%")
+
+    t = od["trig"]
+    will_hold = od["signal"] == "buy" or (od["mode"] == MODE_HOLD and od["signal"] != "sell")
+    if will_hold:
+        lines.append(f"다음 종가 ${t['exit']:,.2f} 미만이면 청산 신호 · "
+                     f"${t['tp']:,.2f} 초과면 과열 청산")
+    else:
+        note = "" if od["slope"] > 0 else " (단, 200일선 기울기가 양수여야 함)"
+        lines.append(f"다음 종가 ${t['buy_lo']:,.2f} 초과 ~ ${t['buy_hi']:,.2f} 미만이면 "
+                     f"홀딩 진입 신호{note}")
+    return "\n".join(lines)

@@ -759,7 +759,10 @@ def render_settings_tab():
                 f"전송 실패: {r.get('description', '알 수 없는 오류')}")
         else:
             st.warning("Chat ID 와 Bot Token 을 입력하세요.")
-    st.caption("주문표는 [📋 오늘의 주문] 탭의 전송 버튼으로 보냅니다. (매일 자동 발송은 아직 연결 전)")
+    st.caption("저장하면 **매일 낮 12시(한국시간, 미국 휴장일 제외)** 에 다음 거래일 주문표가 자동 발송됩니다. "
+               "주문이 없는 날도 현황(모드·보유·신호가 바뀌는 종가)을 보냅니다. "
+               "자동 발송은 [📋 오늘의 주문] 탭에서 **저장한 계좌·파라미터** 기준입니다 — "
+               "사이드바 값을 바꿨다면 거기서 다시 저장하세요.")
 
     st.markdown("#### 🔄 초기화")
     p = st.session_state.get("dq_last_params")
