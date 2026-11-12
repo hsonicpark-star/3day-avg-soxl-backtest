@@ -1067,6 +1067,107 @@ def _render_account(acct_key: str, acct: dict, cfg: dict, idx: int):
 # ══════════════════════════════════════════════
 # 탭4: 전략 소개 & 성과
 # ══════════════════════════════════════════════
+def _fig_mode_diagram(P: dict | None = None) -> go.Figure:
+    """모드 개념도 — 200일선을 $100 으로 놓았을 때의 홀딩 진입 구간 · 이탈선 · 과열선.
+
+    세로 간격은 실제 비율이 아니다 ($99 · $100 · $101 이 겹치지 않도록 일정 간격으로 벌림).
+    TQ200 개념도와 같은 모양 — 차이는 '그 외 구간 = 방어 모드'가 있다는 것."""
+    P = P or DEFAULTS
+    lo, hi = float(P["buy_lo"]), float(P["buy_hi"])
+    ex, tp = float(P["exit_disp"]), float(P["tp_disp"])
+    price = lambda d: f"${100 + d:g}"
+    pct = lambda d: f"{'+' if d > 0 else '−'}{abs(d):g}%"
+    y_ex, y_ma, y_lo, y_hi, y_tp = 1.6, 2.6, 3.6, 5.6, 7.8
+    c_tp, c_ex, c_ma, c_note, c_def = "#e45756", "#d97706", "#64748b", "#94a3b8", "#2f9e55"
+    c_hold = "#f2a93b"
+
+    fig = go.Figure()
+    fig.add_shape(type="rect", xref="paper", x0=0, x1=1, y0=y_lo, y1=y_hi,
+                  fillcolor=c_hold, opacity=0.20, line_width=0, layer="below")
+    fig.add_shape(type="rect", xref="paper", x0=0, x1=1, y0=0.2, y1=y_ex,
+                  fillcolor=c_def, opacity=0.10, line_width=0, layer="below")
+    for y, col, dash, w in [(y_tp, c_tp, "dash", 2.5), (y_hi, c_hold, "dash", 1.5),
+                            (y_lo, c_hold, "dash", 1.5), (y_ma, c_ma, "dot", 4.5),
+                            (y_ex, c_ex, "dash", 3)]:
+        fig.add_shape(type="line", xref="paper", x0=0, x1=1, y0=y, y1=y,
+                      line=dict(color=col, dash=dash, width=w))
+
+    def label(y, text, color, yshift=0, size=15, **kw):
+        fig.add_annotation(xref="paper", x=0.5, y=y, yshift=yshift, text=text, showarrow=False,
+                           font=dict(size=size, color=color), **kw)
+
+    label(y_tp, f"<b>과열 — 이격도 {pct(tp)} 초과 → 홀딩 전량 매도, 방어로</b>", c_tp, yshift=15)
+    label((y_hi + y_tp) / 2, "홀딩 중이면 계속 보유 · 방어 중이면 새로 진입하지 않고 방어 유지",
+          c_note, size=12.5)
+    label((y_lo + y_hi) / 2, f"<b>홀딩 진입 구간  {pct(lo)} ~ {pct(hi)}</b>", "#ffffff",
+          bgcolor="#e08a00", borderpad=9, bordercolor="#e08a00")
+    label(y_ma, f"<b>200일 이동평균선 ({price(0)})</b>", c_ma, yshift=15)
+    label(y_ex, f"<b>이탈 — 이격도 {pct(ex)} 미만 → 홀딩 전량 매도, 방어로</b>", c_ex, yshift=15)
+    label((0.2 + y_ex) / 2, "<b>홀딩이 아닌 동안 = 방어 모드</b> — 떨어지는 날 조금씩 사서(LOC) 반등하면 일괄 매도",
+          "#ffffff", size=13.5, bgcolor="#3f9d57", borderpad=7, bordercolor="#3f9d57")
+
+    fig.update_xaxes(visible=False, range=[0, 1], fixedrange=True)
+    for y, d, col in [(y_tp, tp, c_tp), (y_hi, hi, "#c97a00"), (y_lo, lo, "#c97a00"),
+                      (y_ma, 0, c_ma), (y_ex, ex, c_ex)]:
+        fig.add_annotation(xref="paper", x=0, xanchor="right", xshift=-10, y=y,
+                           text=f"<b>{price(d)}</b>", showarrow=False,
+                           font=dict(size=17, color=col))
+    fig.update_yaxes(range=[0.1, 8.7], fixedrange=True, showgrid=False, zeroline=False,
+                     showticklabels=False, ticks="")
+    fig.update_layout(height=440, margin=dict(l=70, r=20, t=10, b=10), showlegend=False,
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
+def _fig_defense_diagram(P: dict | None = None) -> go.Figure:
+    """방어 모드 개념도 — 왼쪽: 3일선 기준 매수·매도 가격대, 오른쪽: 티어별 매수 비중."""
+    P = P or DEFAULTS
+    n = int(P["sf_ma_base"])
+    b1, sl = float(P["sf_buy1"]), float(P["sf_sell"])
+    w = [float(x) for x in P["sf_weights"]]
+    c_sell, c_buy, c_ma = "#1565C0", "#E65100", "#64748b"
+    fig = make_subplots(rows=1, cols=2, column_widths=[0.58, 0.42], horizontal_spacing=0.10,
+                        subplot_titles=[f"① 언제 사고 파나 ({n}일선이 $100 일 때)",
+                                        "② 얼마씩 사나 (하루 1티어)"])
+    y_buy, y_ma, y_sell = 1.0, 2.0, 3.0
+    fig.add_shape(type="rect", xref="x domain", x0=0, x1=1, y0=y_sell, y1=3.9, row=1, col=1,
+                  fillcolor=c_sell, opacity=0.10, line_width=0, layer="below")
+    fig.add_shape(type="rect", xref="x domain", x0=0, x1=1, y0=0.1, y1=y_buy, row=1, col=1,
+                  fillcolor=c_buy, opacity=0.12, line_width=0, layer="below")
+    for y, col, dash, wd in [(y_sell, c_sell, "dash", 2.5), (y_ma, c_ma, "dot", 4),
+                             (y_buy, c_buy, "dash", 2.5)]:
+        fig.add_shape(type="line", xref="x domain", x0=0, x1=1, y0=y, y1=y, row=1, col=1,
+                      line=dict(color=col, dash=dash, width=wd))
+
+    def label(y, text, color, yshift=0, size=13.5):
+        fig.add_annotation(xref="x domain", x=0.5, y=y, yshift=yshift, text=text, showarrow=False,
+                           font=dict(size=size, color=color), row=1, col=1)
+
+    label((y_sell + 3.9) / 2, f"<b>종가가 ${100 + sl:g} 이상 → 방어분 일괄 매도</b>", c_sell)
+    label(y_ma, f"<b>{n}일 이동평균 ($100)</b>", c_ma, yshift=13, size=12.5)
+    label((0.1 + y_buy) / 2, f"<b>종가가 ${100 + b1:g} 이하 → 다음 티어 매수</b>", c_buy)
+    for y, d, col in [(y_sell, sl, c_sell), (y_ma, 0, c_ma), (y_buy, b1, c_buy)]:
+        fig.add_annotation(xref="x domain", x=0, xanchor="right", xshift=-8, y=y, row=1, col=1,
+                           text=f"<b>${100 + d:g}</b>", showarrow=False,
+                           font=dict(size=15, color=col))
+    fig.update_xaxes(visible=False, range=[0, 1], fixedrange=True, row=1, col=1)
+    fig.update_yaxes(range=[0, 4], showgrid=False, zeroline=False, showticklabels=False,
+                     fixedrange=True, row=1, col=1)
+
+    tiers = [f"방T{i + 1}" for i in range(len(w))]
+    tot = sum(w)
+    fig.add_trace(go.Bar(x=tiers, y=[x / tot * 100 for x in w], marker_color=c_buy, opacity=0.85,
+                         text=[f"{x / tot * 100:.0f}%" for x in w], textposition="outside",
+                         hovertemplate="%{x}: 처음 현금의 약 %{y:.0f}%<extra></extra>"),
+                  row=1, col=2)
+    fig.update_yaxes(range=[0, max(w) / tot * 100 * 1.25], showgrid=False, showticklabels=False,
+                     fixedrange=True, row=1, col=2)
+    fig.update_xaxes(fixedrange=True, row=1, col=2)
+    fig.update_layout(height=330, margin=dict(l=80, r=10, t=40, b=10), showlegend=False,
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+
 def render_intro_tab(params: dict):
     st.subheader("🛳️ 듀얼스나이퍼 TQ — 200일선 홀딩 + 방어 스나이퍼")
     st.markdown(f"""
@@ -1086,7 +1187,16 @@ def render_intro_tab(params: dict):
 - LOO 수량 = 현금 ÷ (전일종가 × 1.10) 이라, 몰빵해도 예수금이 조금 남습니다.
 - 처음 시작할 때 이미 200일선 위로 멀리({params['buy_hi']:g}% 이상) 떠 있으면 진입 조건이 안 맞아
   **방어 모드로 시작**합니다. 그래서 시작 시점에 따라 초반 모드가 사람마다 다를 수 있습니다.
-
+""")
+    st.markdown("**예시 — 200일선이 100달러일 때** (현재 사이드바 값 기준)")
+    _dg, _ = st.columns([3, 2])
+    with _dg:
+        st.plotly_chart(_fig_mode_diagram(params), use_container_width=True,
+                        config={"displayModeBar": False}, key="dq_intro_mode_dg")
+    st.caption("개념도입니다. 홀딩 진입에는 200일선 자체가 상승 중(기울기 > 0)이어야 한다는 조건이 더 있습니다. "
+               "주황 구간 위(과열선 아래)에서는 **이미 홀딩 중이면 계속 보유**하고, **방어 중이면 진입하지 않습니다** — "
+               "너무 오른 뒤에는 따라 사지 않는다는 뜻입니다. 방어 모드는 200일선 아래에서만이 아니라 **홀딩이 아닌 모든 구간**에서 돌아갑니다. 선 사이 간격은 보기 쉽게 벌린 것으로 실제 비율과 다릅니다.")
+    st.markdown(f"""
 ---
 #### 🟩 방어 모드 (종가 LOC)
 | 항목 | 규칙 |
@@ -1096,6 +1206,14 @@ def render_intro_tab(params: dict):
 | 매도 | 종가가 {params['sf_ma_base']}일선보다 **+{params['sf_sell']:g}%** 이상이면 방어분 **일괄 매도** |
 | 1티어 보류 | 전일종가 > 전일 5일선이면 방T1 은 팔지 않고 보류 |
 | 만기 | 매수 후 **{params['sf_hold']}거래일**째 그 티어만 종가 청산(MOC) · 이 날은 MA 매도 보류 |
+""")
+    st.plotly_chart(_fig_defense_diagram(params), use_container_width=True,
+                    config={"displayModeBar": False}, key="dq_intro_def_dg")
+    st.caption(f"① 종가가 {params['sf_ma_base']}일선 아래로 내려온 날 사고, 위로 올라선 날 한꺼번에 팝니다. "
+               f"매수가는 '{params['sf_ma_base']}일선 {params['sf_buy1']:g}%' 와 "
+               f"'전일종가 {params['sf_buy2']:+g}%' 중 낮은 값이라, 급등한 다음 날에는 덜 공격적으로 삽니다. "
+               "② 첫 티어는 작게, 떨어질수록 크게 사서 평균 단가를 낮춥니다 (막대 = 처음 현금 대비 대략의 비중).")
+    st.markdown("""
 
 ---
 #### ✅ 원본 대조 검증 (항공모함셋_TQQQ.xlsx · 2011-01-03 ~ 2026-11-10)
