@@ -1,261 +1,261 @@
 {
- "generated": "2026-11-16T07:26Z",
+ "generated": "2026-11-17T08:38Z",
  "basis": "초기 $10,000 · 종가 체결 가정 · 각 전략의 앱 엔진·가격 기준과 동일",
  "items": {
   "avg/SOXL/⚖️ 균형형": {
    "sig": "a_buy=-0.005|a_sell=0.0095|divisions=4.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.391678,
-   "mdd": -0.570791,
-   "calmar": 0.6862,
+   "cagr": 0.388336,
+   "mdd": -0.570782,
+   "calmar": 0.6804,
    "start": "2010-03-15",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8271
   },
   "avg/SOXL/🚀 공격형": {
    "sig": "a_buy=-0.0055|a_sell=0.00875|divisions=3.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.418628,
-   "mdd": -0.684069,
-   "calmar": 0.612,
+   "cagr": 0.414145,
+   "mdd": -0.68407,
+   "calmar": 0.6054,
    "start": "2010-03-15",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.7919
   },
   "avg/SOXL/🛡️ 안정형 ⭐": {
    "sig": "a_buy=-0.0065|a_sell=0.0075|divisions=5.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.342545,
-   "mdd": -0.497179,
-   "calmar": 0.689,
+   "cagr": 0.339956,
+   "mdd": -0.497178,
+   "calmar": 0.6838,
    "start": "2010-03-15",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8237
   },
   "avg/SOXL/🪨 Ultra-Safe형": {
    "sig": "a_buy=-0.01275|a_sell=0.0075|divisions=7.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.238466,
-   "mdd": -0.324485,
-   "calmar": 0.7349,
+   "cagr": 0.236751,
+   "mdd": -0.324464,
+   "calmar": 0.7297,
    "start": "2010-03-15",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8235
   },
   "avg/TQQQ/⚖️ 균형형": {
    "sig": "a_buy=-0.0125|a_sell=0.0175|divisions=5.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.276966,
-   "mdd": -0.258305,
-   "calmar": 1.0722,
+   "cagr": 0.275604,
+   "mdd": -0.258303,
+   "calmar": 1.067,
    "start": "2010-02-16",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8624
   },
   "avg/TQQQ/📈 RSI 모드형": {
    "sig": "a_buy=-0.0125|a_sell=0.0175|divisions=5.0|n_days=2.0|rsi_mode=1.0|sell_ratio=100.0|up_a_buy=-0.01|up_a_sell=0.0275",
-   "cagr": 0.345074,
+   "cagr": 0.343606,
    "mdd": -0.258379,
-   "calmar": 1.3355,
+   "calmar": 1.3299,
    "start": "2010-02-16",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8444,
    "note": "RSI 모드 반영"
   },
   "avg/USD/⚖️ 균형형": {
    "sig": "a_buy=-0.0111|a_sell=0.0063|divisions=4.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.304917,
+   "cagr": 0.303005,
    "mdd": -0.250177,
-   "calmar": 1.2188,
+   "calmar": 1.2112,
    "start": "2010-01-06",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.85
   },
   "avg/USD/🚀 공격형": {
    "sig": "a_buy=-0.0088|a_sell=0.0063|divisions=4.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.317756,
-   "mdd": -0.247306,
-   "calmar": 1.2849,
+   "cagr": 0.315826,
+   "mdd": -0.247309,
+   "calmar": 1.2771,
    "start": "2010-01-06",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.847
   },
   "avg/USD/🛡️ 안정형 ⭐": {
    "sig": "a_buy=-0.0111|a_sell=0.0063|divisions=5.0|n_days=2.0|sell_ratio=100.0",
-   "cagr": 0.266361,
+   "cagr": 0.264866,
    "mdd": -0.206797,
-   "calmar": 1.288,
+   "calmar": 1.2808,
    "start": "2010-01-06",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8596
   },
   "dss/SOXL/⚖️ 균형형": {
    "sig": "ag_buy=3.6|ag_div=8.0|ag_hold=7.0|ag_sell=6.0|fee_rate=0.04|lcr=21.0|pcr=72.0|renewal_period=10.0|sf_buy=3.5|sf_div=7.0|sf_hold=35.0|sf_sell=1.8",
-   "cagr": 0.658519,
+   "cagr": 0.653292,
    "mdd": -0.476727,
-   "calmar": 1.3813,
+   "calmar": 1.3704,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dss/SOXL/🎭 양면형W": {
    "sig": "ag_buy=3.15|ag_div=7.0|ag_hold=8.0|ag_sell=3.75|ag_w=0,4.75,0.25,0.417,0.583,0.75,2.25|fee_rate=0.04|lcr=20.0|pcr=75.0|renewal_period=10.0|sf_buy=3.3|sf_div=8.0|sf_hold=38.0|sf_sell=1.8|sf_w=0,2.5,1,1.188,1.375,1.562,1.75,0.5",
-   "cagr": 0.706429,
+   "cagr": 0.699031,
    "mdd": -0.474645,
-   "calmar": 1.4883,
+   "calmar": 1.4727,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dss/SOXL/🎯 보초형W": {
    "sig": "ag_buy=3.15|ag_div=8.0|ag_hold=8.0|ag_sell=3.75|ag_w=0,4,1.25,1.25,1.25,1.25,1.25,1|fee_rate=0.04|lcr=20.0|pcr=75.0|renewal_period=10.0|sf_buy=3.3|sf_div=8.0|sf_hold=38.0|sf_sell=1.8|sf_w=0,4,1.25,1.25,1.25,1.25,1.25,1",
-   "cagr": 0.706547,
+   "cagr": 0.69547,
    "mdd": -0.460459,
-   "calmar": 1.5344,
+   "calmar": 1.5104,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dss/SOXL/🔬 sonic형": {
    "sig": "ag_buy=2.9|ag_div=7.0|ag_hold=6.0|ag_sell=6.5|fee_rate=0.04|lcr=20.0|pcr=65.0|renewal_period=12.0|sf_buy=3.3|sf_div=7.0|sf_hold=36.0|sf_sell=1.8",
-   "cagr": 0.567671,
+   "cagr": 0.563317,
    "mdd": -0.396391,
-   "calmar": 1.4321,
+   "calmar": 1.4211,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dss/SOXL/🚀 공격형": {
    "sig": "ag_buy=3.15|ag_div=7.0|ag_hold=8.0|ag_sell=3.75|fee_rate=0.04|lcr=20.0|pcr=75.0|renewal_period=10.0|sf_buy=3.3|sf_div=7.0|sf_hold=38.0|sf_sell=1.8",
-   "cagr": 0.661795,
+   "cagr": 0.654192,
    "mdd": -0.504157,
-   "calmar": 1.3127,
+   "calmar": 1.2976,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dss/SOXL/🛡️ 안정형 ⭐": {
    "sig": "ag_buy=2.77|ag_div=7.0|ag_hold=8.0|ag_sell=3.06|fee_rate=0.04|lcr=20.0|pcr=70.0|renewal_period=10.0|sf_buy=4.91|sf_div=7.0|sf_hold=36.0|sf_sell=0.9",
-   "cagr": 0.584799,
+   "cagr": 0.578409,
    "mdd": -0.456056,
-   "calmar": 1.2823,
+   "calmar": 1.2683,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dss/SOXL/🧱 철벽형W": {
    "sig": "ag_buy=3.55|ag_div=7.0|ag_hold=6.0|ag_sell=4.9|ag_w=0,4,0.5,0.667,0.833,1,2.5|fee_rate=0.04|lcr=20.0|pcr=65.0|renewal_period=17.0|sf_buy=2.8|sf_div=8.0|sf_hold=42.0|sf_sell=1.9|sf_w=0,3.5,1.5,1.562,1.625,1.688,1.75,0.5",
-   "cagr": 0.566511,
+   "cagr": 0.558543,
    "mdd": -0.369582,
-   "calmar": 1.5328,
+   "calmar": 1.5113,
    "start": "2010-03-12",
-   "end": "2026-11-13"
+   "end": "2026-11-16"
   },
   "dual/SOXL/⚖️ 균형형 (전차셋)": {
    "sig": "ag_buy=0.5|ag_div=5.0|ag_hold_alpha=2.0|ag_sell_alpha=0.4|sf_buy1=-0.6|sf_buy2=5.5|sf_div=5.0|sf_hold=8.0|sf_ma_base=3.0|sf_sell=0.7|sf_weights=6,13,20,27,34",
-   "cagr": 0.745313,
+   "cagr": 0.743151,
    "mdd": -0.587013,
-   "calmar": 1.2697,
+   "calmar": 1.266,
    "start": "2016-01-04",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "note": "원전략 실제모드"
   },
   "dual/SOXL/🚀 공격형 (로케트셋)": {
    "sig": "ag_buy=8.0|ag_div=6.0|ag_hold_alpha=2.0|ag_sell_alpha=0.4|sf_buy1=-0.6|sf_buy2=5.5|sf_div=5.0|sf_hold=8.0|sf_ma_base=3.0|sf_sell=0.7|sf_weights=6,13,20,27,34",
-   "cagr": 0.845946,
+   "cagr": 0.843581,
    "mdd": -0.587767,
-   "calmar": 1.4393,
+   "calmar": 1.4352,
    "start": "2016-01-04",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "note": "원전략 실제모드"
   },
   "dual/SOXL/🚁 헬기셋개선": {
    "sig": "ag_buy=8.0|ag_div=8.0|ag_hold_alpha=2.0|ag_sell_alpha=0.35|sf_buy1=-0.6|sf_buy2=6.0|sf_div=5.0|sf_hold=8.0|sf_ma_base=3.0|sf_sell=0.7|sf_weights=3,11,20,29,37",
-   "cagr": 0.732911,
+   "cagr": 0.731481,
    "mdd": -0.493549,
-   "calmar": 1.485,
+   "calmar": 1.4821,
    "start": "2016-01-04",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "note": "원전략 실제모드"
   },
   "dual/SOXL/🛡️ 안정형 (헬기셋)": {
    "sig": "ag_buy=0.5|ag_div=6.0|ag_hold_alpha=2.0|ag_sell_alpha=0.4|sf_buy1=-0.6|sf_buy2=5.5|sf_div=5.0|sf_hold=8.0|sf_ma_base=3.0|sf_sell=0.7|sf_weights=6,13,20,27,34",
-   "cagr": 0.674419,
+   "cagr": 0.672397,
    "mdd": -0.533865,
-   "calmar": 1.2633,
+   "calmar": 1.2595,
    "start": "2016-01-04",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "note": "원전략 실제모드"
   },
   "dual/SOXL/🧘 최적안정": {
    "sig": "ag_buy=8.0|ag_div=10.0|ag_hold_alpha=2.0|ag_sell_alpha=0.4|sf_buy1=-0.6|sf_buy2=5.5|sf_div=5.0|sf_hold=8.0|sf_ma_base=3.0|sf_sell=0.7|sf_weights=3,11,20,29,37",
-   "cagr": 0.627532,
+   "cagr": 0.626266,
    "mdd": -0.446848,
-   "calmar": 1.4044,
+   "calmar": 1.4015,
    "start": "2016-01-04",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "note": "원전략 실제모드"
   },
   "iuo/SOXL/⚖️ 균형형": {
    "sig": "buy1_pct=-1.0|buy2_pct=-11.0|divisions=6.0|first_buy_ratio=35.0|max_add_buys=7.0|moc_days=24.0|sell_pct=6.0",
-   "cagr": 0.510792,
-   "mdd": -0.679922,
-   "calmar": 0.7513,
+   "cagr": 0.499829,
+   "mdd": -0.679958,
+   "calmar": 0.7351,
    "start": "2015-12-31",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.7716
   },
   "iuo/SOXL/🚀 공격형": {
    "sig": "buy1_pct=-1.0|buy2_pct=-11.0|divisions=6.0|first_buy_ratio=40.0|max_add_buys=7.0|moc_days=24.0|sell_pct=6.0",
-   "cagr": 0.558421,
-   "mdd": -0.68029,
-   "calmar": 0.8209,
+   "cagr": 0.545399,
+   "mdd": -0.680321,
+   "calmar": 0.8017,
    "start": "2015-12-31",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.7754
   },
   "iuo/SOXL/🛡️ 안정형 ⭐": {
    "sig": "buy1_pct=-1.0|buy2_pct=-11.0|divisions=6.0|first_buy_ratio=25.0|max_add_buys=7.0|moc_days=24.0|sell_pct=6.0",
-   "cagr": 0.362843,
-   "mdd": -0.486048,
-   "calmar": 0.7465,
+   "cagr": 0.355898,
+   "mdd": -0.486116,
+   "calmar": 0.7321,
    "start": "2015-12-31",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.7692
   },
   "stdev/SOXL/Sonic형": {
    "sig": "divisions=3.0|k_buy=0.55|k_sell=0.45|renewal=3.0|sell_ratio=95.0|sigma_period=2.0",
-   "cagr": 0.613658,
-   "mdd": -0.477291,
-   "calmar": 1.2857,
+   "cagr": 0.603882,
+   "mdd": -0.480129,
+   "calmar": 1.2577,
    "start": "2010-03-11",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8413
   },
   "stdev/SOXL/Ultra-Safe형": {
    "sig": "divisions=7.0|k_buy=0.9|k_sell=0.55|renewal=7.0|sell_ratio=85.0|sigma_period=2.0",
-   "cagr": 0.385503,
-   "mdd": -0.345099,
-   "calmar": 1.1171,
+   "cagr": 0.381384,
+   "mdd": -0.345095,
+   "calmar": 1.1052,
    "start": "2010-03-11",
-   "end": "2026-11-13",
+   "end": "2026-11-16",
    "win": 0.8435
   },
   "stdev/SOXL/공격형": {
    "sig": "divisions=3.0|k_buy=0.7|k_sell=0.5|renewal=3.0|sell_ratio=80.0|sigma_period=2.0",
-   "cagr": 0.689613,
+   "cagr": 0.67619,
    "mdd": -0.50497,
-   "calmar": 1.3657,
+   "calmar": 1.3391,
    "start": "2010-03-11",
-   "end": "2026-11-13",
-   "win": 0.8169
+   "end": "2026-11-16",
+   "win": 0.817
   },
   "stdev/SOXL/균형형": {
    "sig": "divisions=4.0|k_buy=0.9|k_sell=0.5|renewal=4.0|sell_ratio=80.0|sigma_period=2.0",
-   "cagr": 0.622816,
-   "mdd": -0.43604,
-   "calmar": 1.4283,
+   "cagr": 0.612036,
+   "mdd": -0.436039,
+   "calmar": 1.4036,
    "start": "2010-03-11",
-   "end": "2026-11-13",
-   "win": 0.8244
+   "end": "2026-11-16",
+   "win": 0.8245
   },
   "stdev/SOXL/안정형": {
    "sig": "divisions=5.0|k_buy=0.9|k_sell=0.5|renewal=5.0|sell_ratio=90.0|sigma_period=2.0",
-   "cagr": 0.508362,
-   "mdd": -0.394519,
-   "calmar": 1.2886,
+   "cagr": 0.501677,
+   "mdd": -0.394515,
+   "calmar": 1.2716,
    "start": "2010-03-11",
-   "end": "2026-11-13",
-   "win": 0.8443
+   "end": "2026-11-16",
+   "win": 0.8444
   }
  }
 }
