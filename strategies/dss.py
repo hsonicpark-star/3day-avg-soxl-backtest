@@ -1407,7 +1407,7 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
     # 티어 비중 반영 (균등이면 기존과 동일: 투자금/분할수)
     buy_qty_est, seed_per_trade = order_buy_plan(
-        os_params, last_mode, capital, n_pos, next_buy_order)
+        os_params, last_mode, capital, n_pos, next_buy_order, cash=cash)
 
     weekly_rsi_df = build_weekly_rsi_series(qqq)
     latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None
@@ -1499,7 +1499,7 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
     next_buy_order = math.floor(prev_close * (1 + cur_buy_pct) * 100) / 100
     # 티어 비중 반영 (균등이면 기존과 동일: 투자금/분할수)
     buy_qty_est, seed_per_trade = order_buy_plan(
-        os_params, last_mode, capital, 0, next_buy_order)
+        os_params, last_mode, capital, 0, next_buy_order, cash=capital)
 
     weekly_rsi_df = build_weekly_rsi_series(qqq)
     latest_rsi_row = weekly_rsi_df.iloc[-1] if len(weekly_rsi_df) > 0 else None

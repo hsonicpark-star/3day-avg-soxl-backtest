@@ -678,7 +678,7 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     # 엔진의 capital(투자금)은 PCR 갱신 + 자본 조정 모두 이미 반영된 값.
     # 티어 비중 반영 수량 — 웹 주문표와 같은 엔진 함수 사용 (SSOT)
     buy_qty_est, seed_per_trade = order_buy_plan(
-        dss_params, last_mode, capital, n_pos, next_buy_order)
+        dss_params, last_mode, capital, n_pos, next_buy_order, cash=cash)
 
     return {
         "prev_close": prev_close, "last_date": last_date, "last_mode": last_mode,

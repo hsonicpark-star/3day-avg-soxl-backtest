@@ -648,19 +648,36 @@ def mode_tier_weights(params, mode: str) -> tuple:
     return tuple(w or params.tier_weights or ())
 
 
+def cash_capped_qty(qty: int, cash: float, buy_order: float, fee_rate: float) -> int:
+    """예수금 상한: 주문 시점 예수금으로 살 수 있는 수량을 넘지 않게 (수수료 포함).
+
+    알고리C 시트 규칙(1회시드 = MIN(투자금/분할수, 전일 예수금))과 같은 취지.
+    증권사가 주문가 × 수량 + 수수료를 예수금에서 잡으므로 수수료까지 포함한다."""
+    if buy_order <= 0:
+        return 0
+    cap = int(max(0.0, cash) / (buy_order * (1 + fee_rate)))
+    return min(qty, cap)
+
+
 def order_buy_plan(params, mode: str, capital: float, n_pos: int,
-                   buy_order: float) -> tuple:
+                   buy_order: float, cash: float = None) -> tuple:
     """주문표용 다음 티어 매수 (수량, 1회시드). 웹·텔레그램 공용 (SSOT).
 
     엔진 백테스트의 매수 수량 규칙과 동일: 티어 = 보유 수 + 1,
-    비중이 분할수와 길이가 맞으면 비중 시드(보초병 최소 1주), 아니면 균등."""
+    비중이 분할수와 길이가 맞으면 비중 시드(보초병 최소 1주), 아니면 균등.
+    cash(주문 시점 예수금)를 주면 예수금 상한을 적용한다."""
     div = params.ag_divisions if mode == "AG" else params.sf_divisions
     w = mode_tier_weights(params, mode)
     if w and len(w) == div and n_pos < div:
         seed = tier_seed(capital, div, n_pos + 1, w, params.tier_weight_mode)
-        return tier_buy_qty(seed, buy_order, w), seed
-    seed = capital / div
-    return (int(seed / buy_order) if buy_order > 0 else 0), seed
+        qty = tier_buy_qty(seed, buy_order, w)
+    else:
+        seed = capital / div
+        qty = int(seed / buy_order) if buy_order > 0 else 0
+    if cash is not None:
+        qty = cash_capped_qty(qty, cash, buy_order, params.fee_rate)
+        seed = min(seed, max(0.0, cash))
+    return qty, seed
 
 
 def tier_buy_qty(seed: float, buy_order: float, weights) -> int:
@@ -884,6 +901,7 @@ def run_backtest(params: DSSParams,
         # (2026-09-02 사고: 7/7 풀매수 날 MOC 손절 → 엔진이 당일 재매수
         #  → 실계좌엔 없는 유령 티어7 생성. 새 매수는 다음 날 주문부터)
         n_pos_at_open = len(positions)
+        cash_at_open = cash   # 주문표 작성 시점 예수금 (매수 수량 상한)
 
         # ── 매도 처리 ──
         sold_positions = []
@@ -966,6 +984,7 @@ def run_backtest(params: DSSParams,
                 else:
                     buy_qty = int(seed_per_trade / buy_order_price)
                 buy_qty = apply_trend(buy_qty, _tflags.get(date, False), params.trend_mult)
+                buy_qty = cash_capped_qty(buy_qty, cash_at_open, buy_order_price, params.fee_rate)
                 if buy_qty > 0:
                     buy_amount = buy_qty * close
                     buy_fee = buy_amount * params.fee_rate
@@ -1194,6 +1213,7 @@ def run_backtest_fast(params: DSSParams,
 
         # 당일 시작 보유 수 — 당일 매도로 빈 슬롯의 같은 날 재매수 금지
         n_pos_at_open = len(positions)
+        cash_at_open = cash   # 주문표 작성 시점 예수금 (매수 수량 상한)
 
         # ── 매도 처리 ──
         new_pos = []
@@ -1230,6 +1250,7 @@ def run_backtest_fast(params: DSSParams,
                     buy_qty = int(seed / buy_order)
                 if _tflags:
                     buy_qty = apply_trend(buy_qty, _tflags.get(cur_date, False), _tmult)
+                buy_qty = cash_capped_qty(buy_qty, cash_at_open, buy_order, fee_r)
                 if buy_qty > 0:
                     buy_amt = buy_qty * close
                     buy_fee = buy_amt * fee_r
