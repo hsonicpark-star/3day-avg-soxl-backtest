@@ -1650,6 +1650,20 @@ def _w_kwargs(d) -> dict:
             "vol_regime_from": str(d.get("vreg_from", "") or "").strip()}
 
 
+def _to_date_or_none(v):
+    """'YYYY-MM-DD' → date (빈 값·형식 오류는 None) — date_input 기본값용."""
+    try:
+        return pd.Timestamp(v).date() if str(v or "").strip() else None
+    except Exception:
+        return None
+
+
+def _after_next_order_date() -> str:
+    """다음 주문일의 다음 거래일 — 다음 세션 주문은 이미 나갔을 수 있으므로 그다음부터."""
+    _nx = next_us_trading_days(pd.Timestamp(_next_order_date()), 1)
+    return str(_nx[0].date()) if len(_nx) else _next_order_date()
+
+
 def _next_order_date() -> str:
     """다음 주문 적용일 (미국 거래일). 미국장 마감(16:30 ET) 전이면 오늘(거래일일 때)."""
     _now = pd.Timestamp.now(tz="America/New_York")
@@ -1807,7 +1821,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 "renewal_period": cur_renew, "fee_rate": float(cur_fee),
                 "sf_w": cur_sf_w, "ag_w": cur_ag_w,
                 "vreg": cur_vreg,
-                "vreg_from": cur_vreg_from,
+                "vreg_from": _to_date_or_none(cur_vreg_from),
             }
             for _k, _v in _edit_defaults.items():
                 _skey = f"dss_{sfx}_edit_{_k}"
@@ -1844,11 +1858,12 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             _vc1, _vc2 = st.columns([3, 2])
             _vc1.checkbox("🌋 변동성 레짐(V) 적용 — 위험 레짐 달 12분할 · 공세 보유 5일",
                           key=f"dss_{sfx}_edit_vreg")
-            _vc2.text_input("V 적용 시작일 (YYYY-MM-DD)", key=f"dss_{sfx}_edit_vreg_from",
-                            placeholder="비우면 계좌 시작일부터",
-                            help="보유 중인 계좌를 V로 바꿀 때 사용. 이 날짜 전은 기존 규칙으로 "
-                                 "계산해 보유 내역이 실계좌와 그대로 유지됩니다. "
-                                 "V를 새로 켜면 다음 주문일로 자동 입력됩니다.")
+            _vc2.date_input("V 적용 시작일 (미국 거래일)", key=f"dss_{sfx}_edit_vreg_from",
+                            format="YYYY/MM/DD",
+                            help="이 날짜(미국장 세션)의 주문부터 V 규칙 적용. 그 전은 기존 규칙으로 "
+                                 "계산해 보유 내역이 실계좌와 그대로 유지됩니다. 이미 주문을 낸 "
+                                 "세션은 피해서 그다음 거래일로 지정하세요. 비우면 계좌 시작일부터. "
+                                 "V를 새로 켜고 비워두면 다음 주문일의 다음 거래일로 자동 입력됩니다.")
 
             if st.button("💾 파라미터 저장", type="primary", key=f"dss_{sfx}_save_params",
                          use_container_width=True):
@@ -1867,13 +1882,14 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 for _wm in _w_warn:
                     st.warning(_wm)
                 _new_params["vreg"] = "1" if _new_params.get("vreg") else ""
-                _vf = str(_new_params.get("vreg_from", "") or "").strip()
+                _vf = _new_params.get("vreg_from")
+                _vf = str(pd.Timestamp(_vf).date()) if _vf else ""
                 if not _new_params["vreg"]:
                     _vf = ""
                 elif (not cur_vreg and not _vf
                       and str(acct_data.get("os_start", "")) < _next_order_date()):
                     # 기존 계좌를 V로 전환 → 다음 주문일부터 적용 (과거 재계산으로 보유 내역이 바뀌는 것 방지)
-                    _vf = _next_order_date()
+                    _vf = _after_next_order_date()
                     st.info(f"🌋 V 적용 시작일을 {_vf} 로 설정했습니다 — "
                             f"그 전 매매 내역은 기존 규칙 그대로 유지됩니다.")
                 if _vf:
