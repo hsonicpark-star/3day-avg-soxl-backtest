@@ -528,7 +528,8 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         from dss_engine import (DSSParams, run_backtest, build_weekly_rsi_series,
                                 build_mode_series, get_week_mode_map,
                                 get_current_week_mode, next_us_trading_days,
-                                parse_tier_weights, order_buy_plan)
+                                parse_tier_weights, order_buy_plan,
+                                vol_regime_for, regime_params)
     except ImportError as e:
         print(f"    ⚠️ dss_engine import 실패: {e}")
         return None
@@ -579,6 +580,8 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         # 티어별 매수 비중 (W 프리셋) — 웹 주문표와 동일 (빈 값 = 균등)
         sf_tier_weights=parse_tier_weights(ap.get("sf_w", "")),
         ag_tier_weights=parse_tier_weights(ap.get("ag_w", "")),
+        # 변동성 레짐(공격형V) — 웹 주문표와 동일 (엔진이 SOXX 를 직접 로드)
+        vol_regime=str(ap.get("vreg", "") or "").strip().lower() not in ("", "0", "false", "none"),
     )
 
     today_str = datetime.today().strftime("%Y-%m-%d")
@@ -608,10 +611,20 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     else:
         last_mode = get_current_week_mode(mode_series_df)
 
-    if last_mode == "AG":
-        cur_div = ag_div; cur_buy_pct = ag_buy / 100; cur_sell_pct = ag_sell / 100; cur_hold = ag_hold
-    else:
-        cur_div = sf_div; cur_buy_pct = sf_buy / 100; cur_sell_pct = sf_sell / 100; cur_hold = sf_hold
+    # 변동성 레짐(V): 주문 적용일이 위험 레짐 달이면 분할수·보유기간 교체 (엔진과 동일)
+    _vreg_on = bool(dss_params.vol_regime)
+    _vreg_state = None
+    if _vreg_on:
+        try:
+            _vreg_state = vol_regime_for(_next_date, dss_params)
+        except Exception as _ve:
+            print(f"    ⚠️ 변동성 레짐 판정 실패 → 기본 규칙: {_ve}")
+    order_params = regime_params(dss_params, _vreg_state)
+
+    cur_buy_pct = (ag_buy if last_mode == "AG" else sf_buy) / 100
+    cur_sell_pct = (ag_sell if last_mode == "AG" else sf_sell) / 100
+    cur_div = order_params.ag_divisions if last_mode == "AG" else order_params.sf_divisions
+    cur_hold = order_params.ag_max_hold if last_mode == "AG" else order_params.sf_max_hold
 
     # RSI 정보
     latest_rsi = float(weekly_rsi_df.iloc[-1]['rsi']) if len(weekly_rsi_df) > 0 else None
@@ -678,7 +691,7 @@ def calc_dss_order(acct_data: dict) -> dict | None:
     # 엔진의 capital(투자금)은 PCR 갱신 + 자본 조정 모두 이미 반영된 값.
     # 티어 비중 반영 수량 — 웹 주문표와 같은 엔진 함수 사용 (SSOT)
     buy_qty_est, seed_per_trade = order_buy_plan(
-        dss_params, last_mode, capital, n_pos, next_buy_order, cash=cash)
+        order_params, last_mode, capital, n_pos, next_buy_order, cash=cash)
 
     return {
         "prev_close": prev_close, "last_date": last_date, "last_mode": last_mode,
@@ -691,6 +704,7 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         "cur_max_hold": cur_hold, "os_capital": os_capital,
         "latest_rsi": latest_rsi, "prev_rsi": prev_rsi,
         "data_warning": _data_warning,
+        "vol_regime_on": _vreg_on, "vol_regime": _vreg_state,
     }
 
 
@@ -710,6 +724,15 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
         f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
     ]
+    if _o.get("vol_regime_on"):
+        _r = _o.get("vol_regime")
+        if _r == "위험":
+            lines.append(f"🌋 변동성 레짐: 🔴 위험 → {_o['cur_divisions']}분할 · "
+                         f"신규 매수 보유 {_o['cur_max_hold']}일")
+        elif _r:
+            lines.append(f"🌋 변동성 레짐: {'🟢' if _r == '안정' else '🟡'} {_r} → 기본 규칙")
+        else:
+            lines.append("🌋 변동성 레짐: 판정 대기 → 기본 규칙")
 
     _today_ts = pd.Timestamp(datetime.today().date())
     _tdays = pd.DatetimeIndex([])

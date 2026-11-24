@@ -164,6 +164,7 @@ def run_dss():
             renewal_period=p["renewal_period"], pcr=p["pcr"] / 100, lcr=p["lcr"] / 100,
             sf_tier_weights=parse_tier_weights(p.get("sf_w", "")),
             ag_tier_weights=parse_tier_weights(p.get("ag_w", "")),
+            vol_regime=bool(str(p.get("vreg", "") or "").strip()),
         )
         log = run_backtest(params=params, soxl_daily=soxl, mode_series=mode_series,
                            start_date=start, end_date=end)

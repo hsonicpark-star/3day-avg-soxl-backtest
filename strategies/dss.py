@@ -43,7 +43,7 @@ from dss_engine import (
     get_week_mode_map, get_current_week_mode,
     run_backtest, run_backtest_fast, DSSParams,
     next_us_trading_days,
-    parse_tier_weights, order_buy_plan,
+    parse_tier_weights, order_buy_plan, vol_regime_for, regime_params,
 )
 
 from common.config import _IS_CLOUD, _CONFIG, load_config, save_config, \
@@ -131,6 +131,8 @@ def _build_dss_order_text(os_result: dict, acct_name: str = "") -> str:
         f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
     ]
+    if _regime_note(_o):
+        lines.append(_regime_note(_o))
 
     # 거래일 인덱스 (예약매도 잔여일 계산) — NYSE 휴장일 제외한 미래 거래일 보정
     try:
@@ -564,6 +566,8 @@ def render_sidebar():
                    "0 = 보초병(1주). 예: 0,4,1.25,1.25,1.25,1.25,1.25,1")
         sf_w = st.text_input("안전(SF) 비중", value="", key="dss_sf_w")
         ag_w = st.text_input("공세(AG) 비중", value="", key="dss_ag_w")
+    vreg = st.sidebar.checkbox("🌋 변동성 레짐(V) 적용", value=False, key="dss_vreg",
+                               help="SOXX 변동성 위험 레짐 달에 12분할 · 공세모드 신규 매수 보유 5일")
 
     dc1, dc2 = st.sidebar.columns(2)
     start_date = dc1.date_input("투자시작일", value=pd.Timestamp("2010-03-12"), key="dss_start")
@@ -573,7 +577,7 @@ def render_sidebar():
         "sf_div": sf_div, "sf_hold": sf_hold, "sf_buy": sf_buy, "sf_sell": sf_sell,
         "ag_div": ag_div, "ag_hold": ag_hold, "ag_buy": ag_buy, "ag_sell": ag_sell,
         "pcr": pcr, "lcr": lcr, "renewal_period": renewal_period,
-        "sf_w": _w_str(sf_w), "ag_w": _w_str(ag_w),
+        "sf_w": _w_str(sf_w), "ag_w": _w_str(ag_w), "vreg": "1" if vreg else "",
         "initial_capital": initial_capital, "fee_rate": fee_rate,
         "start_date": start_date, "end_date": end_date,
         "bt_ticker": "SOXL",
@@ -1342,6 +1346,7 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
     # 오늘의 주문에 적용할 모드 = '다음 거래일' 모드.
     # bt_df의 마지막 행 모드(last_date 기준)가 아니라, 다음 거래일(주문 적용일)
     # 모드를 RR/R RSI로 판정. 새 주로 넘어가며 AG↔SF 전환 시 매수가 정확.
+    _next_date = last_date
     try:
         _ms_df = build_mode_series(build_weekly_rsi_series(qqq))
         _next_td = next_us_trading_days(last_date, 1)
@@ -1373,6 +1378,16 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
                     adj_applied += float(_item.get("조정금액", 0))
             except Exception:
                 continue
+
+    # 변동성 레짐(V): 주문 적용일이 위험 레짐 달이면 분할수·보유기간 교체 (엔진과 동일)
+    _vreg_on = bool(getattr(os_params, "vol_regime", False))
+    _vreg_state = None
+    if _vreg_on:
+        try:
+            _vreg_state = vol_regime_for(_next_date, os_params)
+        except Exception:
+            _vreg_state = None
+    os_params = regime_params(os_params, _vreg_state)
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
@@ -1439,6 +1454,8 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
         "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
         "os_capital": float(os_capital),
         "adj_applied": float(adj_applied),
+        "vol_regime_on": _vreg_on,
+        "vol_regime": _vreg_state,
     }
 
 
@@ -1472,6 +1489,16 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
     else:
         # 진행 중인 새 주(행 없음) → RR(2주전)/R(1주전) RSI로 직접 판정
         last_mode = get_current_week_mode(mode_series_df)
+
+    # 변동성 레짐(V): 주문 적용일이 위험 레짐 달이면 분할수·보유기간 교체 (엔진과 동일)
+    _vreg_on = bool(getattr(os_params, "vol_regime", False))
+    _vreg_state = None
+    if _vreg_on:
+        try:
+            _vreg_state = vol_regime_for(_next_date, os_params)
+        except Exception:
+            _vreg_state = None
+    os_params = regime_params(os_params, _vreg_state)
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
@@ -1531,6 +1558,8 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
         "latest_rsi_date": str(latest_rsi_row['week_end'].date()) if latest_rsi_row is not None else None,
         "os_capital": float(os_capital),
         "adj_applied": float(adj_applied),
+        "vol_regime_on": _vreg_on,
+        "vol_regime": _vreg_state,
     }
 
 
@@ -1571,6 +1600,15 @@ _DSS_PRESETS = [
      "sf_w": "0,3.5,1.5,1.562,1.625,1.688,1.75,0.5", "ag_w": "0,4,0.5,0.667,0.833,1,2.5",
      "help": "철벽형W — 저MDD (2010~2023만으로 탐색, 2024~ 봉인구간 검증 통과)\n"
              "16년 CAGR 60.3% | MDD -37.0% | Calmar 1.63"},
+    # ── V 프리셋: 공격형 + SOXX 변동성 위험 레짐 달 12분할 · 공세 보유 5일 (2026-11) ──
+    # 검증: reports/dss_vol_regime_*_2026-11.py (위험 기준 60/70/80%·반기·봉인구간)
+    {"label": "🌋 공격형V", "sf_div": 7, "sf_hold": 38, "sf_buy": 3.3, "sf_sell": 1.8,
+     "ag_div": 7, "ag_hold": 8, "ag_buy": 3.15, "ag_sell": 3.75,
+     "pcr": 75, "lcr": 20, "renewal_period": 10, "fee_rate": 0.04,
+     "vreg": "1",
+     "help": "공격형V — 공격형 + 변동성 위험 레짐 달에 12분할(투자금÷12)·공세 보유 5일\n"
+             "16년 CAGR 63.3% | MDD -42.5% | Calmar 1.49\n"
+             "위험 레짐 = 월말 SOXX 20일 변동성 상승 & 3년 백분위 ≥ 70% → 다음 달"},
 ]
 # ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다 — 모듈 로드 시
 #    preset_stats.json(평일 매일 자동 재계산)의 최신값으로 교체된다.
@@ -1582,7 +1620,9 @@ _DSS_PARAM_KEYS = ["sf_div","sf_hold","sf_buy","sf_sell",
                    "pcr","lcr","renewal_period","fee_rate"]
 # 티어 비중 (쉼표 문자열, 빈 값 = 균등) — 숫자 키와 별도 취급
 _DSS_W_KEYS = ["sf_w", "ag_w"]
-_DSS_ALL_KEYS = _DSS_PARAM_KEYS + _DSS_W_KEYS
+# 변동성 레짐(V) 사용 여부 ("1" = 사용, 빈 값 = 미사용)
+_DSS_V_KEYS = ["vreg"]
+_DSS_ALL_KEYS = _DSS_PARAM_KEYS + _DSS_W_KEYS + _DSS_V_KEYS
 
 
 def _w_str(v) -> str:
@@ -1590,10 +1630,33 @@ def _w_str(v) -> str:
     return ",".join(f"{x:g}" for x in parse_tier_weights(v))
 
 
+def _vreg(v) -> bool:
+    """vreg 값(문자열/불리언) → 사용 여부."""
+    return str(v if v is not None else "").strip().lower() not in ("", "0", "false", "none")
+
+
 def _w_kwargs(d) -> dict:
-    """params dict → DSSParams 티어 비중 인자."""
+    """params dict → DSSParams 티어 비중 + 변동성 레짐(V) 인자."""
     return {"sf_tier_weights": parse_tier_weights(d.get("sf_w", "")),
-            "ag_tier_weights": parse_tier_weights(d.get("ag_w", ""))}
+            "ag_tier_weights": parse_tier_weights(d.get("ag_w", "")),
+            "vol_regime": _vreg(d.get("vreg", ""))}
+
+
+_REGIME_BADGE = {"위험": ("🔴", "위험"), "승부": ("🟡", "승부"), "안정": ("🟢", "안정")}
+
+
+def _regime_note(os_result) -> str:
+    """주문표 레짐 안내 한 줄 (V 미사용이면 빈 문자열)."""
+    if not os_result.get("vol_regime_on"):
+        return ""
+    r = os_result.get("vol_regime")
+    if r is None:
+        return "🌋 변동성 레짐: 판정 대기 (SOXX 월말 데이터 없음 → 기본 규칙)"
+    ic, lb = _REGIME_BADGE.get(r, ("⚪", r))
+    if r == "위험":
+        return (f"🌋 이번 달 변동성 레짐: {ic} {lb} → {os_result.get('cur_divisions')}분할 "
+                f"(1회시드 = 투자금÷{os_result.get('cur_divisions')}) · 신규 매수 보유 {os_result.get('cur_max_hold')}일")
+    return f"🌋 이번 달 변동성 레짐: {ic} {lb} → 기본 규칙"
 
 _DSS_DEFAULT_PARAMS = _DSS_PRESETS[2]  # 안정형을 기본값으로
 
@@ -1618,6 +1681,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     cur_fee     = _ap.get("fee_rate", _DSS_DEFAULT_PARAMS["fee_rate"])
     cur_sf_w    = _w_str(_ap.get("sf_w", ""))
     cur_ag_w    = _w_str(_ap.get("ag_w", ""))
+    cur_vreg    = _vreg(_ap.get("vreg", ""))
 
     # ── 파라미터 테이블 ──
     # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
@@ -1634,7 +1698,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
         if all(abs(float(_cur_vals_dss[_k]) - float(_pp0[_k])) < 1e-9
                for _k in _DSS_PARAM_KEYS) and \
                 cur_sf_w == _w_str(_pp0.get("sf_w", "")) and \
-                cur_ag_w == _w_str(_pp0.get("ag_w", "")):
+                cur_ag_w == _w_str(_pp0.get("ag_w", "")) and \
+                cur_vreg == _vreg(_pp0.get("vreg", "")):
             _cur_preset_dss = _pp0["label"]
             break
 
@@ -1691,6 +1756,9 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
         if cur_sf_w or cur_ag_w:
             st.caption(f"🎚️ 티어 비중 — 안전(SF): `{cur_sf_w or '균등'}` · "
                        f"공세(AG): `{cur_ag_w or '균등'}` (0 = 보초병 1주)")
+        if cur_vreg:
+            st.caption("🌋 변동성 레짐(V) 적용 — SOXX 위험 레짐 달: 12분할(투자금÷12) · "
+                       "공세모드 신규 매수 보유 5일 · 위험 달이 끝나면 원래 분할수로 복귀")
 
         # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
         with st.expander("✏️ 파라미터 수정"):
@@ -1703,6 +1771,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                         st.session_state[f"dss_{sfx}_edit_{_k}"] = _pr[_k]
                     for _k in _DSS_W_KEYS:
                         st.session_state[f"dss_{sfx}_edit_{_k}"] = _w_str(_pr.get(_k, ""))
+                    st.session_state[f"dss_{sfx}_edit_vreg"] = _vreg(_pr.get("vreg", ""))
                     st.rerun()
             st.divider()
 
@@ -1714,6 +1783,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 "pcr": cur_pcr, "lcr": cur_lcr,
                 "renewal_period": cur_renew, "fee_rate": float(cur_fee),
                 "sf_w": cur_sf_w, "ag_w": cur_ag_w,
+                "vreg": cur_vreg,
             }
             for _k, _v in _edit_defaults.items():
                 _skey = f"dss_{sfx}_edit_{_k}"
@@ -1747,6 +1817,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                             placeholder="예: 0,4,1.25,1.25,1.25,1.25,1.25,1")
             _ew2.text_input("공세(AG) 비중", key=f"dss_{sfx}_edit_ag_w",
                             placeholder="비우면 균등")
+            st.checkbox("🌋 변동성 레짐(V) 적용 — 위험 레짐 달 12분할 · 공세 보유 5일",
+                        key=f"dss_{sfx}_edit_vreg")
 
             if st.button("💾 파라미터 저장", type="primary", key=f"dss_{sfx}_save_params",
                          use_container_width=True):
@@ -1764,6 +1836,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                         _w_warn.append(f"{_lab} 비중 {_n_w}개 ≠ 분할수 {_new_params[_dk]} → 균등으로 동작")
                 for _wm in _w_warn:
                     st.warning(_wm)
+                _new_params["vreg"] = "1" if _new_params.get("vreg") else ""
                 acct_data["params"] = _new_params
                 cfg["accounts"][acct_name] = acct_data
                 _save_dss_config(cfg)
@@ -2040,7 +2113,8 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 fee_rate=cur_fee / 100,
                 renewal_period=cur_renew,
                 pcr=cur_pcr / 100, lcr=cur_lcr / 100,
-                **_w_kwargs({"sf_w": cur_sf_w, "ag_w": cur_ag_w}),
+                **_w_kwargs({"sf_w": cur_sf_w, "ag_w": cur_ag_w,
+                             "vreg": "1" if cur_vreg else ""}),
             )
 
             today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -2083,6 +2157,9 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
         st.markdown(f"<div style='font-size:0.82em;color:#888;margin-bottom:4px'>"
                     f"데이터 기준: <b>{_last_date_str}</b></div>",
                     unsafe_allow_html=True)
+        _rn = _regime_note(_os)
+        if _rn:
+            (st.warning if _os.get("vol_regime") == "위험" else st.info)(_rn)
 
         # ── 모드 & 현황 카드 ──
         _rsi_val = f"{_os['latest_rsi']:.2f}" if _os['latest_rsi'] else "-"
@@ -3300,7 +3377,7 @@ RSI   = RS / (1 + RS) × 100
         _use_p = dict(p)
         for _k in _DSS_PARAM_KEYS:
             _use_p[_k] = _pr[_k]
-        for _k in _DSS_W_KEYS:
+        for _k in _DSS_W_KEYS + _DSS_V_KEYS:
             _use_p[_k] = _pr.get(_k, "")
 
     # 선택된 파라미터 미리보기
@@ -3319,6 +3396,8 @@ RSI   = RS / (1 + RS) × 100
         if _use_p.get("sf_w") or _use_p.get("ag_w"):
             st.caption(f"🎚️ 티어 비중 — 안전(SF): `{_use_p.get('sf_w') or '균등'}` · "
                        f"공세(AG): `{_use_p.get('ag_w') or '균등'}` (0 = 보초병 1주)")
+        if _vreg(_use_p.get("vreg")):
+            st.caption("🌋 변동성 레짐(V) — SOXX 위험 레짐 달 12분할 · 공세 보유 5일")
 
     if st.button("▶ 성과 분석 실행", type="primary", key="dss_run_intro_perf"):
         with st.spinner("데이터 로드 및 분석 중..."):

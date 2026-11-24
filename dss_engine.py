@@ -612,6 +612,16 @@ class DSSParams:
     trend_src: str = "soxl"       # "soxl" | "qqq" (qqq는 trend_prices 인자로 종가 전달)
     trend_mult: float = 0.0       # 하락 추세 시 매수 수량 배율 (0 = 매수 중단)
     trend_rsi: bool = False       # True면 '주간 RSI 하락(R < RR)'도 함께 만족할 때만 발동
+    # 변동성 레짐 (공격형V, 2026-11): 월말 SOXX 20일 변동성이 직전 월말보다 오르고
+    # 3년(756거래일) 백분위 ≥ vol_risk_pct 이면 다음 달 = '위험'.
+    # 위험 달에는 분할수 risk_divisions (1회시드 = 투자금÷분할수, 예수금 한도) +
+    # 그 달 신규 매수의 최대보유기간 단축(0 = 모드 기본값 유지).
+    # 위험 달이 끝나면 원래 분할수로 복귀 → 보유 수가 분할수 미만이 될 때까지 매수 대기.
+    vol_regime: bool = False
+    vol_risk_pct: float = 0.70
+    risk_divisions: int = 12
+    risk_ag_hold: int = 5
+    risk_sf_hold: int = 0
 
 
 def tier_seed(capital: float, divisions: int, tier: int, weights,
@@ -657,6 +667,105 @@ def cash_capped_qty(qty: int, cash: float, buy_order: float, fee_rate: float) ->
         return 0
     cap = int(max(0.0, cash) / (buy_order * (1 + fee_rate)))
     return min(qty, cap)
+
+
+# ──────────────────────────────────────────────
+# 변동성 레짐 (공격형V) — 웹·텔레그램·백테스트 공용 (SSOT)
+# ──────────────────────────────────────────────
+REGIME_TICKER = "SOXX"
+REGIME_START = "2006-12-01"
+_REGIME_PX = {"s": None}
+_REGIME_MONTHS = {}
+
+
+def load_regime_prices():
+    """SOXX 미조정 종가 (확정 종가만, 모듈 캐시)."""
+    s = _REGIME_PX["s"]
+    if s is not None and len(s):
+        return s
+    df = load_price_data(REGIME_TICKER, REGIME_START, "2100-01-01")
+    s = df["Close"].astype(float).dropna()
+    s.index = pd.to_datetime(s.index)
+    if len(s):
+        _REGIME_PX["s"] = s
+    return s
+
+
+def vol_regime_months(soxx: pd.Series, risk_pct: float = 0.70, safe_pct: float = 0.50,
+                      vol_win: int = 20, pct_win: int = 756) -> dict:
+    """{적용 월 Period: '위험'|'안정'|'승부'} — 월말 판정을 다음 달에 적용 (장 전 확정 정보만).
+    변동성 = 20일 일간수익률 표준편차 × √252, 백분위 = 최근 756거래일 중 자기보다 낮은 비율,
+    방향 = 직전 월말 변동성 대비 상승/하락."""
+    key = (len(soxx), soxx.index[-1] if len(soxx) else None,
+           float(soxx.iloc[-1]) if len(soxx) else None, risk_pct, safe_pct, vol_win, pct_win)
+    hit = _REGIME_MONTHS.get(key)
+    if hit is not None:
+        return hit
+    vol = (soxx.pct_change().rolling(vol_win).std() * np.sqrt(252)).dropna()
+    v = vol.values
+    pct = pd.Series([np.mean(v[max(0, i - pct_win + 1): i + 1] < v[i]) for i in range(len(v))],
+                    index=vol.index)
+    ends = vol.groupby(vol.index.to_period("M")).tail(1)
+    # 마지막 달이 아직 진행 중이면(마지막 데이터가 그 달 마지막 거래일이 아님) 판정 보류
+    if len(ends):
+        _last = ends.index[-1]
+        try:
+            _nxt = next_us_trading_days(_last, 1)
+            if len(_nxt) and _nxt[0].to_period("M") == _last.to_period("M"):
+                ends = ends.iloc[:-1]
+        except Exception:
+            pass
+    out, prev = {}, None
+    for d, val in ends.items():
+        if prev is not None:
+            up, pc = val > prev, pct[d]
+            r = "위험" if (up and pc >= risk_pct) else ("안정" if ((not up) and pc < safe_pct) else "승부")
+            out[d.to_period("M") + 1] = r
+        prev = val
+    if len(_REGIME_MONTHS) > 16:
+        _REGIME_MONTHS.clear()
+    _REGIME_MONTHS[key] = out
+    return out
+
+
+def _regime_months_for(params, regime_prices, need_period):
+    """레짐 월 맵. 캐시 데이터가 need_period 판정 전(직전 월말 종가 없음)이면 한 번 새로 받는다."""
+    px = regime_prices if regime_prices is not None else load_regime_prices()
+    months = vol_regime_months(px, params.vol_risk_pct)
+    if regime_prices is None and need_period is not None and need_period not in months:
+        _REGIME_PX["s"] = None
+        months = vol_regime_months(load_regime_prices(), params.vol_risk_pct)
+    return months
+
+
+def regime_day_map(dates, params, regime_prices=None) -> dict:
+    """거래일 → 레짐. params.vol_regime 이 꺼져 있으면 {}."""
+    if not getattr(params, "vol_regime", False) or len(dates) == 0:
+        return {}
+    months = _regime_months_for(params, regime_prices, pd.Timestamp(dates[-1]).to_period("M"))
+    return {d: months[pd.Timestamp(d).to_period("M")] for d in dates
+            if pd.Timestamp(d).to_period("M") in months}
+
+
+def vol_regime_for(date, params, regime_prices=None):
+    """주문 적용일(다음 거래일)의 레짐 — 판정 불가/미사용이면 None."""
+    if not getattr(params, "vol_regime", False):
+        return None
+    per = pd.Timestamp(date).to_period("M")
+    return _regime_months_for(params, regime_prices, per).get(per)
+
+
+def regime_params(params, regime):
+    """레짐 반영 파라미터 (주문표용). 위험이면 분할수·보유기간 교체, 아니면 그대로."""
+    if regime != "위험" or not getattr(params, "vol_regime", False):
+        return params
+    from dataclasses import replace
+    kw = dict(sf_divisions=params.risk_divisions, ag_divisions=params.risk_divisions)
+    if params.risk_ag_hold:
+        kw["ag_max_hold"] = params.risk_ag_hold
+    if params.risk_sf_hold:
+        kw["sf_max_hold"] = params.risk_sf_hold
+    return replace(params, **kw)
 
 
 def order_buy_plan(params, mode: str, capital: float, n_pos: int,
@@ -807,7 +916,13 @@ def run_backtest(params: DSSParams,
                  start_date: str = "2024-01-02",
                  end_date: str = "2026-04-10",
                  capital_adj_history: list = None,
-                 trend_prices=None) -> pd.DataFrame:
+                 trend_prices=None,
+                 day_modes: dict = None,
+                 day_buy_mult: dict = None,
+                 day_divisions: dict = None,
+                 day_hold: dict = None,
+                 split_mode: str = None,
+                 regime_prices=None) -> pd.DataFrame:
     """
     DSS 동파법 백테스트 실행.
 
@@ -838,6 +953,7 @@ def run_backtest(params: DSSParams,
     # 모드 맵 생성
     mode_map = get_week_mode_map(mode_series, all_trading_days)
     _tflags = trend_flags(params, soxl_daily, mode_series, trend_prices)
+    _vr_map = regime_day_map(trading_days, params, regime_prices)   # 공격형V
 
     # 자본 조정 이력 정렬 (날짜 오름차순)
     pending_adjs = []
@@ -880,6 +996,8 @@ def run_backtest(params: DSSParams,
         close = round(float(close), 2)  # yfinance float32 정밀도 보정
 
         mode = mode_map.get(date, "AG")
+        if day_modes:   # 실험용 외부 모드 (장 전 확정 정보로 만든 날짜별 모드)
+            mode = day_modes.get(date, mode)
 
         # 모드별 파라미터
         if mode == "AG":
@@ -893,7 +1011,26 @@ def run_backtest(params: DSSParams,
             sell_pct = params.sf_sell_pct
             max_hold = params.sf_max_hold
 
+        if _vr_map and _vr_map.get(date) == "위험":   # 변동성 위험 레짐 달
+            divisions = params.risk_divisions
+            if mode == "AG":
+                if params.risk_ag_hold:
+                    max_hold = params.risk_ag_hold
+            elif params.risk_sf_hold:
+                max_hold = params.risk_sf_hold
+        if day_divisions and date in day_divisions:   # 실험용 날짜별 분할수
+            divisions = int(day_divisions[date])
+        if day_hold and date in day_hold:             # 실험용 날짜별 최대보유기간
+            max_hold = int(day_hold[date])
         seed_per_trade = capital / divisions
+        if split_mode and day_divisions and date in day_divisions:
+            # 실험: 남은 금액 ÷ 남은 칸 (capital_left = 투자금 - 보유 매수금, cash_left = 예수금)
+            _left_slots = max(1, divisions - len(positions))
+            if split_mode == "capital_left":
+                _left = capital - sum(p.buy_amount for p in positions)
+            else:
+                _left = cash
+            seed_per_trade = max(0.0, _left) / _left_slots
 
         # 당일 시작(전일 마감) 시점 보유 수 — 매수 주문 존재 여부의 기준.
         # 주문표는 전일 마감 상태로 생성되므로, 풀매수 상태에서 당일
@@ -984,6 +1121,8 @@ def run_backtest(params: DSSParams,
                 else:
                     buy_qty = int(seed_per_trade / buy_order_price)
                 buy_qty = apply_trend(buy_qty, _tflags.get(date, False), params.trend_mult)
+                if day_buy_mult:
+                    buy_qty = int(buy_qty * day_buy_mult.get(date, 1.0))
                 buy_qty = cash_capped_qty(buy_qty, cash_at_open, buy_order_price, params.fee_rate)
                 if buy_qty > 0:
                     buy_amount = buy_qty * close
@@ -1087,7 +1226,13 @@ def run_backtest_fast(params: DSSParams,
                       start_date: str = "2024-01-02",
                       end_date: str = "2026-04-10",
                       capital_adj_history: list = None,
-                      trend_prices=None) -> dict:
+                      trend_prices=None,
+                      day_modes: dict = None,
+                      day_buy_mult: dict = None,
+                      day_divisions: dict = None,
+                      day_hold: dict = None,
+                      split_mode: str = None,
+                      regime_prices=None) -> dict:
     """
     최적화 전용 경량 백테스트.
     UI 출력용 데이터를 생성하지 않고, 핵심 지표만 반환.
@@ -1127,8 +1272,10 @@ def run_backtest_fast(params: DSSParams,
     mode_map, date_to_idx = _fast_lookup_maps(mode_series, idx)
     _tflags = trend_flags(params, soxl_daily, mode_series, trend_prices)
     _tmult = params.trend_mult
+    _vr_map = regime_day_map(trade_dates, params, regime_prices)   # 공격형V
     mode_arr = np.array(
-        [1 if mode_map.get(d, "AG") == "AG" else 0 for d in trade_dates],
+        [1 if (day_modes.get(d) if day_modes and d in day_modes
+               else mode_map.get(d, "AG")) == "AG" else 0 for d in trade_dates],
         dtype=np.int8
     )
     n_all = len(idx)
@@ -1207,7 +1354,25 @@ def run_backtest_fast(params: DSSParams,
             sell_pct = sf_sell
             max_hold = sf_hold
 
+        if _vr_map and _vr_map.get(cur_date) == "위험":   # 변동성 위험 레짐 달
+            divisions = params.risk_divisions
+            if is_ag:
+                if params.risk_ag_hold:
+                    max_hold = params.risk_ag_hold
+            elif params.risk_sf_hold:
+                max_hold = params.risk_sf_hold
+        if day_divisions and cur_date in day_divisions:   # 실험용 날짜별 분할수
+            divisions = int(day_divisions[cur_date])
+        if day_hold and cur_date in day_hold:             # 실험용 날짜별 최대보유기간
+            max_hold = int(day_hold[cur_date])
         seed = capital / divisions
+        if split_mode and day_divisions and cur_date in day_divisions:
+            _left_slots = max(1, divisions - len(positions))
+            if split_mode == "capital_left":
+                _left = capital - sum(p[3] for p in positions)
+            else:
+                _left = cash
+            seed = max(0.0, _left) / _left_slots
         tier_w = tier_w_ag if is_ag else tier_w_sf
         cur_idx = date_to_idx.get(trade_dates[i])
 
@@ -1250,6 +1415,8 @@ def run_backtest_fast(params: DSSParams,
                     buy_qty = int(seed / buy_order)
                 if _tflags:
                     buy_qty = apply_trend(buy_qty, _tflags.get(cur_date, False), _tmult)
+                if day_buy_mult:
+                    buy_qty = int(buy_qty * day_buy_mult.get(cur_date, 1.0))
                 buy_qty = cash_capped_qty(buy_qty, cash_at_open, buy_order, fee_r)
                 if buy_qty > 0:
                     buy_amt = buy_qty * close
