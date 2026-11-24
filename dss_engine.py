@@ -622,6 +622,9 @@ class DSSParams:
     risk_divisions: int = 12
     risk_ag_hold: int = 5
     risk_sf_hold: int = 0
+    # V 적용 시작일 (YYYY-MM-DD, 빈 값 = 처음부터). 공격형 → 공격형V 처럼 기존 계좌를
+    # 전환할 때, 시작일 이전은 기존 규칙 그대로 재현 → 보유 내역이 실계좌와 일치.
+    vol_regime_from: str = ""
 
 
 def tier_seed(capital: float, divisions: int, tier: int, weights,
@@ -759,13 +762,34 @@ def regime_day_map(dates, params, regime_prices=None) -> dict:
     if not getattr(params, "vol_regime", False) or len(dates) == 0:
         return {}
     months = _regime_months_for(params, regime_prices, pd.Timestamp(dates[-1]).to_period("M"))
+    _from = _regime_from(params)
     return {d: months[pd.Timestamp(d).to_period("M")] for d in dates
-            if pd.Timestamp(d).to_period("M") in months}
+            if pd.Timestamp(d).to_period("M") in months
+            and (_from is None or pd.Timestamp(d) >= _from)}
+
+
+def _regime_from(params):
+    """V 적용 시작일 Timestamp (없거나 형식 오류면 None)."""
+    v = str(getattr(params, "vol_regime_from", "") or "").strip()
+    if not v:
+        return None
+    try:
+        return pd.Timestamp(v).normalize()
+    except Exception:
+        return None
+
+
+def regime_active(date, params) -> bool:
+    """이 날짜에 V 규칙이 켜져 있는지 (vol_regime + 시작일 경과)."""
+    if not getattr(params, "vol_regime", False):
+        return False
+    f = _regime_from(params)
+    return f is None or pd.Timestamp(date).normalize() >= f
 
 
 def vol_regime_for(date, params, regime_prices=None):
     """주문 적용일(다음 거래일)의 레짐 — 판정 불가/미사용이면 None."""
-    if not getattr(params, "vol_regime", False):
+    if not regime_active(date, params):
         return None
     per = pd.Timestamp(date).to_period("M")
     return _regime_months_for(params, regime_prices, per).get(per)

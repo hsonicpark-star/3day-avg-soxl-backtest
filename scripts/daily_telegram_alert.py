@@ -529,7 +529,7 @@ def calc_dss_order(acct_data: dict) -> dict | None:
                                 build_mode_series, get_week_mode_map,
                                 get_current_week_mode, next_us_trading_days,
                                 parse_tier_weights, order_buy_plan,
-                                vol_regime_for, regime_params)
+                                vol_regime_for, regime_params, regime_active)
     except ImportError as e:
         print(f"    ⚠️ dss_engine import 실패: {e}")
         return None
@@ -582,6 +582,7 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         ag_tier_weights=parse_tier_weights(ap.get("ag_w", "")),
         # 변동성 레짐(공격형V) — 웹 주문표와 동일 (엔진이 SOXX 를 직접 로드)
         vol_regime=str(ap.get("vreg", "") or "").strip().lower() not in ("", "0", "false", "none"),
+        vol_regime_from=str(ap.get("vreg_from", "") or "").strip(),
     )
 
     today_str = datetime.today().strftime("%Y-%m-%d")
@@ -705,6 +706,8 @@ def calc_dss_order(acct_data: dict) -> dict | None:
         "latest_rsi": latest_rsi, "prev_rsi": prev_rsi,
         "data_warning": _data_warning,
         "vol_regime_on": _vreg_on, "vol_regime": _vreg_state,
+        "vol_regime_pending": (dss_params.vol_regime_from
+                               if _vreg_on and not regime_active(_next_date, dss_params) else ""),
     }
 
 
@@ -724,7 +727,9 @@ def build_dss_message(os_result: dict, acct_name: str = "") -> str:
         f"총자산: <b>${_o['total_asset']:,.0f}</b>  (현금 ${_o['cash']:,.0f})",
         f"보유: {_o['n_pos']}/{_o['cur_divisions']}시드",
     ]
-    if _o.get("vol_regime_on"):
+    if _o.get("vol_regime_on") and _o.get("vol_regime_pending"):
+        lines.append(f"🌋 변동성 레짐(V): {_o['vol_regime_pending']}부터 적용")
+    elif _o.get("vol_regime_on"):
         _r = _o.get("vol_regime")
         if _r == "위험":
             lines.append(f"🌋 변동성 레짐: 🔴 위험 → {_o['cur_divisions']}분할 · "

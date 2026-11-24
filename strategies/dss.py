@@ -43,7 +43,7 @@ from dss_engine import (
     get_week_mode_map, get_current_week_mode,
     run_backtest, run_backtest_fast, DSSParams,
     next_us_trading_days,
-    parse_tier_weights, order_buy_plan, vol_regime_for, regime_params,
+    parse_tier_weights, order_buy_plan, vol_regime_for, regime_params, regime_active,
     vol_regime_table, load_regime_prices,
 )
 
@@ -1389,6 +1389,8 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
         except Exception:
             _vreg_state = None
     os_params = regime_params(os_params, _vreg_state)
+    _vreg_pending = (os_params.vol_regime_from
+                     if _vreg_on and not regime_active(_next_date, os_params) else "")
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
@@ -1457,6 +1459,7 @@ def _build_os_result_from_backtest(bt_df, os_params, os_capital, qqq,
         "adj_applied": float(adj_applied),
         "vol_regime_on": _vreg_on,
         "vol_regime": _vreg_state,
+        "vol_regime_pending": _vreg_pending,
     }
 
 
@@ -1500,6 +1503,8 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
         except Exception:
             _vreg_state = None
     os_params = regime_params(os_params, _vreg_state)
+    _vreg_pending = (os_params.vol_regime_from
+                     if _vreg_on and not regime_active(_next_date, os_params) else "")
 
     if last_mode == "AG":
         cur_divisions = os_params.ag_divisions
@@ -1561,6 +1566,7 @@ def _build_os_result_fallback(os_params, os_capital, adj_history=None):
         "adj_applied": float(adj_applied),
         "vol_regime_on": _vreg_on,
         "vol_regime": _vreg_state,
+        "vol_regime_pending": _vreg_pending,
     }
 
 
@@ -1640,7 +1646,18 @@ def _w_kwargs(d) -> dict:
     """params dict → DSSParams 티어 비중 + 변동성 레짐(V) 인자."""
     return {"sf_tier_weights": parse_tier_weights(d.get("sf_w", "")),
             "ag_tier_weights": parse_tier_weights(d.get("ag_w", "")),
-            "vol_regime": _vreg(d.get("vreg", ""))}
+            "vol_regime": _vreg(d.get("vreg", "")),
+            "vol_regime_from": str(d.get("vreg_from", "") or "").strip()}
+
+
+def _next_order_date() -> str:
+    """다음 주문 적용일 (미국 거래일). 미국장 마감(16:30 ET) 전이면 오늘(거래일일 때)."""
+    _now = pd.Timestamp.now(tz="America/New_York")
+    _base = _now.normalize().tz_localize(None)
+    if _now.hour * 60 + _now.minute < 16 * 60 + 30:
+        _base = _base - pd.Timedelta(days=1)
+    _nx = next_us_trading_days(_base, 1)
+    return str(_nx[0].date()) if len(_nx) else str(_base.date())
 
 
 _REGIME_BADGE = {"위험": ("🔴", "위험"), "승부": ("🟡", "승부"), "안정": ("🟢", "안정")}
@@ -1650,6 +1667,8 @@ def _regime_note(os_result) -> str:
     """주문표 레짐 안내 한 줄 (V 미사용이면 빈 문자열)."""
     if not os_result.get("vol_regime_on"):
         return ""
+    if os_result.get("vol_regime_pending"):
+        return f"🌋 변동성 레짐(V): {os_result['vol_regime_pending']}부터 적용 — 그 전까지는 기본 규칙"
     r = os_result.get("vol_regime")
     if r is None:
         return "🌋 변동성 레짐: 판정 대기 (SOXX 월말 데이터 없음 → 기본 규칙)"
@@ -1683,6 +1702,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
     cur_sf_w    = _w_str(_ap.get("sf_w", ""))
     cur_ag_w    = _w_str(_ap.get("ag_w", ""))
     cur_vreg    = _vreg(_ap.get("vreg", ""))
+    cur_vreg_from = str(_ap.get("vreg_from", "") or "").strip()
 
     # ── 파라미터 테이블 ──
     # 현재 파라미터가 프리셋과 일치하면 배지로 표시 (어떤 프리셋인지 한눈에)
@@ -1758,7 +1778,9 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
             st.caption(f"🎚️ 티어 비중 — 안전(SF): `{cur_sf_w or '균등'}` · "
                        f"공세(AG): `{cur_ag_w or '균등'}` (0 = 보초병 1주)")
         if cur_vreg:
-            st.caption("🌋 변동성 레짐(V) 적용 — SOXX 위험 레짐 달: 12분할(투자금÷12) · "
+            st.caption("🌋 변동성 레짐(V) 적용"
+                       + (f" (**{cur_vreg_from}부터**, 그 전은 기본 규칙)" if cur_vreg_from else "")
+                       + " — SOXX 위험 레짐 달: 12분할(투자금÷12) · "
                        "공세모드 신규 매수 보유 5일 · 위험 달이 끝나면 원래 분할수로 복귀")
 
         # ── 파라미터 수정 (프리셋 + 에디터 + 저장) ──
@@ -1785,6 +1807,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 "renewal_period": cur_renew, "fee_rate": float(cur_fee),
                 "sf_w": cur_sf_w, "ag_w": cur_ag_w,
                 "vreg": cur_vreg,
+                "vreg_from": cur_vreg_from,
             }
             for _k, _v in _edit_defaults.items():
                 _skey = f"dss_{sfx}_edit_{_k}"
@@ -1818,8 +1841,14 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                             placeholder="예: 0,4,1.25,1.25,1.25,1.25,1.25,1")
             _ew2.text_input("공세(AG) 비중", key=f"dss_{sfx}_edit_ag_w",
                             placeholder="비우면 균등")
-            st.checkbox("🌋 변동성 레짐(V) 적용 — 위험 레짐 달 12분할 · 공세 보유 5일",
-                        key=f"dss_{sfx}_edit_vreg")
+            _vc1, _vc2 = st.columns([3, 2])
+            _vc1.checkbox("🌋 변동성 레짐(V) 적용 — 위험 레짐 달 12분할 · 공세 보유 5일",
+                          key=f"dss_{sfx}_edit_vreg")
+            _vc2.text_input("V 적용 시작일 (YYYY-MM-DD)", key=f"dss_{sfx}_edit_vreg_from",
+                            placeholder="비우면 계좌 시작일부터",
+                            help="보유 중인 계좌를 V로 바꿀 때 사용. 이 날짜 전은 기존 규칙으로 "
+                                 "계산해 보유 내역이 실계좌와 그대로 유지됩니다. "
+                                 "V를 새로 켜면 다음 주문일로 자동 입력됩니다.")
 
             if st.button("💾 파라미터 저장", type="primary", key=f"dss_{sfx}_save_params",
                          use_container_width=True):
@@ -1838,6 +1867,22 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 for _wm in _w_warn:
                     st.warning(_wm)
                 _new_params["vreg"] = "1" if _new_params.get("vreg") else ""
+                _vf = str(_new_params.get("vreg_from", "") or "").strip()
+                if not _new_params["vreg"]:
+                    _vf = ""
+                elif (not cur_vreg and not _vf
+                      and str(acct_data.get("os_start", "")) < _next_order_date()):
+                    # 기존 계좌를 V로 전환 → 다음 주문일부터 적용 (과거 재계산으로 보유 내역이 바뀌는 것 방지)
+                    _vf = _next_order_date()
+                    st.info(f"🌋 V 적용 시작일을 {_vf} 로 설정했습니다 — "
+                            f"그 전 매매 내역은 기존 규칙 그대로 유지됩니다.")
+                if _vf:
+                    try:
+                        _vf = str(pd.Timestamp(_vf).date())
+                    except Exception:
+                        st.warning(f"V 적용 시작일 형식 오류('{_vf}') → 다음 주문일로 저장")
+                        _vf = _next_order_date()
+                _new_params["vreg_from"] = _vf
                 acct_data["params"] = _new_params
                 cfg["accounts"][acct_name] = acct_data
                 _save_dss_config(cfg)
@@ -2115,7 +2160,7 @@ def _render_dss_account(acct_name, acct_data, cfg, p, idx):
                 renewal_period=cur_renew,
                 pcr=cur_pcr / 100, lcr=cur_lcr / 100,
                 **_w_kwargs({"sf_w": cur_sf_w, "ag_w": cur_ag_w,
-                             "vreg": "1" if cur_vreg else ""}),
+                             "vreg": "1" if cur_vreg else "", "vreg_from": cur_vreg_from}),
             )
 
             today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
