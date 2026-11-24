@@ -3494,9 +3494,11 @@ RSI   = RS / (1 + RS) × 100
         bt_yearly['연도'] = bt_yearly['날짜'].dt.year
 
         yearly_rows = []
+        _prev_end = float(_initial_capital)   # 연간 수익률 = 전년 말(첫해: 시작 자본) 대비
         for year, grp in bt_yearly.groupby('연도'):
-            start_val = float(grp.iloc[0]['총자산'])
+            start_val = _prev_end
             end_val = float(grp.iloc[-1]['총자산'])
+            _prev_end = end_val
             yr_ret = (end_val / start_val - 1) * 100
             yr_peak = grp['총자산'].cummax()
             yr_dd = (grp['총자산'] - yr_peak) / yr_peak

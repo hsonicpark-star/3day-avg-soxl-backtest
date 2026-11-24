@@ -458,8 +458,11 @@ def render_backtest_tab(params):
     st.subheader("연도별 성과")
     log2 = log.copy(); log2['연도'] = log2['날짜'].dt.year
     yearly = []
+    _prev_end = None   # 연간 수익률 = 전년 말 대비 (첫해만 첫 거래일 기준)
     for yr, g in log2.groupby('연도'):
-        ret = (g.iloc[-1]['총자산'] / g.iloc[0]['총자산'] - 1) * 100
+        _start = _prev_end if _prev_end is not None else g.iloc[0]['총자산']
+        ret = (g.iloc[-1]['총자산'] / _start - 1) * 100
+        _prev_end = g.iloc[-1]['총자산']
         peak = g['총자산'].cummax(); mdd_y = ((g['총자산'] - peak) / peak).min() * 100
         ty = trades[(pd.to_datetime(trades['매도일']).dt.year == yr)] if len(trades) else trades
         wr = (ty['실현손익'] > 0).mean() * 100 if len(ty) else 0

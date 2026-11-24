@@ -440,9 +440,11 @@ def render_backtest_tab(params: dict):
     st.subheader("연도별 성과")
     df["연도"] = df["날짜"].dt.year
     yearly = []
+    _prev_end = None   # 연간 수익률 = 전년 말 대비 (첫해만 첫 거래일 기준)
     for year, grp in df.groupby("연도"):
-        first_asset = grp.iloc[0]["총자산"]
+        first_asset = _prev_end if _prev_end is not None else grp.iloc[0]["총자산"]
         last_asset = grp.iloc[-1]["총자산"]
+        _prev_end = last_asset
         ret = (last_asset / first_asset - 1) * 100
         mdd_y = grp["DD(%)"].min()
         sells_y = [s for s in sells if s["매도일"].startswith(str(year))]
@@ -1549,9 +1551,11 @@ QQQ 주간종가에 GROWTH 함수(지수회귀)로 추세선 계산.
     st.subheader("📅 연도별 성과")
     df["연도"] = df["날짜"].dt.year
     yearly = []
+    _prev_end = None   # 연간 수익률 = 전년 말 대비 (첫해만 첫 거래일 기준)
     for year, grp in df.groupby("연도"):
-        first_asset = grp.iloc[0]["총자산"]
+        first_asset = _prev_end if _prev_end is not None else grp.iloc[0]["총자산"]
         last_asset = grp.iloc[-1]["총자산"]
+        _prev_end = last_asset
         ret = (last_asset / first_asset - 1) * 100
         mdd_y = grp["DD(%)"].min()
         sells_y = [s for s in sells if s["매도일"].startswith(str(year))]
