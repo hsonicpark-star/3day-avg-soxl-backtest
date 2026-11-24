@@ -44,6 +44,7 @@ from dss_engine import (
     run_backtest, run_backtest_fast, DSSParams,
     next_us_trading_days,
     parse_tier_weights, order_buy_plan, vol_regime_for, regime_params,
+    vol_regime_table, load_regime_prices,
 )
 
 from common.config import _IS_CLOUD, _CONFIG, load_config, save_config, \
@@ -3170,6 +3171,7 @@ QQQ 주간 RSI를 기반으로 **안전모드(SF)**와 **공세모드(AG)**를 �
 - **LOC 주문**: 장 마감 직전 종가 기준 조건부 주문
 - **시드 분할 관리**: 각 시드별 독립적 매수-매도-손절 사이클
 - **자동 복리**: 매도 N회마다 실현손익을 투자금에 반영
+- **변동성 레짐 (V 프리셋)**: 반도체 변동성이 커지는 달에는 더 잘게 나눠 매수
         """)
 
     with right:
@@ -3349,6 +3351,91 @@ RSI   = RS / (1 + RS) × 100
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ──────────────────────────────────────────
+    # 5-1. 변동성 레짐 (V 프리셋)
+    # ──────────────────────────────────────────
+    st.subheader("🌋 변동성 레짐 (V 프리셋)")
+    st.markdown("""
+QQQ RSI 모드(안전/공세)는 **방향**을 보고, 변동성 레짐은 **흔들림의 크기**를 봅니다.
+매월 말 반도체 ETF **SOXX**의 변동성을 판정해, 다음 달이 '위험' 레짐이면
+**매수를 더 잘게 나누고 공세모드 보유기간을 줄여** 급락 구간의 낙폭을 줄입니다.
+모드 판정·매수/매도가 공식·복리 규칙은 그대로이고, 위험 달에만 아래 두 가지가 바뀝니다.
+    """)
+
+    v1, v2 = st.columns([3, 2])
+    with v1:
+        st.markdown("##### 월간 레짐 판정 (매월 마지막 거래일 종가 기준 → 다음 달 적용)")
+        st.dataframe(pd.DataFrame({
+            "레짐": ["🔴 위험", "🟢 안정", "🟡 승부"],
+            "조건": ["변동성 상승  &  3년 백분위 ≥ 70%",
+                   "변동성 하락  &  3년 백분위 < 50%",
+                   "그 외"],
+            "다음 달 매매": ["12분할 · 공세 신규 매수 보유 5일",
+                         "기본 규칙", "기본 규칙"],
+        }), hide_index=True, use_container_width=True)
+        st.markdown("""
+##### 위험 달에 바뀌는 규칙
+1. **분할수 12** — 1회시드 = `투자금 ÷ 12` (예수금 한도 안에서), 보유는 최대 12개까지
+2. **공세모드(AG) 신규 매수의 최대보유기간 5일** — 안전모드(SF)는 기본값 유지
+3. 이미 들고 있는 시드는 매수 당시의 매도목표가·손절일을 그대로 유지
+
+##### 위험 달이 끝나면
+- 원래 분할수(공격형 7)로 복귀합니다.
+- 보유 수가 분할수 이상이면, **보유가 분할수 미만으로 줄어들 때까지 신규 매수를 쉽니다.**
+        """)
+    with v2:
+        st.info("""
+**변동성 계산 (SOXX)**
+```
+변동성 =
+ STDEV(20일 수익률)
+ × √252
+
+백분위 =
+ 최근 756거래일(≈3년) 중
+ 변동성이 더 낮았던 날 비율
+
+방향 =
+ 이번 월말 vs 직전 월말
+```
+**확정된 월말 종가**만 쓰므로
+주문표에 미래 정보가 섞이지 않습니다.
+        """)
+
+    st.markdown("##### 백테스트 비교 (2010-03 ~ 현재)")
+    st.dataframe(pd.DataFrame({
+        "프리셋": ["🚀 공격형", "🌋 공격형V"],
+        "CAGR": ["65.6%", "63.3%"],
+        "MDD": ["-58.0%", "-42.5%"],
+        "칼마": ["1.13", "1.49"],
+        "2020 MDD": ["-49.9%", "-28.1%"],
+        "2022 수익 / MDD": ["+6.9% / -40.1%", "+27.4% / -20.0%"],
+        "2026 MDD": ["-58.0%", "-42.4%"],
+    }), hide_index=True, use_container_width=True)
+    st.caption("위험 달은 200개월 중 47개월(약 23%). 급락기(2020·2022·2026)에 낙폭이 크게 줄고, "
+               "변동성이 높았던 상승기(2019·2024)에는 수익을 일부 양보합니다. "
+               "위험 기준을 60~80%로 바꿔도 모두 공격형보다 칼마가 높았습니다.")
+
+    # 최근 판정 내역 (실시간)
+    with st.expander("🗓️ 최근 월간 레짐 판정", expanded=True):
+        try:
+            _vt = vol_regime_table(load_regime_prices()).tail(8).iloc[::-1]
+            _ic = {"위험": "🔴 위험", "안정": "🟢 안정", "승부": "🟡 승부"}
+            st.dataframe(pd.DataFrame({
+                "적용 월": [str(x) for x in _vt["적용월"]],
+                "레짐": [_ic.get(x, x) for x in _vt["레짐"]],
+                "판정일 (전월 말)": [pd.Timestamp(x).strftime("%Y-%m-%d") for x in _vt["판정일"]],
+                "SOXX 변동성": [f"{x * 100:.1f}%" for x in _vt["변동성"]],
+                "3년 백분위": [f"{x * 100:.0f}%" for x in _vt["백분위"]],
+                "방향": ["▲ 상승" if x == "상승" else "▼ 하락" for x in _vt["방향"]],
+            }), hide_index=True, use_container_width=True)
+            st.caption("이번 달 레짐은 V 프리셋 계좌의 주문표와 텔레그램 알림에도 표시됩니다. "
+                       "다음 달 레짐은 이번 달 마지막 거래일 종가가 확정된 뒤 정해집니다.")
+        except Exception as _ve:
+            st.caption(f"⚠️ SOXX 데이터를 불러오지 못해 판정 내역을 표시할 수 없습니다: {_ve}")
 
     st.divider()
 

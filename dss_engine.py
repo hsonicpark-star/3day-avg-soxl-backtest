@@ -691,12 +691,12 @@ def load_regime_prices():
     return s
 
 
-def vol_regime_months(soxx: pd.Series, risk_pct: float = 0.70, safe_pct: float = 0.50,
-                      vol_win: int = 20, pct_win: int = 756) -> dict:
-    """{적용 월 Period: '위험'|'안정'|'승부'} — 월말 판정을 다음 달에 적용 (장 전 확정 정보만).
+def vol_regime_table(soxx: pd.Series, risk_pct: float = 0.70, safe_pct: float = 0.50,
+                     vol_win: int = 20, pct_win: int = 756) -> pd.DataFrame:
+    """월말 판정 내역 DataFrame [판정일, 변동성, 백분위, 방향, 적용월, 레짐].
     변동성 = 20일 일간수익률 표준편차 × √252, 백분위 = 최근 756거래일 중 자기보다 낮은 비율,
-    방향 = 직전 월말 변동성 대비 상승/하락."""
-    key = (len(soxx), soxx.index[-1] if len(soxx) else None,
+    방향 = 직전 월말 변동성 대비 상승/하락. 판정은 다음 달에 적용 (장 전 확정 정보만)."""
+    key = ("T", len(soxx), soxx.index[-1] if len(soxx) else None,
            float(soxx.iloc[-1]) if len(soxx) else None, risk_pct, safe_pct, vol_win, pct_win)
     hit = _REGIME_MONTHS.get(key)
     if hit is not None:
@@ -715,15 +715,31 @@ def vol_regime_months(soxx: pd.Series, risk_pct: float = 0.70, safe_pct: float =
                 ends = ends.iloc[:-1]
         except Exception:
             pass
-    out, prev = {}, None
+    rows, prev = [], None
     for d, val in ends.items():
         if prev is not None:
-            up, pc = val > prev, pct[d]
+            up, pc = val > prev, float(pct[d])
             r = "위험" if (up and pc >= risk_pct) else ("안정" if ((not up) and pc < safe_pct) else "승부")
-            out[d.to_period("M") + 1] = r
+            rows.append({"판정일": d, "변동성": float(val), "백분위": pc,
+                         "방향": "상승" if up else "하락", "적용월": d.to_period("M") + 1, "레짐": r})
         prev = val
-    if len(_REGIME_MONTHS) > 16:
+    out = pd.DataFrame(rows, columns=["판정일", "변동성", "백분위", "방향", "적용월", "레짐"])
+    if len(_REGIME_MONTHS) > 32:
         _REGIME_MONTHS.clear()
+    _REGIME_MONTHS[key] = out
+    return out
+
+
+def vol_regime_months(soxx: pd.Series, risk_pct: float = 0.70, safe_pct: float = 0.50,
+                      vol_win: int = 20, pct_win: int = 756) -> dict:
+    """{적용 월 Period: '위험'|'안정'|'승부'} — vol_regime_table 의 월 맵."""
+    key = ("M", len(soxx), soxx.index[-1] if len(soxx) else None,
+           float(soxx.iloc[-1]) if len(soxx) else None, risk_pct, safe_pct, vol_win, pct_win)
+    hit = _REGIME_MONTHS.get(key)
+    if hit is not None:
+        return hit
+    t = vol_regime_table(soxx, risk_pct, safe_pct, vol_win, pct_win)
+    out = dict(zip(t["적용월"], t["레짐"]))
     _REGIME_MONTHS[key] = out
     return out
 
