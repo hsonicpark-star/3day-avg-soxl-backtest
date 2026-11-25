@@ -16,6 +16,81 @@ from datetime import datetime
 
 
 # ══════════════════════════════════════════════════════════════
+# 변동성 레짐 (V) — 위험 달에만: 매도 비율 100% · 주식 비중 50% 넘으면 신규 매수 안 함
+# ══════════════════════════════════════════════════════════════
+# 레짐 판정은 DSS 와 같은 정의 (dss_engine.vol_regime_table — 월말 SOXX 변동성 → 다음 달).
+# 매수·매도 판정식(LOC 가격)은 그대로, 수량만 바뀐다. 설계·검증: reports/261124_변동성레짐_가이드.md 13절
+
+SD_RISK_SELL_RATIO = 100.0   # 위험 달 매도 비율 (%)
+SD_RISK_CAP = 0.5            # 위험 달 주식 비중 상한 (전일 총자산 대비 보유 평가금)
+SD_RISK_PCT = 0.70           # 위험 판정 백분위 기준
+
+
+def sd_vreg(flag, start="") -> dict | None:
+    """계좌 설정 (vreg, vreg_from) → 엔진용 V 사양. 꺼져 있으면 None."""
+    if not str(flag or "").strip() or str(flag).strip() in ("0", "False", "false"):
+        return None
+    return {"from": str(start or "").strip(), "sell_ratio": SD_RISK_SELL_RATIO,
+            "cap": SD_RISK_CAP, "risk_pct": SD_RISK_PCT}
+
+
+def _sd_vreg_ns(vreg):
+    from types import SimpleNamespace
+    return SimpleNamespace(vol_regime=True, vol_risk_pct=float(vreg.get("risk_pct", SD_RISK_PCT)),
+                           vol_regime_from=vreg.get("from", ""))
+
+
+def sd_risk_days(dates, vreg, regime_prices=None) -> np.ndarray:
+    """거래일 배열 → 위험 레짐 여부 (bool). V 미사용이면 전부 False."""
+    out = np.zeros(len(dates), dtype=bool)
+    if not vreg or len(dates) == 0:
+        return out
+    from dss_engine import regime_day_map
+    m = regime_day_map(list(dates), _sd_vreg_ns(vreg), regime_prices)
+    for i, d in enumerate(dates):
+        if m.get(d) == "위험":
+            out[i] = True
+    return out
+
+
+def sd_regime_for(date, vreg, regime_prices=None):
+    """주문 적용일의 레짐 ('위험'|'승부'|'안정') — V 미사용 · 시작일 전 · 판정 불가면 None."""
+    if not vreg:
+        return None
+    from dss_engine import vol_regime_for
+    return vol_regime_for(date, _sd_vreg_ns(vreg), regime_prices)
+
+
+def sd_vreg_pending(date, vreg) -> str:
+    """V 가 켜져 있지만 date 가 시작일 전이면 시작일 문자열, 아니면 ''."""
+    if not vreg or not vreg.get("from"):
+        return ""
+    try:
+        return vreg["from"] if pd.Timestamp(date).normalize() < pd.Timestamp(vreg["from"]).normalize() else ""
+    except Exception:
+        return ""
+
+
+def sd_risk_adjust(buy_qty, sell_qty, holdings, cash, last_close, buy_loc, vreg):
+    """위험 달 주문 수량 보정 (웹·텔레그램·원장 공용). 엔진 루프와 같은 산식.
+      매도 = round(보유 × 100%) · 매수 = min(원래 수량, floor((cap × 전일 총자산 − 보유 평가금) / 매수LOC))"""
+    if not vreg:
+        return int(buy_qty), int(sell_qty)
+    h = int(holdings)
+    sq = int(round(float(h) * float(vreg.get("sell_ratio", SD_RISK_SELL_RATIO)) / 100.0)) if h > 0 else 0
+    room = max(0.0, float(vreg.get("cap", SD_RISK_CAP)) * (float(cash) + h * float(last_close)) - h * float(last_close))
+    bq = min(int(buy_qty), math.floor(room / buy_loc)) if buy_loc > 0 else 0
+    return max(0, int(bq)), sq
+
+
+def sd_next_order_date(last_date):
+    """마지막 확정 종가일 다음 미국 거래일 (주문 적용일)."""
+    from dss_engine import next_us_trading_days
+    nx = next_us_trading_days(pd.Timestamp(last_date), 1)
+    return nx[0] if len(nx) else pd.Timestamp(last_date) + pd.Timedelta(days=1)
+
+
+# ══════════════════════════════════════════════════════════════
 # 백테스트 엔진 (full): 히스토리 + 모든 지표 반환
 # ══════════════════════════════════════════════════════════════
 
@@ -26,6 +101,7 @@ def run_backtest_stdev(
     pcr=1.0, lcr=1.0,
     initial_capital=20000.0,
     return_history=False,
+    vreg=None, regime_prices=None,
 ):
     """
     표준편차매매 백테스트 엔진 (verify.py 검증 완료 로직 기반)
@@ -33,6 +109,7 @@ def run_backtest_stdev(
     매수: close <= prev_close*(1+sigma*k_buy)  -> floor(min(daily_invest, cash)/LOC) 주 매수
     매도: close >= prev_close*(1+sigma*k_sell) -> round(holdings*sell_ratio/100) 주 매도
     티어=1마다 총투자금 갱신 (RENEWAL 사이클 전 누적실현 기준)
+    vreg (sd_vreg): 위험 레짐 달엔 매도 비율 100% · 주식 비중 상한 넘으면 신규 매수 안 함
     """
     df = price_df.copy()
     # sigma 워밍업: price_df 전체(start_date 이전 버퍼 포함)로 sigma 사전 계산
@@ -75,6 +152,10 @@ def run_backtest_stdev(
     total_invest  = float(initial_capital)
     tier          = 0
     cum_realiz_hist = []   # 매 거래일 cumR 누적
+    _risk = sd_risk_days(df.index, vreg, regime_prices) if vreg else None
+    _r_sr = float(vreg.get("sell_ratio", SD_RISK_SELL_RATIO)) if vreg else sell_ratio
+    _r_cap = float(vreg.get("cap", SD_RISK_CAP)) if vreg else 1.0
+    prev_asset = float(initial_capital)   # 전일 총자산 (비중 상한 기준)
 
     assets_arr = np.full(n, np.nan)
     cash_arr   = np.full(n, np.nan)
@@ -88,10 +169,11 @@ def run_backtest_stdev(
 
         # sigma 미확정 구간 (초기 sigma_period일) - 자산만 기록
         if np.isnan(sigma):
-            assets_arr[i] = cash + holdings * close
+            assets_arr[i] = prev_asset = cash + holdings * close
             cash_arr[i]   = cash
             cum_realiz_hist.append(cum_realized)
             continue
+        _rk = bool(_risk is not None and _risk[i])
 
         prev_close = _prev_c[i]   # _prev_c 배열로 첫날 prev_close 버그 수정
         buy_loc    = prev_close * (1.0 + sigma * k_buy)
@@ -114,12 +196,14 @@ def run_backtest_stdev(
         # -- 매도 판정
         sell_qty = 0
         if holdings > 0 and close >= sell_loc:
-            sell_qty = int(round(float(holdings) * sell_ratio / 100.0))
+            sell_qty = int(round(float(holdings) * (_r_sr if _rk else sell_ratio) / 100.0))
 
         # -- 매수 판정
         buy_qty = 0
         if close <= buy_loc:
             available = min(daily_invest, cash)
+            if _rk:   # 위험 달: 보유 평가금(전일 종가)이 전일 총자산의 cap 을 넘지 않는 한도까지만
+                available = min(available, max(0.0, _r_cap * prev_asset - holdings * prev_close))
             buy_qty   = math.floor(available / buy_loc)
 
         # -- 체결 처리
@@ -153,6 +237,7 @@ def run_backtest_stdev(
         cum_realiz_hist.append(cum_realized)
         assets_arr[i] = total_asset
         cash_arr[i]   = cash
+        prev_asset    = total_asset
 
         if return_history:
             # 매도 시 손익률 계산에 사용할 "매도 직전 평단가" 별도 기록
@@ -223,6 +308,7 @@ def run_backtest_stdev_fast(
     sell_ratio=75.0, divisions=5, renewal=5,
     pcr=1.0, lcr=1.0,
     initial_capital=20000.0,
+    vreg=None, regime_prices=None,
 ):
     """
     run_backtest_stdev 경량 버전 -- 최적화 전용.
@@ -281,13 +367,17 @@ def run_backtest_stdev_fast(
     cum_r_idx    = 0
 
     sell_ratio_f = sell_ratio / 100.0
+    _risk = sd_risk_days(df_idx, vreg, regime_prices) if vreg else None
+    _r_sr_f = (float(vreg.get("sell_ratio", SD_RISK_SELL_RATIO)) / 100.0) if vreg else sell_ratio_f
+    _r_cap = float(vreg.get("cap", SD_RISK_CAP)) if vreg else 1.0
+    prev_asset = float(initial_capital)
 
     for i in range(n):
         close = closes[i]
         sigma = sigmas[i]
 
         if np.isnan(sigma):
-            total_asset = cash + holdings * close
+            total_asset = prev_asset = cash + holdings * close
             cum_r_buf[cum_r_idx] = cum_realized
             cum_r_idx += 1
             if total_asset > peak_asset:
@@ -298,6 +388,7 @@ def run_backtest_stdev_fast(
                     mdd = dd
             continue
 
+        _rk = bool(_risk is not None and _risk[i])
         prev_close = prev_closes[i]
         buy_loc    = prev_close * (1.0 + sigma * k_buy)
         sell_loc   = prev_close * (1.0 + sigma * k_sell)
@@ -317,12 +408,14 @@ def run_backtest_stdev_fast(
         # 매도
         sell_qty = 0
         if holdings > 0 and close >= sell_loc:
-            sell_qty = int(round(float(holdings) * sell_ratio_f))
+            sell_qty = int(round(float(holdings) * (_r_sr_f if _rk else sell_ratio_f)))
 
         # 매수
         buy_qty = 0
         if close <= buy_loc:
             available = min(daily_invest, cash)
+            if _rk:
+                available = min(available, max(0.0, _r_cap * prev_asset - holdings * prev_close))
             buy_qty   = math.floor(available / buy_loc)
 
         # 체결
@@ -346,7 +439,7 @@ def run_backtest_stdev_fast(
 
         holdings    = new_hold
         cash        = cash - buy_amt + sell_amt
-        total_asset = cash + holdings * close
+        total_asset = prev_asset = cash + holdings * close
 
         cum_r_buf[cum_r_idx] = cum_realized
         cum_r_idx += 1
@@ -462,6 +555,7 @@ def run_stdev_ordersheet(
     sigma_period=2, k_buy=0.55, k_sell=0.55,
     sell_ratio=75.0, divisions=5, renewal=5,
     pcr=1.0, lcr=1.0, initial_capital=20000.0,
+    vreg=None, regime_prices=None,
 ):
     """오늘까지 시뮬레이션 -> 현재 상태(티어/보유량/예수금/평단가) + 내일 주문가 반환.
 
@@ -509,6 +603,7 @@ def run_stdev_ordersheet(
             sell_ratio=sell_ratio, divisions=divisions, renewal=renewal,
             pcr=pcr, lcr=lcr, initial_capital=initial_capital,
             return_history=True,
+            vreg=vreg, regime_prices=regime_prices,
         )
         if res is None or res["history"].empty:
             # 시뮬 결과 없음 -> 초기 상태로 fallback
@@ -552,7 +647,18 @@ def run_stdev_ordersheet(
     est_buy_qty  = math.floor(available / next_buy_loc) if next_buy_loc > 0 else 0
     est_sell_qty = int(round(cur_holdings * sell_ratio / 100.0))
 
+    # -- 변동성 레짐 (V): 주문 적용일이 위험 달이면 수량 보정 --------
+    order_date = sd_next_order_date(df_all["Close"].dropna().index[-1])
+    regime = sd_regime_for(order_date, vreg, regime_prices) if vreg else None
+    if regime == "위험":
+        est_buy_qty, est_sell_qty = sd_risk_adjust(
+            est_buy_qty, est_sell_qty, cur_holdings, cur_cash, last_close, next_buy_loc, vreg)
+
     return {
+        "vol_regime_on": bool(vreg),
+        "vol_regime":    regime,
+        "vol_regime_pending": sd_vreg_pending(order_date, vreg),
+        "order_date":    str(pd.Timestamp(order_date).date()),
         "last_close":    last_close,
         "sigma_next":    sigma_next,
         "next_buy_loc":  next_buy_loc,
@@ -626,9 +732,10 @@ def calc_sd_record_state(rows):
 
 def calc_sd_order_from_state(state, buy_loc, sell_loc,
                              divisions, sell_ratio, renewal,
-                             pcr=1.0, lcr=1.0):
+                             pcr=1.0, lcr=1.0, vreg=None, regime=None, last_close=None):
     """원장 상태 + 엔진 룰로 다음 거래일 티어/renewal/주문 수량 계산.
-    (run_stdev_ordersheet의 내일 계산 로직과 동일 산식)"""
+    (run_stdev_ordersheet의 내일 계산 로직과 동일 산식)
+    vreg + regime == '위험' + last_close 가 주어지면 위험 달 수량 보정 (sd_risk_adjust)."""
     tier = (state["tier"] % divisions) + 1
     total_invest = state["total_invest"]
     cum_hist = state["cum_hist"]
@@ -645,6 +752,9 @@ def calc_sd_order_from_state(state, buy_loc, sell_loc,
     buy_qty = max(0, int(buy_qty))
     sell_qty = (int(round(state["holdings"] * sell_ratio / 100.0))
                 if state["holdings"] > 0 else 0)
+    if vreg and regime == "위험" and last_close:
+        buy_qty, sell_qty = sd_risk_adjust(buy_qty, sell_qty, state["holdings"],
+                                           max(state["cash"], 0.0), last_close, buy_loc, vreg)
     return {"next_tier": tier, "total_invest": total_invest,
             "daily_invest": daily_invest,
             "buy_qty": buy_qty, "sell_qty": sell_qty}

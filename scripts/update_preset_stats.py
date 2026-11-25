@@ -138,7 +138,8 @@ def run_stdev():
                 px, str(s.date()), str(e.date()),
                 sigma_period=p["sigma_period"], k_buy=p["k_buy"], k_sell=p["k_sell"],
                 sell_ratio=p["sell_ratio"], divisions=p["divisions"], renewal=p["renewal"],
-                pcr=1.0, lcr=1.0, initial_capital=CAP, return_history=False)
+                pcr=1.0, lcr=1.0, initial_capital=CAP, return_history=False,
+                vreg=E.sd_vreg(p.get("vreg", "")))
             win = r["win_count"] / r["sell_count"] if r["sell_count"] else None
             out[item_key("stdev", tk, p["label"])] = entry(p, r["cagr"], r["mdd"], r["dates"][0], e, win)
     return out

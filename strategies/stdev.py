@@ -47,6 +47,8 @@ from stdev_engine import (
     calc_sd_order_from_state,
     build_sd_pending_row,
     sd_row_is_pending,
+    sd_vreg,
+    sd_risk_adjust,
 )
 
 
@@ -342,11 +344,66 @@ def _bake_adj_into_sd_ledger(tk: str, amount: float):
 
 
 # ══════════════════════════════════════════════
+# 변동성 레짐 (V) 헬퍼
+# ══════════════════════════════════════════════
+def _sd_vreg_on(cfg) -> bool:
+    return str((cfg or {}).get("vreg", "") or "").strip() not in ("", "0", "False", "false")
+
+
+def _sd_cfg_vreg(cfg):
+    """계좌 설정 → 엔진용 V 사양 (꺼져 있으면 None)."""
+    return sd_vreg((cfg or {}).get("vreg", ""), (cfg or {}).get("vreg_from", ""))
+
+
+def _sd_to_date(v):
+    try:
+        return pd.Timestamp(v).date() if str(v or "").strip() else None
+    except Exception:
+        return None
+
+
+def _sd_next_order_date() -> str:
+    """다음 주문 적용일 (미국 거래일). 미국장 마감(16:30 ET) 전이면 오늘(거래일일 때)."""
+    from dss_engine import next_us_trading_days
+    _now = pd.Timestamp.now(tz="America/New_York")
+    _base = _now.normalize().tz_localize(None)
+    if _now.hour * 60 + _now.minute < 16 * 60 + 30:
+        _base = _base - pd.Timedelta(days=1)
+    _nx = next_us_trading_days(_base, 1)
+    return str(_nx[0].date()) if len(_nx) else str(_base.date())
+
+
+def _sd_after_next_order_date() -> str:
+    """다음 주문일의 다음 거래일 — 다음 세션 주문은 이미 나갔을 수 있으므로 그다음부터."""
+    from dss_engine import next_us_trading_days
+    _nx = next_us_trading_days(pd.Timestamp(_sd_next_order_date()), 1)
+    return str(_nx[0].date()) if len(_nx) else _sd_next_order_date()
+
+
+_SD_REGIME_BADGE = {"위험": "🔴 위험", "승부": "🟡 승부", "안정": "🟢 안정"}
+_SD_V_RULE = "매도 100% · 주식 비중 50% 넘으면 매수 중단"
+
+
+def _sd_regime_note(res) -> str:
+    """주문표 레짐 안내 한 줄 (V 미사용이면 빈 문자열)."""
+    if not res or not res.get("vol_regime_on"):
+        return ""
+    if res.get("vol_regime_pending"):
+        return f"🌋 변동성 레짐(V): {res['vol_regime_pending']}부터 적용 — 그 전까지는 기본 규칙"
+    r = res.get("vol_regime")
+    if r is None:
+        return "🌋 변동성 레짐: 판정 대기 (SOXX 월말 데이터 없음 → 기본 규칙)"
+    if r == "위험":
+        return f"🌋 이번 달 변동성 레짐: {_SD_REGIME_BADGE[r]} → {_SD_V_RULE}"
+    return f"🌋 이번 달 변동성 레짐: {_SD_REGIME_BADGE.get(r, r)} → 기본 규칙"
+
+
+# ══════════════════════════════════════════════
 # Telegram text builder
 # ══════════════════════════════════════════════
 def _apply_sd_ledger_override(ticker_name: str, res: dict, divisions: int,
                               sell_ratio: float, renewal: int,
-                              capital_adj_history=None) -> bool:
+                              capital_adj_history=None, vreg=None) -> bool:
     """원장(매매기록) 기준으로 res의 보유/현금/수량/평단/총자산을 덮어씀 (조회만, 쓰기 없음).
 
     웹 주문표·텔레그램·개인설정의 수동 '주문 시트 전송'이 모두 이 함수를 거쳐야
@@ -392,7 +449,9 @@ def _apply_sd_ledger_override(ticker_name: str, res: dict, divisions: int,
                 _og_led = calc_sd_order_from_state(
                     _stg_led, float(res.get("next_buy_loc", 0)),
                     float(res.get("next_sell_loc", 0)),
-                    divisions, sell_ratio, renewal, 1.0, 1.0)
+                    divisions, sell_ratio, renewal, 1.0, 1.0,
+                    vreg=vreg, regime=res.get("vol_regime"),
+                    last_close=float(res.get("last_close", 0)))
                 _tr_led = next((r0 for r0 in _rows_led
                                 if str(r0.get("날짜", "")).strip() == _today_led), None)
                 if _tr_led is not None and sd_row_is_pending(_tr_led):
@@ -431,7 +490,7 @@ def _apply_sd_ledger_override(ticker_name: str, res: dict, divisions: int,
 def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                          sigma_period: int, sell_ratio: float, divisions: int,
                          renewal: int, _os_start=None, _os_capital: float = 20000.0,
-                         capital_adj_history=None) -> str:
+                         capital_adj_history=None, vreg=None) -> str:
     """표준편차매매 오늘의 주문표를 텔레그램 텍스트로 변환.
 
     capital_adj_history: JSON 문자열 또는 list [{날짜, 조정금액}, ...]
@@ -447,7 +506,7 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
             pdf_tg, str(_os_start),
             sigma_period=sigma_period, k_buy=k_buy, k_sell=k_sell,
             sell_ratio=sell_ratio, divisions=divisions, renewal=renewal,
-            initial_capital=_os_capital,
+            initial_capital=_os_capital, vreg=vreg,
         )
         if res is None:
             return "시뮬레이션 데이터가 없습니다."
@@ -482,12 +541,16 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
                         _nbl_txt = float(res.get("next_buy_loc", 0))
                         if _nbl_txt > 0:
                             res["est_buy_qty"] = int(math.floor(_avail_txt / _nbl_txt))
+                            if res.get("vol_regime") == "위험":
+                                res["est_buy_qty"], res["est_sell_qty"] = sd_risk_adjust(
+                                    res["est_buy_qty"], res["est_sell_qty"], res.get("holdings", 0),
+                                    res["cash"], res.get("last_close", 0), _nbl_txt, vreg)
             except Exception:
                 pass
 
         # ── 원장(매매기록) 기준 override — 공용 헬퍼 (웹·텔레그램·시트 전송 일관) ──
         _apply_sd_ledger_override(ticker_name, res, divisions, sell_ratio, renewal,
-                                  capital_adj_history)
+                                  capital_adj_history, vreg=vreg)
 
         lp        = res["last_close"]
         sigma     = res["sigma_next"]
@@ -503,6 +566,9 @@ def _build_sd_order_text(ticker_name: str, k_buy: float, k_sell: float,
             "━━━━━━━━━━━━━━━",
             f"🔴 매수 LOC  ${res['next_buy_loc']:,.2f}  (예상 {res['est_buy_qty']:,}주)",
         ]
+        _rg_txt = _sd_regime_note(res)
+        if _rg_txt:
+            lines.insert(4, _rg_txt)
         if res["holdings"] > 0:
             lines.append(f"🔵 매도 LOC  ${res['next_sell_loc']:,.2f}  (예상 {res['est_sell_qty']:,}주)")
             pnl = (lp / res["avg_cost"] - 1) * 100 if res["avg_cost"] > 0 else 0
@@ -568,6 +634,16 @@ _SD_PRESETS_DB = {
          "sigma_period": 2, "k_buy": 0.55, "k_sell": 0.45, "sell_ratio": 95.0,
          "divisions": 3, "renewal": 3,
          "help": "CAGR 61.15%  |  MDD 47.73%  |  Calmar 1.28\n⚠️ 고위험 — 3분할이라 연속 하락에 약합니다 (손실로 끝난 해 있음 · 고점 회복 최장 500일 이상)\n3분할 + 95% 매도\n(σ기간=2일, 갱신주기=3 자동 적용)"},
+        # V = 변동성 레짐 (2026-11-25 · reports/261124_변동성레짐_가이드.md 13절)
+        #   파라미터는 원 프리셋과 같고, 위험 레짐 달에만 매도 100% · 주식 비중 50% 상한.
+        {"label": "균형형V", "tag": "🌋",
+         "sigma_period": 2, "k_buy": 0.90, "k_sell": 0.50, "sell_ratio": 80.0,
+         "divisions": 4, "renewal": 4, "vreg": "1",
+         "help": "CAGR 57.17%  |  MDD 48.49%  |  Calmar 1.18\n🌋 균형형 + 변동성 레짐 — 위험 레짐 달엔 매도 100% · 주식 비중 50% 넘으면 매수 중단\n평소엔 균형형과 같고, 급락 구간의 낙폭을 줄입니다\n(σ기간=2일, 갱신주기=4 자동 적용)"},
+        {"label": "공격형V", "tag": "🌋 고위험",
+         "sigma_period": 2, "k_buy": 0.70, "k_sell": 0.50, "sell_ratio": 80.0,
+         "divisions": 3, "renewal": 3, "vreg": "1",
+         "help": "CAGR 62.75%  |  MDD 57.32%  |  Calmar 1.09\n🌋 공격형 + 변동성 레짐 — 위험 레짐 달엔 매도 100% · 주식 비중 50% 넘으면 매수 중단\n⚠️ 고위험 — 3분할이라 연속 하락에 약합니다\n(σ기간=2일, 갱신주기=3 자동 적용)"},
     ],
 }
 # ⚠️ 위 help 의 'CAGR | MDD | Calmar' 숫자는 화면에 표시되지 않는다 — 모듈 로드 시
@@ -1146,6 +1222,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
     _rn   = int  (tk_cfg.get("renewal",     5))
     _pcr  = float(tk_cfg.get("pcr", 1.0))
     _lcr  = float(tk_cfg.get("lcr", 1.0))
+    _vr_on = _sd_vreg_on(tk_cfg)                 # 변동성 레짐(V) 사용 여부
+    _vreg  = _sd_cfg_vreg(tk_cfg)                # 엔진용 V 사양 (꺼짐이면 None)
+    _vr_from = str(tk_cfg.get("vreg_from", "") or "").strip()
 
     _raw_start   = tk_cfg.get("os_start",   "2020-01-01")
     _raw_capital = tk_cfg.get("os_capital", 20000.0)
@@ -1178,7 +1257,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 and abs(float(_pp0["sell_ratio"]) - _sr) < 1e-9
                 and int(_pp0["divisions"]) == int(_div)
                 and int(_pp0["sigma_period"]) == int(_sp)
-                and int(_pp0["renewal"]) == int(_rn)):
+                and int(_pp0["renewal"]) == int(_rn)
+                and _sd_vreg_on(_pp0) == _vr_on):
             _cur_preset_sd = _sd_plabel(_pp0)
             break
 
@@ -1206,6 +1286,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
         _rn_note = _sd_renewal_note(_div, _rn)
         if _rn_note:
             st.warning(_rn_note)
+        if _vr_on:
+            st.caption(f"🌋 **변동성 레짐(V) 적용** — 위험 레짐 달엔 {_SD_V_RULE}"
+                       + (f" · 적용 시작일 {_vr_from}" if _vr_from else " · 계좌 시작일부터"))
 
         with st.expander("파라미터 수정"):
             _param_presets = _SD_PRESETS_DB.get(_sd_symbol(tk), [])
@@ -1226,6 +1309,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                             st.session_state[f"sd_esp_{key_sfx}"] = _pp["sigma_period"]
                         if "renewal" in _pp:
                             st.session_state[f"sd_ern_{key_sfx}"] = _pp["renewal"]
+                        st.session_state[f"sd_evr_{key_sfx}"] = _sd_vreg_on(_pp)
                         st.rerun()
                 st.divider()
             else:
@@ -1233,7 +1317,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 st.divider()
             for _sk2, _sv2 in [(f"sd_ekb_{key_sfx}", _kb),  (f"sd_eks_{key_sfx}", _ks),
                                 (f"sd_esr_{key_sfx}", _sr),  (f"sd_edv_{key_sfx}", _div),
-                                (f"sd_esp_{key_sfx}", _sp),  (f"sd_ern_{key_sfx}", _rn)]:
+                                (f"sd_esp_{key_sfx}", _sp),  (f"sd_ern_{key_sfx}", _rn),
+                                (f"sd_evr_{key_sfx}", _vr_on),
+                                (f"sd_evf_{key_sfx}", _sd_to_date(_vr_from))]:
                 if _sk2 not in st.session_state:
                     st.session_state[_sk2] = _sv2
             _ep1, _ep2 = st.columns(2)
@@ -1249,17 +1335,39 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             _edit_rn_note = _sd_renewal_note(_new_div, _new_rn)
             if _edit_rn_note:
                 st.warning(_edit_rn_note)
+            _vc1, _vc2 = st.columns([3, 2])
+            _new_vr = _vc1.checkbox(f"🌋 변동성 레짐(V) 적용 — 위험 레짐 달엔 {_SD_V_RULE}",
+                                    key=f"sd_evr_{key_sfx}")
+            _new_vf = _vc2.date_input(
+                "V 적용 시작일 (미국 거래일)", key=f"sd_evf_{key_sfx}", format="YYYY/MM/DD",
+                help="이 날짜(미국장 세션)의 주문부터 V 규칙 적용. 그 전은 기존 규칙으로 계산해 "
+                     "보유 내역이 실계좌와 그대로 유지됩니다. 이미 주문을 낸 세션은 피해서 그다음 "
+                     "거래일로 지정하세요. 비우면 계좌 시작일부터. V를 새로 켜고 비워두면 "
+                     "다음 주문일의 다음 거래일로 자동 입력됩니다.")
             if st.button("파라미터 저장", key=f"sd_save_{key_sfx}", type="primary",
                          use_container_width=True):
+                _vf_s = str(pd.Timestamp(_new_vf).date()) if _new_vf else ""
+                _vf_msg = ""
+                if not _new_vr:
+                    _vf_s = ""
+                elif (not _vr_on and not _vf_s
+                      and str(tk_cfg.get("os_start", "")) < _sd_next_order_date()):
+                    # 운용 중인 계좌를 V로 전환 → 다음다음 주문일부터 (과거 재계산으로 보유 내역이 바뀌는 것 방지)
+                    _vf_s = _sd_after_next_order_date()
+                    _vf_msg = (f" 🌋 V 적용 시작일을 {_vf_s} 로 설정했습니다 — "
+                               f"그 전 매매 내역은 기존 규칙 그대로 유지됩니다.")
                 _save_sd_ticker_setting(tk, {
                     "k_buy": float(_new_kb), "k_sell": float(_new_ks),
                     "sell_ratio": float(_new_sr), "divisions": int(_new_div),
                     "sigma_period": int(_new_sp), "renewal": int(_new_rn),
+                    "vreg": "1" if _new_vr else "", "vreg_from": _vf_s,
                 })
                 for _sk3 in [f"sd_ekb_{key_sfx}", f"sd_eks_{key_sfx}", f"sd_esr_{key_sfx}",
-                              f"sd_edv_{key_sfx}", f"sd_esp_{key_sfx}", f"sd_ern_{key_sfx}"]:
+                              f"sd_edv_{key_sfx}", f"sd_esp_{key_sfx}", f"sd_ern_{key_sfx}",
+                              f"sd_evr_{key_sfx}", f"sd_evf_{key_sfx}"]:
                     st.session_state.pop(_sk3, None)
-                st.success(f"{tk} 파라미터가 저장되었습니다!")
+                st.session_state.pop(f"sd_os_res_{key_sfx}", None)   # 주문표 캐시 갱신
+                st.success(f"{tk} 파라미터가 저장되었습니다!{_vf_msg}")
                 st.rerun()
 
     # -- 시작일 / 자본금 -----
@@ -1741,7 +1849,7 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 sigma_period=_sp, k_buy=_kb, k_sell=_ks,
                 sell_ratio=_sr, divisions=_div, renewal=_rn,
                 pcr=_pcr, lcr=_lcr,
-                initial_capital=_os_cap,
+                initial_capital=_os_cap, vreg=_vreg,
             )
             if _sd_r is None:
                 st.error("주문표 계산 실패. 데이터 기간을 늘려보세요.")
@@ -1776,6 +1884,10 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                 _nbl_sd = float(_sd_r.get("next_buy_loc", 0))
                 if _nbl_sd > 0:
                     _sd_r["est_buy_qty"] = int(math.floor(_avail_adj_sd / _nbl_sd))
+                    if _sd_r.get("vol_regime") == "위험":   # V: 위험 달 수량 보정 (조정 반영 현금 기준)
+                        _sd_r["est_buy_qty"], _sd_r["est_sell_qty"] = sd_risk_adjust(
+                            _sd_r["est_buy_qty"], _sd_r["est_sell_qty"], _sd_r.get("holdings", 0),
+                            _sd_r["cash"], _sd_r.get("last_close", 0), _nbl_sd, _vreg)
                 # ══ 원장(매매기록) 처리 — 기록이 진실, 시뮬은 참고 ══
                 # 1) 원장 비면 과거 시뮬 이력으로 시드 (오늘 제외)
                 # 2) 예정 행을 그날 실제 종가로 체결/미체결 정산 (동시체결, 수량 불변)
@@ -1853,7 +1965,9 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                         _og = calc_sd_order_from_state(
                             _stg, float(_sd_r.get("next_buy_loc", 0)),
                             float(_sd_r.get("next_sell_loc", 0)),
-                            _div, _sr, _rn, _pcr, _lcr)
+                            _div, _sr, _rn, _pcr, _lcr,
+                            vreg=_vreg, regime=_sd_r.get("vol_regime"),
+                            last_close=float(_sd_r.get("last_close", 0)))
                         _sd_ledger = {**_stg, **_og}
                 except Exception:
                     _sd_ledger = None
@@ -2022,6 +2136,11 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
                f"갱신 사이클: **{_cyc_txt}**",
                help="분할수 길이의 거래일 카운터입니다. 1/N 진입일에 최근 실현손익이 "
                     "총투자금에 편입(복리 갱신)됩니다. 매수·매도 수량과는 무관합니다.")
+    _rg_note_sd = _sd_regime_note(_sd_res)
+    _risk_now_sd = bool(_sd_res.get("vol_regime_on")) and _sd_res.get("vol_regime") == "위험"
+    if _rg_note_sd:
+        (st.warning if _risk_now_sd else st.info)(_rg_note_sd)
+    _sr_disp = 100.0 if _risk_now_sd else _sr
 
     _orders = []
     # 매도: 보유량 + 매도수량 둘 다 > 0일 때만 표시 (0주 노이즈 제거)
@@ -2033,7 +2152,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             "예상수량":      f"{_sell_qty:,}주",
             "예상금액":      f"${_sell_qty * _sell_loc:,.0f}",
             "전일종가 대비": f"{(_sell_loc/_lc-1)*100:+.2f}%" if _lc > 0 else "-",
-            "비고": f"보유 {_holdings:,}주 x {_sr:.0f}% | 평단 ${_avg_c:.2f}",
+            "비고": f"보유 {_holdings:,}주 x {_sr_disp:.0f}% | 평단 ${_avg_c:.2f}"
+                    + (" | 🌋 위험 달" if _risk_now_sd else ""),
         })
     # 매수: 수량 > 0일 때만 표시 (현금 부족으로 0주면 실행 불가 → 노이즈 제거)
     if _buy_qty > 0:
@@ -2044,7 +2164,8 @@ def _render_sd_account_tab(tk: str, tk_cfg: dict, key_sfx: str):
             "예상수량":      f"{_buy_qty:,}주",
             "예상금액":      f"${_buy_qty * _buy_loc:,.0f}",
             "전일종가 대비": f"{(_buy_loc/_lc-1)*100:+.2f}%" if _lc > 0 else "-",
-            "비고": f"사이클 {_nxt_t}/{_div} / 1회 매수금 ${_sd_res['total_invest']/_div:,.0f}",
+            "비고": f"사이클 {_nxt_t}/{_div} / 1회 매수금 ${_sd_res['total_invest']/_div:,.0f}"
+                    + (" | 🌋 비중 50% 한도" if _risk_now_sd else ""),
         })
 
     def _sd_style(row):
@@ -2388,6 +2509,7 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
                         st.session_state["sd_add_sp_inp"] = int(_sapp["sigma_period"])
                     if "renewal" in _sapp:
                         st.session_state["sd_add_rn_inp"] = int(_sapp["renewal"])
+                    st.session_state["sd_add_vr_inp"] = _sd_vreg_on(_sapp)
                     st.rerun()
             st.divider()
 
@@ -2409,6 +2531,10 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
         _add_rn_note = _sd_renewal_note(_sd_add_dv, _sd_add_rn)
         if _add_rn_note:
             st.warning(_add_rn_note)
+        _sd_add_vr = st.checkbox(f"🌋 변동성 레짐(V) 적용 — 위험 레짐 달엔 {_SD_V_RULE}",
+                                 key="sd_add_vr_inp",
+                                 help="SOXX 월말 변동성으로 다음 달 위험 여부를 판정합니다 (SOXL 기준으로 검증). "
+                                      "새 계좌는 시작일부터 적용됩니다.")
 
         _sd_add_name = st.text_input(
             "계좌명 (선택) — 같은 종목의 추가 계좌를 만들 때 입력 (예: 신규, 아내)",
@@ -2429,6 +2555,7 @@ def render_ordersheet_tab(ticker, params, initial_capital, data_source, excel_fi
                     "k_buy": float(_sd_add_kb), "k_sell": float(_sd_add_ks),
                     "sell_ratio": float(_sd_add_sr), "divisions": int(_sd_add_dv),
                     "sigma_period": int(_sd_add_sp), "renewal": int(_sd_add_rn),
+                    "vreg": "1" if _sd_add_vr else "", "vreg_from": "",
                 })
                 for _k in ["sd_add_kb", "sd_add_ks", "sd_add_sr", "sd_add_dv"]:
                     st.session_state.pop(_k, None)
@@ -2490,7 +2617,7 @@ def _sd_compute_recovery_table(assets, dates, threshold=10.0):
     return records
 
 
-def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, e_date4):
+def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, e_date4, vreg=None):
     with st.spinner(f"{tk} 데이터 로드 및 분석 중..."):
         _pdf4 = load_price_data(_sd_symbol(tk), s_date4, e_date4, "야후파이낸스 (yfinance)", None)
     if _pdf4 is None or _pdf4.empty:
@@ -2500,7 +2627,7 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
     _r4 = run_backtest_stdev(_pdf4, s_date4, e_date4,
                               sigma_period=sp, k_buy=kb, k_sell=ks,
                               sell_ratio=sr4, divisions=div4, renewal=rn,
-                              initial_capital=init_cap4, return_history=True)
+                              initial_capital=init_cap4, return_history=True, vreg=vreg)
     if _r4 is None:
         st.warning(f"{tk}: 선택된 기간 내 데이터가 부족합니다.")
         return
@@ -2910,7 +3037,7 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
                     _hr4 = run_backtest_stdev(_pdf4, s_date4, e_date4,
                                                sigma_period=sp, k_buy=_bv4, k_sell=_sv4,
                                                sell_ratio=sr4, divisions=div4, renewal=rn,
-                                               initial_capital=init_cap4)
+                                               initial_capital=init_cap4, vreg=vreg)
                     _heat4[_bi4][_si4] = _hr4["calmar"] if _hr4 else 0.0
         _buy_lbls4  = [f"{v:.2f}" for v in _buy_rng4]
         _sell_lbls4 = [f"{v:.2f}" for v in _sell_rng4]
@@ -2956,7 +3083,7 @@ def _render_sd_perf_analysis(tk, kb, ks, sp, rn, sr4, div4, init_cap4, s_date4, 
                         _rr4 = run_backtest_stdev(_mc_pdf4, _sd4, _ed4,
                                                    sigma_period=sp, k_buy=kb, k_sell=ks,
                                                    sell_ratio=sr4, divisions=div4, renewal=rn,
-                                                   initial_capital=init_cap4)
+                                                   initial_capital=init_cap4, vreg=vreg)
                         if _rr4:
                             _mc_sr4.append(round(_rr4["total_return"]*100, 2))
                             _mc_sm4.append(round(abs(_rr4["mdd"])*100, 2))
@@ -3136,6 +3263,46 @@ sigma   = stdevp(직전 N일 일간수익률)
 
     st.divider()
 
+    # -- 변동성 레짐 (V 프리셋) ------
+    st.subheader("🌋 변동성 레짐 (V 프리셋)")
+    st.markdown(f"""
+**균형형V · 공격형V** 는 원 프리셋과 파라미터가 같고, 시장이 거칠어질 조짐이 있는 달에만 몸을 낮춥니다.
+
+- **판정** — 매달 마지막 거래일에 SOXX(반도체 지수 ETF)의 20일 변동성을 봅니다.
+  전달보다 **올랐고**, 최근 3년 중 **상위 30%** 수준이면 다음 달을 **🔴 위험** 으로 봅니다. 한 달에 한 번만 바뀝니다.
+- **위험 달 규칙** — ① 매도 신호가 나면 **전량 매도**(평소 80%) ② 주식 비중이 총자산의 **50%** 를 넘으면 **신규 매수 중단**.
+  이미 가진 주식을 강제로 팔지는 않습니다.
+- **그 외의 달**(🟡 승부 · 🟢 안정) — 원 프리셋과 완전히 같습니다. 매수·매도 LOC 가격은 어느 달이든 같습니다.
+""")
+    st.dataframe(pd.DataFrame([
+        {"프리셋": "균형형", "CAGR": "59.5%", "MDD": "-60.8%", "Calmar": "0.98"},
+        {"프리셋": "균형형V 🌋", "CAGR": "57.2%", "MDD": "-48.5%", "Calmar": "1.18"},
+        {"프리셋": "공격형", "CAGR": "65.8%", "MDD": "-68.1%", "Calmar": "0.97"},
+        {"프리셋": "공격형V 🌋", "CAGR": "62.8%", "MDD": "-57.3%", "Calmar": "1.09"},
+    ]), use_container_width=True, hide_index=True)
+    st.caption("SOXL · 2010-03 ~ 2026-11 (2026년 10~11월 급락 포함). 평소엔 조금 덜 벌고 급락이 있는 해에 덜 잃는 보험 성격입니다 — "
+               "17년 중 수익이 더 나은 해는 5~6년, 낙폭이 얕아진 해는 10~12년. 위험 판정이 빗나간 2019년에는 수익이 크게 줄었습니다. "
+               "안정형·Ultra-Safe형은 분할이 이미 많아 효과가 작아 V 프리셋을 두지 않았습니다.")
+    try:
+        from dss_engine import vol_regime_table as _vrt_sd, load_regime_prices as _lrp_sd
+        _vt_sd = _vrt_sd(_lrp_sd(), 0.70).tail(8)
+        if len(_vt_sd):
+            st.markdown("**최근 판정**")
+            st.dataframe(pd.DataFrame({
+                "적용 월": _vt_sd["적용월"].astype(str).values,
+                "판정일": [str(pd.Timestamp(_d).date()) for _d in _vt_sd["판정일"]],
+                "SOXX 변동성": [f"{_v * 100:.1f}%" for _v in _vt_sd["변동성"]],
+                "3년 백분위": [f"{_v * 100:.0f}%" for _v in _vt_sd["백분위"]],
+                "방향": _vt_sd["방향"].values,
+                "레짐": [_SD_REGIME_BADGE.get(_r, _r) for _r in _vt_sd["레짐"]],
+            }), use_container_width=True, hide_index=True)
+    except Exception:
+        pass
+    st.info("운용 중인 계좌를 V로 바꿀 때는 주문표 탭 → 파라미터 수정에서 **V 적용 시작일**을 지정하세요. "
+            "그 전 매매 내역은 기존 규칙 그대로 유지됩니다.")
+
+    st.divider()
+
     # -- 전략 인사이트 & 맥락 참고 ------
     st.subheader("전략 인사이트 & 맥락 참고")
     st.warning("**다음 내용은 표준편차매매 전략 해석입니다. 과거 성과가 미래 수익을 보장하지 않습니다.**")
@@ -3231,6 +3398,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         _use_rn  = int(sd_renewal)
         _use_sr  = float(sell_ratio)
         _use_div = int(divisions)
+        _use_vr  = False
     elif _has_acct and _src_idx == 1:
         # 등록 계좌 값
         _use_kb  = float(_act_cfg.get("k_buy",        sd_k_buy))
@@ -3239,6 +3407,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         _use_rn  = int  (_act_cfg.get("renewal",      sd_renewal))
         _use_sr  = float(_act_cfg.get("sell_ratio",   sell_ratio))
         _use_div = int  (_act_cfg.get("divisions",    divisions))
+        _use_vr  = _sd_vreg_on(_act_cfg)
     else:
         # 프리셋 값 (sigma_period/renewal도 프리셋에 정의된 값 강제 적용)
         _preset_idx = _src_idx - (2 if _has_acct else 1)
@@ -3250,6 +3419,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         _use_rn  = int(_pr.get("renewal",      sd_renewal))
         _use_sr  = float(_pr["sell_ratio"])
         _use_div = int(_pr["divisions"])
+        _use_vr  = _sd_vreg_on(_pr)
 
     # 적용 파라미터 미리보기
     with st.expander("🔍 적용 파라미터 확인", expanded=False):
@@ -3261,6 +3431,8 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         _pv4.markdown(f"**매도비율**: `{_use_sr:.0f}%`")
         _pv5.markdown(f"**분할수**: `{_use_div}회`")
         _pv6.markdown(f"**갱신주기**: `{_use_rn}일`")
+        if _use_vr:
+            st.markdown(f"**🌋 변동성 레짐(V)**: 위험 레짐 달엔 {_SD_V_RULE}")
         st.caption(
             f"대상 종목 **{_act_tk}** · 기간 {start_date} ~ {end_date} · "
             f"자본 ${initial_capital:,.0f}"
@@ -3273,7 +3445,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
             "act_tk": _act_tk,
             "kb": _use_kb, "ks": _use_ks,
             "sp": _use_sp, "rn": _use_rn,
-            "sr": _use_sr, "div": _use_div,
+            "sr": _use_sr, "div": _use_div, "vr": _use_vr,
             "cap": float(initial_capital),
             "s_date": str(start_date), "e_date": str(end_date),
             "source_label": _src_sel,
@@ -3289,6 +3461,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
             _act_rn  = _prm["rn"]
             _act_sr  = _prm["sr"]
             _act_div = _prm["div"]
+            _act_vr  = bool(_prm.get("vr", False))
             _act_cap = _prm["cap"]
             _pf_s    = _prm["s_date"]
             _pf_e    = _prm["e_date"]
@@ -3296,11 +3469,13 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
         else:
             _act_kb, _act_ks, _act_sp, _act_rn = _use_kb, _use_ks, _use_sp, _use_rn
             _act_sr, _act_div, _act_cap = _use_sr, _use_div, float(initial_capital)
+            _act_vr = _use_vr
             _pf_s, _pf_e = str(start_date), str(end_date)
 
         _render_sd_perf_analysis(
             _act_tk, _act_kb, _act_ks, _act_sp, _act_rn,
             _act_sr, _act_div, _act_cap, str(_pf_s), str(_pf_e),
+            vreg=sd_vreg("1" if _act_vr else ""),
         )
 
         # -- 매매법 간 성과 비교 (자동 실행) ------
@@ -3331,7 +3506,7 @@ SOXL 같은 3x 레버리지 ETF는 일간 변동이 크기 때문에, 이 전략
                     _pdf_cmp, _cmp_s, _cmp_e,
                     sigma_period=_act_sp, k_buy=_act_kb, k_sell=_act_ks,
                     sell_ratio=_act_sr, divisions=_act_div, renewal=_act_rn,
-                    initial_capital=_cmp_cap,
+                    initial_capital=_cmp_cap, vreg=sd_vreg("1" if _act_vr else ""),
                 )
                 _cmp_r_avg = _get_avg_close_run_backtest()(
                     _pdf_cmp, _cmp_s, _cmp_e,
@@ -3526,6 +3701,7 @@ def render_settings_tab():
                                     _sd_start_d = datetime(2024, 1, 1).date()
                                 msg = _build_sd_order_text(
                                     _sd_tk,
+                                    vreg         = _sd_cfg_vreg(_sd_cfg),
                                     k_buy        = float(_sd_cfg.get("k_buy",        0.65)),
                                     k_sell       = float(_sd_cfg.get("k_sell",       0.65)),
                                     sigma_period = int  (_sd_cfg.get("sigma_period", 2)),
@@ -3658,6 +3834,7 @@ def render_settings_tab():
                                     divisions    = int  (_gs_sd_cfg.get("divisions",    5)),
                                     renewal      = int  (_gs_sd_cfg.get("renewal",      5)),
                                     initial_capital = _gs_sd_cap,
+                                    vreg = _sd_cfg_vreg(_gs_sd_cfg),
                                 )
                                 if _res_gs is None:
                                     st.error(f"{_gs_sd_tk}: 시뮬레이션 데이터가 없습니다.")
@@ -3668,7 +3845,8 @@ def render_settings_tab():
                                         int(_gs_sd_cfg.get("divisions", 5)),
                                         float(_gs_sd_cfg.get("sell_ratio", 75.0)),
                                         int(_gs_sd_cfg.get("renewal", 5)),
-                                        _gs_sd_cfg.get("capital_adj_history"))
+                                        _gs_sd_cfg.get("capital_adj_history"),
+                                        vreg=_sd_cfg_vreg(_gs_sd_cfg))
                                     gc = _get_gspread_client()
                                     sh = gc.open_by_url(gs_url_sd)
                                     ws = sh.worksheet(_sheet_nm)

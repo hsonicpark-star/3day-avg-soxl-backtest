@@ -418,6 +418,12 @@ def parse_ticker_settings(user: dict) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 from stdev_engine import run_stdev_ordersheet as _sd_run_ordersheet
+from stdev_engine import sd_vreg as _sd_vreg
+
+
+def _sd_cfg_vreg(cfg):
+    """표준편차 계좌 설정 → V(변동성 레짐) 사양 (꺼져 있으면 None)."""
+    return _sd_vreg((cfg or {}).get("vreg", ""), (cfg or {}).get("vreg_from", ""))
 
 
 def calc_sd_today_order(ticker: str, os_start: str,
@@ -425,7 +431,7 @@ def calc_sd_today_order(ticker: str, os_start: str,
                         sigma_period: int, sell_ratio: float,
                         divisions: int, renewal: int,
                         capital: float,
-                        pcr: float = 1.0, lcr: float = 1.0) -> dict | None:
+                        pcr: float = 1.0, lcr: float = 1.0, vreg=None) -> dict | None:
     """표준편차매매 오늘의 주문 계산.
 
     stdev_engine.run_stdev_ordersheet (웹앱과 동일 엔진) 사용.
@@ -439,7 +445,7 @@ def calc_sd_today_order(ticker: str, os_start: str,
         price_df=df, start_date=os_start,
         sigma_period=sigma_period, k_buy=k_buy, k_sell=k_sell,
         sell_ratio=sell_ratio, divisions=divisions, renewal=renewal,
-        pcr=pcr, lcr=lcr, initial_capital=capital,
+        pcr=pcr, lcr=lcr, initial_capital=capital, vreg=vreg,
     )
     if res is None:
         return None
@@ -469,7 +475,24 @@ def calc_sd_today_order(ticker: str, os_start: str,
         "total_invest":   float(res.get("total_invest", capital)),
         "total_asset":    float(res.get("final_asset", 0)),  # 총자산 표시용
         "closes":         _closes_sd,
+        "vol_regime_on":  bool(res.get("vol_regime_on")),
+        "vol_regime":     res.get("vol_regime"),
+        "vol_regime_pending": res.get("vol_regime_pending", ""),
     }
+
+
+def sd_regime_line(r: dict) -> str:
+    """주문표 레짐 안내 한 줄 (V 미사용이면 빈 문자열) — 웹 strategies/stdev.py 와 같은 문구."""
+    if not r.get("vol_regime_on"):
+        return ""
+    if r.get("vol_regime_pending"):
+        return f"🌋 변동성 레짐(V): {r['vol_regime_pending']}부터 적용 — 그 전까지는 기본 규칙"
+    g = r.get("vol_regime")
+    if g is None:
+        return "🌋 변동성 레짐: 판정 대기 (SOXX 월말 데이터 없음 → 기본 규칙)"
+    if g == "위험":
+        return "🌋 이번 달 변동성 레짐: 🔴 위험 → 매도 100% · 주식 비중 50% 넘으면 매수 중단"
+    return f"🌋 이번 달 변동성 레짐: {'🟡 승부' if g == '승부' else '🟢 안정'} → 기본 규칙"
 
 
 def build_sd_message(r: dict) -> str:
@@ -483,6 +506,9 @@ def build_sd_message(r: dict) -> str:
         "━━━━━━━━━━━━━━━",
         f"🔴 매수 LOC  ${r['next_buy_loc']:,.2f}  (예상 {r['est_buy_qty']:,}주)",
     ]
+    _rg = sd_regime_line(r)
+    if _rg:
+        lines.insert(4, _rg)
     if r["holdings"] > 0:
         lines.append(f"🔵 매도 LOC  ${r['next_sell_loc']:,.2f}  (예상 {r['est_sell_qty']:,}주)")
         lines += [
@@ -2227,7 +2253,8 @@ def _cam_source_state(user: dict, client, strategy: str, account: str):
                 sell_ratio=float(c.get("sell_ratio", SD_DEFAULT_SELL_RATIO)),
                 divisions=int(float(c.get("divisions", SD_DEFAULT_DIVISIONS))),
                 renewal=int(float(c.get("renewal", SD_DEFAULT_RENEWAL))),
-                capital=float(c.get("os_capital", SD_DEFAULT_CAPITAL)))
+                capital=float(c.get("os_capital", SD_DEFAULT_CAPITAL)),
+                vreg=_sd_cfg_vreg(c))
             if not r:
                 return None
             adj = _cam_adj_sum(c)
@@ -2752,6 +2779,7 @@ def main():
                             sell_ratio=sell_ratio,
                             divisions=divisions, renewal=renewal,
                             capital=capital, pcr=pcr, lcr=lcr,
+                            vreg=_sd_cfg_vreg(cfg),
                         )
                         if r:
                             r["ticker"] = tk   # 메시지 종목 라벨엔 계좌명 포함 전체 키 표시
@@ -2840,7 +2868,9 @@ def main():
                                     _o_sd = calc_sd_order_from_state(
                                         _st_sd, float(r.get("next_buy_loc", 0)),
                                         float(r.get("next_sell_loc", 0)),
-                                        divisions, sell_ratio, renewal, pcr, lcr)
+                                        divisions, sell_ratio, renewal, pcr, lcr,
+                                        vreg=_sd_cfg_vreg(cfg), regime=r.get("vol_regime"),
+                                        last_close=float(r.get("last_close", 0)))
                                     if (_st_sd["holdings"] != int(r.get("holdings", 0))
                                             or _o_sd["buy_qty"] != int(r.get("est_buy_qty", 0))
                                             or _o_sd["sell_qty"] != int(r.get("est_sell_qty", 0))):
