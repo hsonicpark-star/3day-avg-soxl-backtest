@@ -545,7 +545,12 @@ def run_backtest(prices: pd.DataFrame,
                  return_trades: bool = False,
                  return_state: bool = False,
                  liquidate_at_end: bool = True,
-                 capital_injections: dict = None) -> pd.DataFrame:
+                 capital_injections: dict = None,
+                 day_buy_mult: dict = None,
+                 day_ag_div: dict = None,
+                 day_sf_weights: dict = None,
+                 day_sf_hold: dict = None,
+                 day_ag_hold_cap: dict = None) -> pd.DataFrame:
     """Dual Sniper Pro 백테스트.
 
     Args:
@@ -681,11 +686,19 @@ def run_backtest(prices: pd.DataFrame,
         ag_hold_tier1 = (prev_close is not None and prev_ma5 is not None
                          and prev_close > prev_ma5)
 
+        # 실험용 날짜별 덮어쓰기 (변동성 레짐 연구 — 기본 None, 운영 경로 영향 없음)
+        _ag_w_day = ag_weights
+        _sf_w_day = weights
+        if day_ag_div and date in day_ag_div:
+            _ag_w_day = [1] * int(day_ag_div[date])
+        if day_sf_weights and date in day_sf_weights:
+            _sf_w_day = list(day_sf_weights[date])
+
         # 매수 티어/할당금은 '장 시작(매도 처리 전)' 상태 기준 (LOC 주문 장전 제출)
         occupied_before = set(p.tier for p in positions if p.mode == mode)
         buy_tier_planned = _lowest_empty_tier(
             occupied_before,
-            params.ag_divisions if mode == '공격' else params.sf_divisions)
+            len(_ag_w_day) if mode == '공격' else len(_sf_w_day))
         cash_start = cash  # 당일 매도 대금 반영 전 현금
 
         sold = []
@@ -750,10 +763,10 @@ def run_backtest(prices: pd.DataFrame,
         bought = None
         if order_price is not None:
             if mode == '공격':
-                wts = ag_weights
+                wts = _ag_w_day
                 inclusive = params.ag_buy_inclusive
             else:
-                wts = weights
+                wts = _sf_w_day
                 inclusive = params.sf_buy_inclusive
 
             # 티어는 장 시작 기준(occupied_before)으로 사전 결정
@@ -765,6 +778,8 @@ def run_backtest(prices: pd.DataFrame,
             if tier is not None and fill:
                 # 할당금: 장 시작 현금 × (티어비중 / 남은 비중합), 둘 다 장 시작 기준
                 alloc = _alloc_amount(cash_start, wts, occupied_before, tier)
+                if day_buy_mult:
+                    alloc *= day_buy_mult.get(date, 1.0)
                 qty = int(math.floor(alloc / order_price)) if order_price > 0 else 0
                 if qty > 0:
                     buy_amount = qty * close
@@ -777,9 +792,13 @@ def run_backtest(prices: pd.DataFrame,
                             sell_target = round(close * (1 + spct), 2)
                             hd = _ag_hold_days(cur_rsi, params.ag_hold_alpha) \
                                 if not np.isnan(cur_rsi) else 7
+                            if day_ag_hold_cap and date in day_ag_hold_cap:
+                                hd = min(hd, int(day_ag_hold_cap[date]))
                         else:
                             sell_target = None  # MA 그룹청산
                             hd = params.sf_hold
+                            if day_sf_hold and date in day_sf_hold:
+                                hd = int(day_sf_hold[date])
                         # 끝에서 강제청산(MOC)할지: 성과 백테스트=True(마지막날 평가청산),
                         # 현재 보유상태 carry(build_today_orders)=False → 미만기 포지션 유지
                         stop_idx = min(i + hd, n - 1) if liquidate_at_end else (i + hd)
