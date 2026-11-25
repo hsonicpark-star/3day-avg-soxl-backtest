@@ -383,6 +383,7 @@ MDD −41.9% (10/16), 현재 DD −38.9%. 10/19 매도 −$68,783는 평가손�
 |---|---|
 | `261124_변동성레짐_가이드.md` | 종합 가이드 (판정 정의, 실험 이력, 최종 규칙, 엔진 API, 전환일, 알고리C 시트, 재사용 체크리스트) |
 | `레짐_카탈로그.md` | 레짐 목록 (코드 V1·A1·T2·D1 …) — 판정식 · 기준 종목 · 검증 이력(실패 포함) · 새 레짐 시험 순서 |
+| `d1_drawdown_regime_2026-11.py` · `d1_drawdown_robust_2026-11.py` | D1 낙폭 레짐 × DSS · 표준편차 (1,062조합 + 무작위 달 · ~2025 · 경계 · V1 겹침) — 채택 안 함 (카탈로그 D1) |
 | `dss_vol_regime_2026-11.py` | 레짐 정의 + 결합 규칙 R1~R5 × 프리셋 4종 → `dss_vol_regime_result.md` · `dss_vol_regime_grid.csv` |
 | `dss_vol_regime_sens_2026-11.py` | R5(위험 달 매수 배율) 민감도 → `dss_vol_regime_sens.csv` |
 | `dss_vol_regime_div_2026-11.py` | 위험 달 분할수 × 배율 → `dss_vol_regime_div.csv` |
