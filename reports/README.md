@@ -373,3 +373,23 @@ MDD −41.9% (10/16), 현재 DD −38.9%. 10/19 매도 −$68,783는 평가손�
 월별 승률은 프리셋 무관 68~71% — 차이는 진 달의 손실 크기 (-10% 이하인 달: Sonic형 21번 vs 균형형 14번).
 균형형 0.90/0.50/80% 는 세 방향 모두 고원 안쪽 (매도비율 65~90%, k_buy 0.75~0.95, k_sell 0.45~0.55). 단 k_sell 0.60·k_buy 1.10 에서 MDD 가 -49~-51% 로 뜀 — 낙폭은 한두 번의 하락장 경로에 좌우되므로 -45~-50% 로 볼 것.
 결과 CSV(`grid.csv` 3MB, `grid_scored.csv` 10MB)는 용량 때문에 커밋하지 않음 (로컬 보관, 스크립트로 재생성 가능).
+
+## 261124 · 변동성 레짐 (V) — DSS 공격형V
+
+월말 SOXX 20일 변동성(3년 백분위 + 직전 월말 대비 방향)으로 다음 달을 위험/승부/안정으로 나누고,
+위험 달에만 12분할 · 공세 신규 매수 보유 5일. **설계·검증·구현·다른 전략 적용법은 `261124_변동성레짐_가이드.md`.**
+
+| 파일 | 내용 |
+|---|---|
+| `261124_변동성레짐_가이드.md` | 종합 가이드 (판정 정의, 실험 이력, 최종 규칙, 엔진 API, 전환일, 알고리C 시트, 재사용 체크리스트) |
+| `dss_vol_regime_2026-11.py` | 레짐 정의 + 결합 규칙 R1~R5 × 프리셋 4종 → `dss_vol_regime_result.md` · `dss_vol_regime_grid.csv` |
+| `dss_vol_regime_sens_2026-11.py` | R5(위험 달 매수 배율) 민감도 → `dss_vol_regime_sens.csv` |
+| `dss_vol_regime_div_2026-11.py` | 위험 달 분할수 × 배율 → `dss_vol_regime_div.csv` |
+| `dss_vol_regime_hold_2026-11.py` | 위험 달 보유기한 → `dss_vol_regime_hold.csv` |
+| `dss_vol_regime_split_2026-11.py` | 1회시드 방식 3종 → `dss_vol_regime_split.csv` |
+| `dss_v_monthly_compare_2026-11.py` | 공격형 vs 공격형V 월간·연간 표 → `dss_v_monthly_compare.html` |
+
+핵심: 공격형 65.6% / -58.0% / 1.13 → 공격형V 63.3% / -42.5% / **1.49**.
+레짐으로 **모드를 바꾸는 규칙(R1~R4)은 전부 실패**, 모드는 두고 **매수 크기만 줄이는 규칙**이 반기·봉인·4년 구간·기준 60~80% 모두 통과.
+위험 달 1회 매수 ≈ 투자금 8% 가 최적대, 매수 중단(배율 0)은 반등을 놓쳐 악화.
+연구 스크립트는 엔진의 실험용 인자(`day_modes` · `day_buy_mult` · `day_divisions` · `day_hold` · `split_mode`, 기본 None)를 쓴다 — 운영 경로는 `DSSParams.vol_regime`.
