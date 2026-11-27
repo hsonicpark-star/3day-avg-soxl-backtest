@@ -160,7 +160,66 @@ def main():
                        f"{x['구간최소']:.2f}", f"{x['TQQQ CAGR']:.1f}", f"{x['TQQQ MDD']:.1f}", f"{x['TQQQ Calmar']:.2f}"])
     rectab = table(["", "CAGR %", "MDD %", "Calmar", "앞 절반 Calmar", "뒤 절반 Calmar", "4구간 최소", "TQQQ CAGR %", "TQQQ MDD %", "TQQQ Calmar"], r3, "num")
 
-    data = dict(dates=dates, curves=curves, split=split_i, vser=vser)
+    # ── 3차: 2025년까지만 맞추고 2026년 보기
+    r25 = json.load(open(os.path.join(R, "dssn_opt_2025_params.json"), encoding="utf-8"))
+    k0 = int(idx.searchsorted(pd.Timestamp("2026-01-02")))
+
+    def row5(P):
+        fit, full = S.metric(ctx, P, T0, "2025-12-31"), S.metric(ctx, P, T0)
+        g, mdd, _n = S.sim(ctx, P, k0, i1)
+        yr = S.yearly(ctx, P, T0)
+        return {"맞춘구간 CAGR": fit[0], "맞춘구간 MDD": fit[1], "2026 수익률(단독)": (g - 1) * 100, "2026 MDD(단독)": mdd * 100,
+                "2026 수익률(이어서)": float(yr.loc[2026, "수익률"]), "2026 MDD(이어서)": float(yr.loc[2026, "MDD"]), "전체 Calmar": full[2]}
+    all5 = {"공격형": dict(S.BASE, v=0), "공격형V": V}
+    all5.update({f"{k} (2026까지 맞춤)": P for k, P in runs.items() if "전체" in k})
+    all5.update({f"{k} (2025까지 맞춤)": P for k, P in r25.items()})
+    d5 = pd.DataFrame({k: row5(P) for k, P in all5.items()}).T
+    cn = "①②③"
+
+    def r5(names, col, d=1):
+        v = [float(d5.loc[n, col]) for n in names]
+        return f"{v[0]:+.{d}f}" if len(v) == 1 else f"{min(v):+.{d}f} ~ {max(v):+.{d}f}"
+
+    def u5(names, col, d=1):
+        return r5(names, col, d).replace("+", "")
+    g5 = [("공격형", ["공격형"]), ("<b>공격형V (현재)</b>", ["공격형V"]),
+          ("정규화 · 2026년까지 통으로 맞춤 (3회)", [f"N-전체#{i} (2026까지 맞춤)" for i in (1, 2, 3)]),
+          ("정규화 없이 · 2026년까지 통으로 맞춤 (3회)", [f"P-전체#{i} (2026까지 맞춤)" for i in (1, 2, 3)])]
+    g5 += [(f"<b>정규화 · 2025년까지만 맞춤 {cn[i - 1]}</b>", [f"N-2025#{i} (2025까지 맞춤)"]) for i in (1, 2, 3)]
+    g5 += [("정규화 없이 · 2025년까지만 맞춤 (3회)", [f"P-2025#{i} (2025까지 맞춤)" for i in (1, 2, 3)])]
+
+    def neg(t):
+        return f"<span class='neg'>{t}</span>" if t.startswith("-") else t
+    t5rows = [[g, u5(n, "맞춘구간 CAGR"), u5(n, "맞춘구간 MDD"), neg(r5(n, "2026 수익률(이어서)")), u5(n, "2026 MDD(이어서)"),
+               neg(r5(n, "2026 수익률(단독)")), u5(n, "2026 MDD(단독)"), u5(n, "전체 Calmar", 2)] for g, n in g5]
+    t5 = table(["", "2011~2025 CAGR %", "2011~2025 MDD %", "2026년 수익률 % (이어서 운용)", "2026년 연중 MDD % (이어서 운용)",
+                "2026년 수익률 % (연초에 새로 시작)", "2026년 MDD % (연초에 새로 시작)", "전체 기간 Calmar"], t5rows, "num")
+    n25 = [d5.loc[f"N-2025#{i} (2025까지 맞춤)"] for i in (1, 2, 3)]
+    p25 = [d5.loc[f"P-2025#{i} (2025까지 맞춤)"] for i in (1, 2, 3)]
+    nf = [d5.loc[f"N-전체#{i} (2026까지 맞춤)"] for i in (1, 2, 3)]
+    v5 = d5.loc["공격형V"]
+
+    # 2026년 자산 곡선 (2025년 마지막 거래일 = 1) · 월별
+    show5 = [("공격형V (현재)", V, C[0], ""), ("정규화 · 2026년까지 통으로 맞춤 ①", runs["N-전체#1"], C[3], "")]
+    show5 += [(f"정규화 · 2025년까지만 맞춤 {cn[i]}", r25[f"N-2025#{i + 1}"], C[1], ["", "6 4", "2 3"][i]) for i in range(3)]
+    j0 = int(idx.searchsorted(pd.Timestamp("2026-01-01"))) - 1
+    dates26 = [str(d.date()) for d in idx[j0:]]
+    cur26, mrows = [], []
+    for name, P, col, dash in show5:
+        eq = pd.Series(S.sim(ctx, P, i0, i1, curve=True)[3], index=idx[i0:])
+        e26 = eq[idx[j0]:]
+        cur26.append(dict(name=name, color=col, dash=dash, vals=[round(float(x), 4) for x in e26 / e26.iloc[0]]))
+        m = eq.groupby(eq.index.to_period("M")).last().pct_change() * 100
+        m = m[m.index.year == 2026]
+        mrows.append([name] + [neg(f"{x:+.1f}") for x in m])
+    mtab = table([""] + [f"{k.month}월" for k in m.index], mrows, "yr")
+    leg26 = "".join("<span><i style='background:" + (c["color"] if not c["dash"] else f"repeating-linear-gradient(90deg,{c['color']} 0 4px,transparent 4px 7px)")
+                    + f"'></i>{c['name']}</span>" for c in cur26)
+    # 찾은 값 (2025 맞춤)
+    cols5 = [("공격형V", V)] + [(f"2025 맞춤 {cn[i]}", r25[f"N-2025#{i + 1}"]) for i in range(3)]
+    ptab5 = table(["기본값"] + [n for n, _ in cols5], [[lab] + [fmt(P[k], t) for _, P in cols5] for k, lab, t in PNAME], "num")
+
+    data = dict(dates=dates, curves=curves, split=split_i, vser=vser, dates26=dates26, cur26=cur26)
     n1, n3 = d2.loc["N-전체#1"], d2.loc["N-전체#3"]
     na = [d2.loc[f"N-앞#{i}"] for i in (1, 2, 3)]
     y22 = float(ydf.loc[2022, "정규화 · 2011~2019 에만 맞춤"])
@@ -196,7 +255,8 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 <div class="card verdict"><b>결론: 목표 수치는 맞춰지지만, 실전에 쓸 수 있는 값은 아니었습니다.</b>
 <p>과거 16년 전체에 값을 맞추면 CAGR {n1['CAGR']:.1f}% · MDD {n1['MDD']:.1f}%가 나와 목표(85.1% · −42.1%)에 도달합니다.
 그런데 같은 방법으로 2011~2019년에만 맞춘 값을 2020~2026년에 그대로 쓰면 MDD가 {min(r['뒤MDD'] for r in na):.0f}%까지 무너졌습니다.
-과거를 잘 설명하는 값을 찾은 것이지, 앞으로도 통하는 규칙을 찾은 것이 아니라는 뜻입니다.</p></div>
+과거를 잘 설명하는 값을 찾은 것이지, 앞으로도 통하는 규칙을 찾은 것이 아니라는 뜻입니다.</p>
+<p>2025년까지만 맞추고 2026년을 처음 보는 해로 두어도 같았습니다. 세 번의 결과가 {n25[0]['2026 수익률(이어서)']:+.0f}% · {n25[1]['2026 수익률(이어서)']:+.0f}% · {n25[2]['2026 수익률(이어서)']:+.0f}%로 흩어졌고, 연중 낙폭은 세 번 모두 공격형V({v5['2026 MDD(이어서)']:.0f}%)보다 컸습니다 (7번).</p></div>
 
 <div class="kpis">
 <div class="kpi"><b>62.5% / −43.7%</b><span>공격형V (현재 배포)</span></div>
@@ -293,12 +353,36 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 <div class="card verdict"><b>정리:</b> 정규화의 알맹이는 "변동성이 클 때 작게 산다"이고, 이것은 공격형V 가 이미 하고 있습니다. 그래서 공격형V 에 얹으면 더할 것이 없습니다.
 쓸모가 있다면 V 가 없는 다른 종목(TQQQ 등)에 DSS 를 적용할 때입니다.</div>
 
-<h2>7. 한계와 다음에 확인할 것</h2>
+<h2>7. 2025년까지만 맞추고 2026년 보기 (3차)</h2>
+<p>4번에서 2026년까지 통으로 맞춘 값은 2026년 10~11월 폭락까지 본 상태에서 고른 값입니다.
+그래서 같은 탐색(같은 손잡이 23개 · 같은 목표 · 같은 탐색량)을 <b>2011-01-03 ~ 2025-12-31 에만</b> 적용하고, 2026년은 탐색이 한 번도 보지 못한 해로 남겼습니다.</p>
+{t5}
+<p class="sub">'이어서 운용'은 2011년부터 계속 굴려 온 계좌의 2026년, '연초에 새로 시작'은 2026-01-02 에 빈 계좌로 시작한 경우입니다. 2026년은 {end} 까지이고, 이 문서를 만든 날의 종가로 다시 계산한 값이라 탐색 당시에 저장한 <code>dssn_opt_2025.csv</code> 와는 조금 다를 수 있습니다.</p>
+<div class="legend">{leg26}</div>
+<div class="chart" id="c_26"></div>
+<p class="sub">2025년 마지막 거래일의 자산을 1 로 둔 2026년 자산입니다 (이어서 운용 기준).</p>
+<h3>2026년 월별 수익률 (%)</h3>
+{mtab}
+<h3>읽는 법</h3>
+<ul>
+<li><b>맞춘 구간에서는 MDD 가 모두 −42% 안팎이었는데, 2026년에는 {min(r['2026 MDD(이어서)'] for r in n25):.0f} ~ {max(r['2026 MDD(이어서)'] for r in n25):.0f}%가 났습니다.</b> 공격형V 는 {v5['2026 MDD(이어서)']:.1f}%로 원래 수준을 지켰습니다.</li>
+<li><b>세 번의 결과가 흩어졌습니다.</b> 2025년까지는 셋 다 CAGR {min(r['맞춘구간 CAGR'] for r in n25):.0f}~{max(r['맞춘구간 CAGR'] for r in n25):.0f}%로 구분이 되지 않았는데, 2026년에는 {n25[0]['2026 수익률(이어서)']:+.0f}% · {n25[1]['2026 수익률(이어서)']:+.0f}% · {n25[2]['2026 수익률(이어서)']:+.0f}%였습니다. 어느 것이 좋을지 미리 고를 방법이 없었습니다.</li>
+<li><b>통으로 맞춘 값의 2026년 {min(r['2026 수익률(이어서)'] for r in nf):+.0f} ~ {max(r['2026 수익률(이어서)'] for r in nf):+.0f}%는 폭락을 미리 보고 고른 결과입니다.</b> 같은 방법이 2026년을 보지 못하면 위 숫자가 됩니다.</li>
+<li><b>①은 수익률만 보면 공격형V 보다 높습니다</b> ({n25[0]['2026 수익률(이어서)']:+.0f}% 대 {v5['2026 수익률(이어서)']:+.0f}%). 9월까지 더 공격적으로 벌어 둔 덕이고, 그 대가로 연중 낙폭이 {n25[0]['2026 MDD(이어서)']:.0f}%였습니다.</li>
+<li><b>오를 때 더 벌고 내릴 때 더 잃었습니다.</b> 오른 달(1 · 2 · 4 · 5 · 6 · 9월)에는 매번 공격형V 보다 많이 벌었지만, 7월과 10월 하락에서 훨씬 크게 잃었습니다 (7월 −19 ~ −33% 대 −7%, 10월 −31 ~ −41% 대 −27%). 찾은 값이 셋 다 평소 6분할에 이익복리율이 100% 가까이로, 공격형V(7분할 · 75%)보다 한 번에 크게 사는 설정입니다.</li>
+<li><b>정규화 없이 맞춘 값은 2026년에 더 나빴습니다</b> ({min(r['2026 수익률(이어서)'] for r in p25):+.0f} ~ {max(r['2026 수익률(이어서)'] for r in p25):+.0f}%, MDD {min(r['2026 MDD(이어서)'] for r in p25):.0f}%). 4번의 2011~2019년 맞춤에서는 정규화 쪽이 더 크게 무너졌으니, 어느 쪽이 덜 무너지는지는 구간마다 다릅니다. 둘 다 공격형V 보다 낙폭이 컸다는 점만 같습니다.</li>
+</ul>
+<h3>2025년까지 맞춰 찾은 기본값</h3>
+{ptab5}
+<div class="card verdict"><b>정리:</b> 처음 보는 구간을 7년(2020~2026)으로 잡든 1년(2026)으로 잡든 결과가 같습니다. 맞춘 구간의 MDD −42%는 처음 보는 구간에서 지켜지지 않았고, 공격형V 만 제 수준을 유지했습니다. 채택하지 않습니다.</div>
+
+<h2>8. 한계와 다음에 확인할 것</h2>
 <ul>
 <li>'커스텀 티어'의 티어별 값을 모릅니다. 그 값이 있어야 84% / −46% 를 같은 조건으로 따져 볼 수 있습니다.</li>
 <li>변동 기준으로 일간 수익률 표준편차를 썼습니다 (자료의 'TR 자리'와 같은 역할이지만 계산식은 다를 수 있습니다).</li>
 <li>티어 비중은 "앞 ↔ 뒤 기울기" 한 가지 모양만 시험했습니다.</li>
 <li>교차 종목은 TQQQ 하나만 봤습니다.</li>
+<li>7번의 처음 보는 구간은 2026년 한 해(11개월)뿐입니다. 한 해의 결과이므로 4번의 2020~2026년 결과와 함께 봐야 합니다.</li>
 </ul>
 <p>캡처를 만든 분께 확인하면 좋은 것:</p>
 <ol>
@@ -311,6 +395,7 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 <p class="sub">폴더 <code>D:\\04.backtest\\02.종가평균매매\\reports\\</code><br>
 <code>dssn_sim.py</code> 실험용 시뮬레이터 · <code>dssn_opt_2026-11.py</code> 탐색 (약 36분) · <code>dssn_report_2026-11.py</code> 이 문서 생성<br>
 <code>dssn_recipe_2026-11.py</code> 공유받은 방식 그대로 (2차, 약 2분)<br>
+<code>dssn_opt_2025_2026-11.py</code> 2025년까지만 맞추고 2026년 보기 (3차, 약 20분) → <code>dssn_opt_2025.csv</code> · <code>dssn_opt_2025_params.json</code><br>
 <code>dssn_opt_search.csv</code> · <code>dssn_opt_single.csv</code> · <code>dssn_opt_params.json</code> · <code>dssn_recipe.csv</code> · <code>dssn_recipe_random_공격형.csv</code> · <code>dssn_recipe_random_공격형V.csv</code> 결과</p>
 
 </main>
@@ -318,22 +403,24 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 const D = {json.dumps(data, ensure_ascii=False)};
 function chart(id, o) {{
   const el = document.getElementById(id), W = 940, H = o.h || 380, L = 54, Rr = 14, T = 12, B = 30;
-  const n = D.dates.length, tr = v => o.log ? Math.log10(v) : v;
+  const DT = o.dates || D.dates, n = DT.length, tr = v => o.log ? Math.log10(v) : v;
   let lo = Infinity, hi = -Infinity;
   o.series.forEach(s => s.vals.forEach(v => {{ lo = Math.min(lo, tr(v)); hi = Math.max(hi, tr(v)); }}));
-  if (o.log) {{ lo = Math.floor(lo); hi = Math.ceil(hi); }} else {{ lo = 0; hi = Math.ceil(hi); }}
+  const st = o.step || 1;
+  if (o.log) {{ lo = Math.floor(lo); hi = Math.ceil(hi); }} else {{ lo = 0; hi = Math.ceil(hi / st) * st; }}
   const x = i => L + (W - L - Rr) * i / (n - 1), y = v => T + (H - T - B) * (1 - (tr(v) - lo) / (hi - lo));
   let g = '';
-  for (let k = lo; k <= hi; k++) {{
+  for (let k = lo; k <= hi + 1e-9; k += st) {{
     const yy = T + (H - T - B) * (1 - (k - lo) / (hi - lo));
     g += `<line x1="${{L}}" x2="${{W - Rr}}" y1="${{yy}}" y2="${{yy}}" stroke="var(--line)"/>`;
-    g += `<text x="${{L - 8}}" y="${{yy + 4}}" text-anchor="end" font-size="12" fill="var(--mut)">${{o.log ? (10 ** k).toLocaleString() + '배' : k.toFixed(0)}}</text>`;
+    g += `<text x="${{L - 8}}" y="${{yy + 4}}" text-anchor="end" font-size="12" fill="var(--mut)">${{o.log ? (10 ** k).toLocaleString() + '배' : k.toFixed(st < 1 ? 1 : 0) + (o.unit || '')}}</text>`;
   }}
   let last = '';
-  D.dates.forEach((d, i) => {{ const yr = d.slice(0, 4); if (yr !== last && (+yr % 2 === 1)) g += `<text x="${{x(i)}}" y="${{H - 9}}" text-anchor="middle" font-size="12" fill="var(--mut)">${{yr}}</text>`; last = yr; }});
+  if (o.monthly) DT.forEach((d, i) => {{ const m = d.slice(0, 7); if (m !== last && i) g += `<text x="${{x(i)}}" y="${{H - 9}}" text-anchor="middle" font-size="12" fill="var(--mut)">${{+d.slice(5, 7)}}월</text>`; last = m; }});
+  else DT.forEach((d, i) => {{ const yr = d.slice(0, 4); if (yr !== last && (+yr % 2 === 1)) g += `<text x="${{x(i)}}" y="${{H - 9}}" text-anchor="middle" font-size="12" fill="var(--mut)">${{yr}}</text>`; last = yr; }});
   if (o.split != null) g += `<line x1="${{x(o.split)}}" x2="${{x(o.split)}}" y1="${{T}}" y2="${{H - B}}" stroke="var(--ink2)" stroke-dasharray="4 4"/><text x="${{x(o.split) + 6}}" y="${{T + 12}}" font-size="12" fill="var(--ink2)">2020년 → 처음 보는 구간</text>`;
-  if (o.base != null) g += `<line x1="${{L}}" x2="${{W - Rr}}" y1="${{y(o.base)}}" y2="${{y(o.base)}}" stroke="var(--ink2)" stroke-dasharray="4 4"/><text x="${{W - Rr - 4}}" y="${{y(o.base) - 6}}" text-anchor="end" font-size="12" fill="var(--ink2)">평소 (v = 1)</text>`;
-  o.series.forEach(s => {{ g += `<path d="${{s.vals.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join('')}}" fill="none" stroke="${{s.color}}" stroke-width="2" stroke-linejoin="round"/>`; }});
+  if (o.base != null) g += `<line x1="${{L}}" x2="${{W - Rr}}" y1="${{y(o.base)}}" y2="${{y(o.base)}}" stroke="var(--ink2)" stroke-dasharray="4 4"/><text x="${{W - Rr - 4}}" y="${{y(o.base) - 6}}" text-anchor="end" font-size="12" fill="var(--ink2)">${{o.baseLabel || '평소 (v = 1)'}}</text>`;
+  o.series.forEach(s => {{ g += `<path d="${{s.vals.map((v, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1)).join('')}}" fill="none" stroke="${{s.color}}" stroke-width="2" stroke-linejoin="round"${{s.dash ? ` stroke-dasharray="${{s.dash}}"` : ''}}/>`; }});
   g += `<line class="cx" x1="0" x2="0" y1="${{T}}" y2="${{H - B}}" stroke="var(--ink2)" stroke-width="1" visibility="hidden"/>`;
   el.innerHTML = `<svg viewBox="0 0 ${{W}} ${{H}}" role="img" aria-label="${{o.label}}">${{g}}</svg><div class="tip"></div>`;
   const svg = el.querySelector('svg'), cx = el.querySelector('.cx'), tip = el.querySelector('.tip');
@@ -341,7 +428,7 @@ function chart(id, o) {{
     const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width;
     const i = Math.max(0, Math.min(n - 1, Math.round((px - L) / (W - L - Rr) * (n - 1))));
     cx.setAttribute('x1', x(i)); cx.setAttribute('x2', x(i)); cx.setAttribute('visibility', 'visible');
-    tip.innerHTML = `<b>${{D.dates[i]}}</b><br>` + o.series.map(s => `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${{s.color}};margin-right:5px"></span>${{s.name}}: <b>${{o.fmt(s.vals[i])}}</b>`).join('<br>');
+    tip.innerHTML = `<b>${{DT[i]}}</b><br>` + o.series.map(s => `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${{s.color}};margin-right:5px"></span>${{s.name}}: <b>${{o.fmt(s.vals[i])}}</b>`).join('<br>');
     tip.style.display = 'block';
     const tx = x(i) * r.width / W;
     tip.style.left = (tx > r.width / 2 ? tx - tip.offsetWidth - 12 : tx + 12) + 'px'; tip.style.top = '8px';
@@ -349,6 +436,7 @@ function chart(id, o) {{
   svg.addEventListener('mouseleave', () => {{ cx.setAttribute('visibility', 'hidden'); tip.style.display = 'none'; }});
 }}
 chart('c_eq', {{series: D.curves, log: true, split: D.split, label: '자산 곡선 비교', fmt: v => v.toLocaleString(undefined, {{maximumFractionDigits: 1}}) + '배'}});
+chart('c_26', {{series: D.cur26, dates: D.dates26, h: 340, step: 0.5, unit: '배', monthly: true, base: 1, baseLabel: '2025년 말', label: '2026년 자산 비교', fmt: v => (v >= 1 ? '+' : '') + ((v - 1) * 100).toFixed(1) + '%'}});
 chart('c_v', {{series: D.vser, h: 240, base: 1, label: '변동성 배율 v 추이', fmt: v => v.toFixed(2)}});
 </script></body></html>"""
     out = os.path.join(R, "dssn_report.html")
