@@ -137,7 +137,7 @@ def main():
         ex.append([f"a = {a:+.1f}" + (" (고정)" if a == 0 else ""), *[f"{3.3 * v ** a:.2f}%" for v in (0.5, 1.0, 2.0)]])
     extab = table(["지수 a", "잔잔한 날 (v = 0.5)", "평소 (v = 1.0)", "출렁이는 날 (v = 2.0)"], ex, "num")
     P1 = runs["N-전체#1"]
-    b_, s_, h_, dv_, sl_ = S.day_arrays(ctx, P1)
+    b_, s_, h_, dv_, sl_, _qm = S.day_arrays(ctx, P1)
     vv = ctx["vr"][int(P1["win"])]
     ag = ctx["mode"] == 1
     real = []
@@ -147,6 +147,18 @@ def main():
         real.append([lab, f"{b_[lo].mean() * 100:.2f}% → {b_[hi].mean() * 100:.2f}%", f"{s_[lo].mean() * 100:.2f}% → {s_[hi].mean() * 100:.2f}%",
                      f"{h_[lo].mean():.0f}일 → {h_[hi].mean():.0f}일"])
     realtab = table(["", "매수조건 (잔잔 → 출렁)", "매도조건 (잔잔 → 출렁)", "최대보유일 (잔잔 → 출렁)"], real, "num")
+
+    # ── 2차: 공유받은 방식 그대로
+    d3 = pd.read_csv(os.path.join(R, "dssn_recipe.csv"))
+    rec = [("순정", "정규화 없음"), ("가격 0.5", "가격 지수 0.5 만"), ("수량 1.0", "수량 지수 1.0 만"),
+           ("가격 0.5 + 수량 1.0", "<b>가격 0.5 + 수량 1.0 (공유받은 값)</b>"), ("전부", "가격 · 수량 + RSI + 보유 진행률 전부")]
+    r3 = []
+    for bn in ("공격형", "공격형V"):
+        for k, lab in rec:
+            x = d3[(d3["기본"] == bn) & (d3["이름"] == k)].iloc[0]
+            r3.append([f"{bn} · {lab}", f"{x['CAGR']:.1f}", f"{x['MDD']:.1f}", f"{x['Calmar']:.2f}", f"{x['H1']:.2f}", f"{x['H2']:.2f}",
+                       f"{x['구간최소']:.2f}", f"{x['TQQQ CAGR']:.1f}", f"{x['TQQQ MDD']:.1f}", f"{x['TQQQ Calmar']:.2f}"])
+    rectab = table(["", "CAGR %", "MDD %", "Calmar", "앞 절반 Calmar", "뒤 절반 Calmar", "4구간 최소", "TQQQ CAGR %", "TQQQ MDD %", "TQQQ Calmar"], r3, "num")
 
     data = dict(dates=dates, curves=curves, split=split_i, vser=vser)
     n1, n3 = d2.loc["N-전체#1"], d2.loc["N-전체#3"]
@@ -218,7 +230,7 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 <p class="sub">티어 비중은 <code>1 + s × (2u − 1)</code> (u = 0 첫 티어 ~ 1 마지막 티어) 모양으로 정했습니다. s 가 양수면 뒤 티어를 크게, 음수면 앞 티어를 크게 삽니다.
 분할수가 7이든 12든 같은 모양이 되도록 한 것이 '정규화'에 해당합니다.</p>
 <div class="card warn"><b>제가 가정한 부분</b><br>출렁임을 재는 기준으로 <b>SOXL 일간 변동성</b> 한 가지만 썼습니다. 캡처를 만든 분이 어떤 기준(ATR, 수익률 순위, RSI 등)을 썼는지는 모릅니다.
-기준이 다르면 세부 수치는 달라질 수 있지만, 아래 4번의 "앞 구간에만 맞추고 뒤에서 확인" 방식은 어떤 기준에도 똑같이 적용할 수 있습니다.</div>
+이후 대화방 자료로 실제 방식(가격 지수 0.5 · 수량 지수 1.0 · RSI · 보유 진행률)이 확인되어, 그 방식 그대로 돌린 결과를 6번에 따로 실었습니다.</div>
 
 <h2>2. 어떻게 검토했나</h2>
 <ol>
@@ -260,15 +272,37 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 {realtab}
 <p class="sub">세 번의 탐색이 서로 다른 값(분할수 5 / 7 / 8, 변동성 기간 10 / 20 / 60일, 지수의 부호까지)을 찾았습니다. 뚜렷한 정답이 있었다면 비슷한 곳으로 모였을 것입니다.</p>
 
-<h2>6. 한계와 다음에 확인할 것</h2>
+<h2>6. 공유받은 방식 그대로 돌려 보기 (2차)</h2>
+<p>위 탐색을 마친 뒤 대화방 자료에서 실제로 쓴 방식이 확인되어, 그 방식 그대로 다시 돌렸습니다.</p>
+{table(["대상", "방식", "값"], [
+    ["매수가 · 매도가", "원래 % × (오늘 변동 ÷ 평소 변동)<sup>지수</sup>", "가격 정규화 지수 0.5"],
+    ["물량 (칸 크기)", "원래 수량 × (평소 변동 ÷ 오늘 변동)<sup>지수</sup> — 출렁이면 작게, 잔잔하면 크게 (상한 2배)", "수량 정규화 지수 1.0"],
+    ["RSI", "RSI 가 낮으면 매수 폭 크게 · 익절 멀리 · 더 오래 들기, 오를 때 크게 사기", "예시 (정확한 값 없음)"],
+    ["보유 진행률", "칸이 찰수록 작게 사기", "예시 (정확한 값 없음)"]])}
+<p class="sub">'평소 변동'은 그 종목의 최근 1년 중앙값으로 잡았습니다. 종목마다 자기 기준을 쓰므로 TQQQ 에도 같은 값을 그대로 넣을 수 있습니다. TQQQ 열은 V 없이 돌린 결과입니다.</p>
+{rectab}
+<h3>읽는 법</h3>
 <ul>
-<li>출렁임 기준을 SOXL 변동성 한 가지로만 시험했습니다. 다른 기준을 쓰면 결과가 달라질 수 있습니다.</li>
+<li><b>공격형 위에서는 수량 정규화가 효과가 있습니다.</b> 수량 지수 1.0 만 켜면 MDD −59.5% → −47.8%, Calmar 1.08 → 1.33 입니다. "출렁일 때 작게 산다"는 한 가지가 낙폭을 줄였습니다.</li>
+<li><b>공격형V 위에서는 오히려 나빠집니다.</b> Calmar 1.43 → 1.29 (수량만), 1.10 (가격 + 수량). 공격형V 가 이미 "변동성이 큰 달에는 12분할로 작게 산다"를 하고 있어서, 같은 일을 두 번 하는 셈이 됩니다.</li>
+<li><b>가격 정규화는 SOXL 에서 도움이 되지 않았습니다.</b> 공격형 1.08 → 0.97, 공격형V 1.43 → 1.27.</li>
+<li><b>TQQQ 에서는 정규화가 통했습니다.</b> 순정 Calmar 0.52 가 0.60 ~ 0.81 로 올랐고, 손잡이 7개를 무작위로 600가지 넣어 봐도 93%가 순정보다 나았습니다. V 같은 장치가 없는 종목에서는 수량 정규화가 그 역할을 대신합니다.</li>
+<li><b>손잡이 7개 무작위 600조합 중 공격형V 를 전체 기간에서 넘은 것은 0개</b>였습니다. 앞 구간 성적과 뒤 구간 성적의 상관도 +0.05 로, 앞에서 좋았던 값이 뒤에서도 좋다는 근거가 없었습니다.</li>
+<li><b>84% / −46% 는 재현되지 않았습니다.</b> 그쪽은 '커스텀 티어'(티어별로 따로 맞춘 값)가 바탕이고 기본 성과도 55.1% / −55.5% 로 우리 공격형(64.5% / −59.5%)과 다릅니다. 티어별 값을 모르는 상태에서는 같은 숫자를 만들 수 없습니다.</li>
+</ul>
+<div class="card verdict"><b>정리:</b> 정규화의 알맹이는 "변동성이 클 때 작게 산다"이고, 이것은 공격형V 가 이미 하고 있습니다. 그래서 공격형V 에 얹으면 더할 것이 없습니다.
+쓸모가 있다면 V 가 없는 다른 종목(TQQQ 등)에 DSS 를 적용할 때입니다.</div>
+
+<h2>7. 한계와 다음에 확인할 것</h2>
+<ul>
+<li>'커스텀 티어'의 티어별 값을 모릅니다. 그 값이 있어야 84% / −46% 를 같은 조건으로 따져 볼 수 있습니다.</li>
+<li>변동 기준으로 일간 수익률 표준편차를 썼습니다 (자료의 'TR 자리'와 같은 역할이지만 계산식은 다를 수 있습니다).</li>
 <li>티어 비중은 "앞 ↔ 뒤 기울기" 한 가지 모양만 시험했습니다.</li>
-<li>다른 3배 ETF 로의 교차 검증은 하지 않았습니다 (처음 보는 구간에서 이미 탈락).</li>
+<li>교차 종목은 TQQQ 하나만 봤습니다.</li>
 </ul>
 <p>캡처를 만든 분께 확인하면 좋은 것:</p>
 <ol>
-<li>무엇을 기준으로 정규화했는지 (변동성, ATR, 수익률 순위, RSI 등).</li>
+<li>커스텀 티어의 티어별 값 (매수 · 매도 · 손절일 · 비중).</li>
 <li>값을 정할 때 전체 기간을 다 썼는지, 일부 기간을 떼어 두고 확인했는지.</li>
 <li>모드 판정(QQQ 주간 RSI)과 수수료, 시작일이 우리와 같은지.</li>
 </ol>
@@ -276,7 +310,8 @@ ol,ul{{padding-left:22px}}li{{margin:4px 0}}code{{font-family:Consolas,monospace
 <h2>재현</h2>
 <p class="sub">폴더 <code>D:\\04.backtest\\02.종가평균매매\\reports\\</code><br>
 <code>dssn_sim.py</code> 실험용 시뮬레이터 · <code>dssn_opt_2026-11.py</code> 탐색 (약 36분) · <code>dssn_report_2026-11.py</code> 이 문서 생성<br>
-<code>dssn_opt_search.csv</code> · <code>dssn_opt_single.csv</code> · <code>dssn_opt_params.json</code> 결과</p>
+<code>dssn_recipe_2026-11.py</code> 공유받은 방식 그대로 (2차, 약 2분)<br>
+<code>dssn_opt_search.csv</code> · <code>dssn_opt_single.csv</code> · <code>dssn_opt_params.json</code> · <code>dssn_recipe.csv</code> · <code>dssn_recipe_random_공격형.csv</code> · <code>dssn_recipe_random_공격형V.csv</code> 결과</p>
 
 </main>
 <script>

@@ -26,7 +26,12 @@ BASE = dict(sf_div=7, sf_hold=38, sf_buy=0.033, sf_sell=0.018,
             renew=10, pcr=0.75, lcr=0.20,
             v=1, risk_div=12, risk_ag_hold=5,
             win=20, a_buy_sf=0.0, a_buy_ag=0.0, a_sell_sf=0.0, a_sell_ag=0.0, a_hold_sf=0.0, a_hold_ag=0.0,
-            s_sf=0.0, s_ag=0.0, sv_sf=0.0, sv_ag=0.0)
+            s_sf=0.0, s_ag=0.0, sv_sf=0.0, sv_ag=0.0,
+            # 2차 (2026-11-27, 공유받은 방식): ref=1 → v = 오늘 변동 ÷ 최근 1년 중앙값(종목 자체 기준)
+            ref=0, q_exp=0.0, q_cap=2.0, q_floor=0.25,          # 수량 = 기본 × v^(−q_exp) (상한 q_cap 배)
+            r_buy=0.0, r_sell=0.0, r_hold=0.0, r_qty=0.0,       # RSI14 (전일) — z = (50−RSI)/50
+            prog=0.0,                                           # 보유 진행률: 수량 × (1 − prog × 보유수/분할수)
+            tw_sf=None, tw_ag=None)                             # 티어 비중 직접 지정 (분할수와 길이가 같을 때만)
 
 
 def make_ctx(df, mode_map, risk_days, wins=(10, 20, 40, 60)):
@@ -34,18 +39,27 @@ def make_ctx(df, mode_map, risk_days, wins=(10, 20, 40, 60)):
     idx = df.index
     c = df["Close"].astype(float)
     r = c.pct_change()
-    vr = {}
+    vr, vrel = {}, {}
     for w in wins:
-        v = (r.rolling(w).std().shift(1) / REF).values
-        v = np.where(np.isfinite(v) & (v > 0), v, 1.0)
-        vr[w] = v
+        sd = r.rolling(w).std()
+        v = (sd.shift(1) / REF).values
+        vr[w] = np.where(np.isfinite(v) & (v > 0), v, 1.0)
+        v = (sd / sd.rolling(252, min_periods=60).median()).shift(1).values
+        vrel[w] = np.where(np.isfinite(v) & (v > 0), v, 1.0)
+    d = c.diff()
+    up = d.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    dn = (-d.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    rsi = (100 - 100 / (1 + up / dn)).shift(1).values
+    rz = np.clip((50.0 - np.where(np.isfinite(rsi), rsi, 50.0)) / 50.0, -1, 1)
     return dict(idx=idx, closes=np.round(c.values.astype(np.float64), 2),
                 mode=np.array([1 if mode_map.get(d, "AG") == "AG" else 0 for d in idx], dtype=np.int8),
-                risk=np.array([d in risk_days for d in idx], dtype=bool), vr=vr)
+                risk=np.array([d in risk_days for d in idx], dtype=bool), vr=vr, vrel=vrel, rz=rz)
 
 
 def day_arrays(ctx, P):
-    v = ctx["vr"][int(P["win"])]
+    P = dict(BASE, **P)
+    v = (ctx["vrel"] if P["ref"] else ctx["vr"])[int(P["win"])]
+    rz = ctx["rz"]
     ag = ctx["mode"] == 1
     lv = np.log(v)
 
@@ -55,7 +69,19 @@ def day_arrays(ctx, P):
 
     buy = sc(P["sf_buy"], P["ag_buy"], P["a_buy_sf"], P["a_buy_ag"], 0.25, 4.0)
     sell = sc(P["sf_sell"], P["ag_sell"], P["a_sell_sf"], P["a_sell_ag"], 0.25, 4.0)
-    hold = np.clip(np.rint(sc(P["sf_hold"], P["ag_hold"], P["a_hold_sf"], P["a_hold_ag"], 0.1, 10.0)), 1, 90).astype(np.int64)
+    hold = sc(P["sf_hold"], P["ag_hold"], P["a_hold_sf"], P["a_hold_ag"], 0.1, 10.0)
+    if P["r_buy"]:
+        buy = buy * np.clip(1 + P["r_buy"] * rz, 0.25, 4.0)
+    if P["r_sell"]:
+        sell = sell * np.clip(1 + P["r_sell"] * rz, 0.25, 4.0)
+    if P["r_hold"]:
+        hold = hold * np.clip(1 + P["r_hold"] * rz, 0.25, 4.0)
+    hold = np.clip(np.rint(hold), 1, 90).astype(np.int64)
+    qm = np.ones(len(v))
+    if P["q_exp"]:
+        qm = np.clip(np.exp(-P["q_exp"] * lv), P["q_floor"], P["q_cap"])
+    if P["r_qty"]:
+        qm = qm * np.clip(1 - P["r_qty"] * rz, 0.25, 2.0)
     div = np.where(ag, int(P["ag_div"]), int(P["sf_div"])).astype(np.int64)
     if P["v"]:
         rk = ctx["risk"]
@@ -63,13 +89,19 @@ def day_arrays(ctx, P):
         if P["risk_ag_hold"]:
             hold = np.where(rk & ag, int(P["risk_ag_hold"]), hold)
     slope = np.where(ag, P["s_ag"], P["s_sf"]) + np.where(ag, P["sv_ag"], P["sv_sf"]) * lv
-    return buy, sell, hold, div, slope
+    return buy, sell, hold, div, slope, qm
 
 
 def sim(ctx, P, i0, i1, curve=False):
     """i0~i1 (포함) 구간 시뮬레이션. 반환: (최종자산/초기자본, MDD(음수), 거래일수[, 자산곡선])"""
+    P = dict(BASE, **P)
     closes = ctx["closes"]
-    buy_a, sell_a, hold_a, div_a, slope_a = day_arrays(ctx, P)
+    buy_a, sell_a, hold_a, div_a, slope_a, qm_a = day_arrays(ctx, P)
+    use_q = bool(P["q_exp"] or P["r_qty"])
+    prog = P["prog"]
+    tw = (tuple(P["tw_sf"] or ()), tuple(P["tw_ag"] or ()))
+    tws = (sum(tw[0]), sum(tw[1]))
+    mode_a = ctx["mode"]
     n_all = len(closes)
     renew, pcr, lcr = int(P["renew"]), P["pcr"], P["lcr"]
     use_w = bool(P["s_sf"] or P["s_ag"] or P["sv_sf"] or P["sv_ag"])
@@ -105,7 +137,12 @@ def sim(ctx, P, i0, i1, curve=False):
         if prev is not None and n_open < div and len(positions) < div:
             bo = floor(prev * (1 + buy_a[i]) * 100) / 100
             if close <= bo:
-                if use_w and div > 1:
+                t = tw[mode_a[i]]
+                if t and len(t) == div:
+                    q = int(cap_open * t[n_open] / tws[mode_a[i]] / bo)
+                    if q < 1:
+                        q = 1
+                elif use_w and div > 1:
                     s = slope_a[i]
                     tot = 0.0
                     wk = 1.0
@@ -121,6 +158,10 @@ def sim(ctx, P, i0, i1, curve=False):
                         q = 1
                 else:
                     q = int(cap_open / div / bo)
+                if use_q:
+                    q = int(q * qm_a[i])
+                if prog:
+                    q = int(q * (1.0 - prog * n_open / div))
                 cap = int(max(0.0, cash_open) / (bo * (1 + FEE)))
                 if q > cap:
                     q = cap
