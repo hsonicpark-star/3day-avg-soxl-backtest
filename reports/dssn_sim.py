@@ -92,7 +92,7 @@ def day_arrays(ctx, P):
     return buy, sell, hold, div, slope, qm
 
 
-def sim(ctx, P, i0, i1, curve=False):
+def sim(ctx, P, i0, i1, curve=False, log=None):
     """i0~i1 (포함) 구간 시뮬레이션. 반환: (최종자산/초기자본, MDD(음수), 거래일수[, 자산곡선])"""
     P = dict(BASE, **P)
     closes = ctx["closes"]
@@ -126,6 +126,9 @@ def sim(ctx, P, i0, i1, curve=False):
                     net = amt - amt * (FEE + SEC)
                     cash += net
                     pnl_acc += net - (p[3] + p[4])
+                    if log is not None:
+                        log["trades"].append((p[5], i, p[2], p[3] + p[4], net))
+                        log["fees"] += amt * (FEE + SEC)
                 else:
                     keep.append(p)
             positions = keep
@@ -173,7 +176,10 @@ def sim(ctx, P, i0, i1, curve=False):
                         st = i + hold_a[i]
                         if st >= n_all:
                             st = n_all - 1
-                        positions.append((round(close * (1 + sell_a[i]), 2), st, q, amt, fee))
+                        positions.append((round(close * (1 + sell_a[i]), 2), st, q, amt, fee, i))
+                        if log is not None:
+                            log["buys"] += 1
+                            log["fees"] += fee
         hv = 0.0
         for p in positions:
             hv += p[2]
@@ -185,6 +191,8 @@ def sim(ctx, P, i0, i1, curve=False):
             mdd = dd
         if curve:
             eq.append(total)
+        if log is not None:
+            log["npos"].append(len(positions))
         prev = close
     out = (total / 10000.0, mdd, i1 - i0 + 1)
     return out + (np.array(eq),) if curve else out
