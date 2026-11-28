@@ -21,11 +21,12 @@ tr.avg td{border-top:1px solid var(--line);font-weight:700}table.yt{border-spaci
 .chart{position:relative}.chart svg{display:block;width:100%;height:auto}
 .tip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12.5px;line-height:1.5;box-shadow:0 4px 14px rgba(0,0,0,.15);display:none;white-space:nowrap}
 .sum{font-size:13.5px;color:var(--ink2)}.sum b{color:var(--ink)}
+td.l,th.l{text-align:left;white-space:normal;color:var(--ink2)}th small,td small{font-weight:400;color:var(--mut)}code{font:12px ui-monospace,Consolas,monospace;background:var(--band);padding:1px 5px;border-radius:4px}
 </style></head><body><main>
 <header><h1>SOXL · 정규화 · 2025년까지만 맞춤 ③</h1><span>전체 기간 백테스트 성과</span></header>
 <p class="meta">2011-01-03 — 2026-11-27 · 4,000거래일 · 초기 자산 $10,000 · 2011년부터 이어서 운용 · 종가 기준 · 수수료 0.04% + SEC 0.00278%</p>
 <p class="meta">6분할 · 안전 +5.39% / +0.55% / 24일 · 공세 +2.82% / +4.73% / 11일 · 갱신 5일 · 이익복리 100% · 손실복리 16% · V: 위험 달 12분할 · 공세 3일 · 정규화 손잡이 11개 (변동성 60일)</p>
-<div class='note'><b>읽을 때 주의:</b> 이 설정은 2011~2025년 성과가 가장 좋게 나오도록 손잡이 23개를 맞춘 값입니다. 그래서 2011~2025년 숫자는 '맞춘 결과'이고, <b>처음 보는 구간은 2026년 한 해뿐</b>입니다. 2026년은 +9.7% / 연중 MDD -52.2% (공격형V +19.2% / -43.7%)였습니다. 같은 방법으로 찾은 ①·②는 2026년에 +37% · −40%로 갈렸습니다.</div>
+<div class='note'><b>읽을 때 주의:</b> 이 설정은 2011~2025년 성과가 가장 좋게 나오도록 손잡이 23개를 맞춘 값입니다. 그래서 2011~2025년 숫자는 '맞춘 결과'이고, <b>처음 보는 구간은 2026년 한 해뿐</b>입니다. 2026년은 +9.7% / 연중 MDD -52.2% (공격형V +19.2% / -43.7%)였습니다. 같은 방법으로 찾은 ①·②는 2026년에 +37% · −40%로 갈렸습니다. 손잡이 설명은 <a href='#knobs'>맨 아래 '정규화 손잡이 11개'</a>에 있습니다.</div>
 
 <h2>자산과 고점 회복</h2>
 <div class="hd"><h3>자산 곡선<small>계좌의 종가 평가액 · 로그 눈금 (한 칸 = 10배)</small></h3><b>시작 $10,000 → 기말 $239,607,065</b></div>
@@ -53,6 +54,37 @@ tr.avg td{border-top:1px solid var(--line);font-weight:700}table.yt{border-spaci
 
 <h2>거래 요약</h2>
 <p class="sum">매수 <b>2,854회</b> · 매도 <b>2,853회</b> · 칸 승률 <b>81.9%</b> · 누적 수수료 <b>$10,503,684</b></p>
+
+<h2 id="knobs">설정값 — 정규화 손잡이 11개</h2>
+<p class="sum">DSS(동파법)의 매수 조건 · 매도 조건 · 보유일 · 티어 비중을 고정값으로 두지 않고, <b>그날의 변동성에 맞춰 매일 다시 계산</b>하는 방식입니다.
+ 변동성을 재는 창 1개 + 조건을 늘리고 줄이는 지수 6개 + 티어 비중 기울기 4개 = <b>11개</b>이고, 여기에 기본값 12개가 더해져 모두 23개를 2011~2025년에 맞췄습니다.</p>
+
+<h3>① 변동성 비율 v <small>손잡이 1개 — <code>win</code> = 60일</small></h3>
+<p class="sum"><b>v = (전일까지 60거래일의 일간 수익률 표준편차) ÷ 4.5%</b>. 당일 종가는 쓰지 않습니다(전일까지만).
+ v = 1 이면 SOXL 이 하루 4.5%쯤 출렁이는 상태, 2 면 그 두 배입니다.
+ 2011년 이후 v 는 하위 10% <b>0.73</b> · 중앙값 <b>1.10</b> · 상위 10% <b>1.84</b> (최소 0.48 · 최대 3.16) 이고, 기말 값은 <b>2.79</b> 입니다.
+ 창은 10 · 20 · 40 · 60일 중에서 60일이 골라졌습니다.</p>
+
+<h3>② 조건을 늘리고 줄이는 지수 <small>손잡이 6개 — 실제 값 = 기본값 × v<sup>지수</sup></small></h3>
+<p class="sum">지수가 <b>+</b> 면 출렁일수록 값이 커지고, <b>−</b> 면 작아지고, 0 이면 고정입니다. 매수 · 매도 조건은 기본값의 0.25~4배, 보유일은 1~90일 안에서만 움직입니다.</p>
+<div class="tw"><table class="yt"><thead><tr><th>대상</th><th>손잡이</th><th>지수</th><th>기본값<br><small>v = 1</small></th><th>잔잔한 날<br><small>v = 0.73</small></th><th>보통<br><small>v = 1.10</small></th><th>출렁이는 날<br><small>v = 1.84</small></th><th class="l">뜻</th></tr></thead><tbody><tr><td class='k'>안전 · 매수 조건</td><td class='k'><code>a_buy_sf</code></td><td>+0.97</td><td>+5.39%</td><td>+3.96%</td><td>+5.90%</td><td>+9.77%</td><td class='l'>출렁일수록 매수 주문가를 전일 종가보다 더 높게 (더 잘 체결됨)</td></tr><tr><td class='k'>공세 · 매수 조건</td><td class='k'><code>a_buy_ag</code></td><td>+1.30</td><td>+2.82%</td><td>+1.88%</td><td>+3.18%</td><td>+6.24%</td><td class='l'>같은 방향, 더 강하게</td></tr><tr><td class='k'>안전 · 매도 조건</td><td class='k'><code>a_sell_sf</code></td><td>-0.51</td><td>+0.55%</td><td>+0.64%</td><td>+0.52%</td><td>+0.40%</td><td class='l'>출렁일수록 익절 폭을 좁게 (빨리 팔고 나옴)</td></tr><tr><td class='k'>공세 · 매도 조건</td><td class='k'><code>a_sell_ag</code></td><td>-0.13</td><td>+4.73%</td><td>+4.93%</td><td>+4.67%</td><td>+4.36%</td><td class='l'>거의 그대로 (조금 좁아짐)</td></tr><tr><td class='k'>안전 · 최대 보유일</td><td class='k'><code>a_hold_sf</code></td><td>+0.50</td><td>24일</td><td>21일</td><td>25일</td><td>33일</td><td class='l'>출렁일수록 더 오래 들고 기다림</td></tr><tr><td class='k'>공세 · 최대 보유일</td><td class='k'><code>a_hold_ag</code></td><td>-0.16</td><td>11일</td><td>12일</td><td>11일</td><td>10일</td><td class='l'>거의 그대로 (조금 짧아짐) · 위험 달에는 3일로 고정</td></tr></tbody></table></div>
+<p class="cap">매수 주문가 = 전일 종가 × (1 + 매수 조건) 을 센트 아래 버림, 종가가 그 이하면 종가에 체결 · 매도 목표가 = 매수한 종가 × (1 + 매도 조건) · 조건은 매수하는 날의 v 로 정해져 그 칸에 고정됩니다.</p>
+
+<h3>③ 티어 비중 기울기 <small>손잡이 4개 — 기울기 s = s0 + sv × ln(v)</small></h3>
+<p class="sum">칸마다 돈을 똑같이 나누지 않고 <b>비중 = 1 + s × (2u − 1)</b>, u = (티어 − 1) ÷ (분할 수 − 1) 로 기울입니다(최소 0.05). s 가 + 면 뒤 티어(더 내려갔을 때 사는 칸)에 돈을 더 싣고, − 면 앞 티어에 더 싣습니다.
+ s0 는 평소 기울기, sv 는 변동성에 따라 기울기가 바뀌는 정도입니다. 티어는 '장 시작 때 보유 칸 수 + 1' 이고, 1회 매수 금액 = 투자금 × 그 티어 비중 ÷ 비중 합계입니다.</p>
+<div class="tw"><table class="yt"><thead><tr><th>손잡이</th><th>안전</th><th>공세</th><th class="l">뜻</th></tr></thead><tbody>
+<tr><td class="k">평소 기울기 <code>s_sf</code> · <code>s_ag</code></td><td>+0.30</td><td>+0.45</td><td class="l">두 모드 모두 뒤 티어를 더 크게</td></tr>
+<tr><td class="k">변동성 반응 <code>sv_sf</code> · <code>sv_ag</code></td><td>+0.76</td><td>-0.39</td><td class="l">안전은 출렁일수록 뒤 티어 쏠림이 커지고, 공세는 반대로 평평해짐</td></tr>
+</tbody></table></div>
+<div class="tw"><table class="yt"><thead><tr><th>6분할일 때 티어별 비중</th><th>기울기 s</th><th>1티어</th><th>2티어</th><th>3티어</th><th>4티어</th><th>5티어</th><th>6티어</th></tr></thead><tbody><tr><td class='k'>안전 · 잔잔한 날 <small>(v 0.73)</small></td><td>+0.06</td><td>15.7%</td><td>16.1%</td><td>16.5%</td><td>16.9%</td><td>17.2%</td><td>17.6%</td></tr><tr><td class='k'>안전 · 보통 <small>(v 1.10)</small></td><td>+0.37</td><td>10.5%</td><td>13.0%</td><td>15.4%</td><td>17.9%</td><td>20.4%</td><td>22.8%</td></tr><tr><td class='k'>안전 · 출렁이는 날 <small>(v 1.84)</small></td><td>+0.77</td><td>3.9%</td><td>9.0%</td><td>14.1%</td><td>19.2%</td><td>24.3%</td><td>29.4%</td></tr><tr><td class='k'>공세 · 잔잔한 날 <small>(v 0.73)</small></td><td>+0.57</td><td>7.1%</td><td>10.9%</td><td>14.8%</td><td>18.6%</td><td>22.4%</td><td>26.2%</td></tr><tr><td class='k'>공세 · 보통 <small>(v 1.10)</small></td><td>+0.41</td><td>9.8%</td><td>12.6%</td><td>15.3%</td><td>18.0%</td><td>20.8%</td><td>23.5%</td></tr><tr><td class='k'>공세 · 출렁이는 날 <small>(v 1.84)</small></td><td>+0.21</td><td>13.2%</td><td>14.6%</td><td>16.0%</td><td>17.4%</td><td>18.7%</td><td>20.1%</td></tr></tbody></table></div>
+<p class="cap">균등 분할이면 칸마다 16.7% · 위험 달의 12분할에도 같은 식을 씁니다(u 가 0~1 이라 분할 수가 달라도 모양이 같음).</p>
+
+<h3>함께 맞춘 기본값 12개</h3>
+<div class="tw"><table class="yt" style="max-width:560px"><tbody><tr><td class='k'>분할 수 (안전 · 공세 공통)</td><td>6분할</td></tr><tr><td class='k'>안전 매수 / 매도 / 보유</td><td>+5.39% / +0.55% / 24일</td></tr><tr><td class='k'>공세 매수 / 매도 / 보유</td><td>+2.82% / +4.73% / 11일</td></tr><tr><td class='k'>투자금 갱신 주기</td><td>5거래일</td></tr><tr><td class='k'>이익복리율 / 손실복리율</td><td>100% / 16%</td></tr><tr><td class='k'>위험 달 (변동성 레짐 V)</td><td>12분할 · 공세 보유 3일</td></tr></tbody></table></div>
+<p class="cap">모드(안전 · 공세) 판정과 위험 달 판정은 공격형V 와 같습니다 — 정규화는 조건 · 보유일 · 수량에만 쓰고, 모드 판정에는 쓰지 않았습니다.
+ 탐색 범위: 지수 −1.0~+1.5 (보유일은 −1.5~+1.0) · 기울기 ±0.9 · 변동성 반응 ±0.8 · 목적은 CAGR − 3 × (MDD 가 42% 를 넘는 만큼).</p>
+
 <p class="cap">과거 종가로 계산한 백테스트입니다. 세금 · 체결 오차 · 호가 영향은 빠져 있어 실전에서 기대할 값이 아닙니다. 배포 엔진은 바꾸지 않은 실험용 시뮬레이터 결과입니다.</p>
 </main>
 <script>

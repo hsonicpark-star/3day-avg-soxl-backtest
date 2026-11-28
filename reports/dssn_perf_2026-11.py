@@ -83,7 +83,85 @@ def heat(v, lim=20.0):
     return f"background:rgba({'31,138,76' if v > 0 else '194,55,47'},{a:.2f})" if abs(v) >= 0.05 else ""
 
 
-def build(name, sub, note, s, out):
+def knobs_html(ctx, P):
+    """정규화 손잡이 11개 설명 (값 · 식 · 변동성 수준별 실제 값) — 다른 사람이 따라 계산할 수 있게"""
+    P = dict(S.BASE, **P)
+    idx = ctx["idx"]
+    i0 = int(idx.searchsorted(pd.Timestamp(T0)))
+    win = int(P["win"])
+    v = ctx["vr"][win][i0:]
+    qs = [float(np.percentile(v, q)) for q in (10, 50, 90)]
+    vn = float(v[-1])
+    cols = [("잔잔한 날", qs[0]), ("보통", qs[1]), ("출렁이는 날", qs[2])]
+    th = "".join(f"<th>{n}<br><small>v = {x:.2f}</small></th>" for n, x in cols)
+    f = lambda a, x, lo, hi: min(max(x ** a, lo), hi)
+    pct = lambda base, a, x: f"{base * f(a, x, 0.25, 4.0) * 100:+.2f}%"
+    day = lambda base, a, x: f"{int(min(max(round(base * f(a, x, 0.1, 10.0)), 1), 90))}일"
+    rows = [
+        ("안전", "매수 조건", "a_buy_sf", P["sf_buy"], P["a_buy_sf"], pct, "출렁일수록 매수 주문가를 전일 종가보다 더 높게 (더 잘 체결됨)"),
+        ("공세", "매수 조건", "a_buy_ag", P["ag_buy"], P["a_buy_ag"], pct, "같은 방향, 더 강하게"),
+        ("안전", "매도 조건", "a_sell_sf", P["sf_sell"], P["a_sell_sf"], pct, "출렁일수록 익절 폭을 좁게 (빨리 팔고 나옴)"),
+        ("공세", "매도 조건", "a_sell_ag", P["ag_sell"], P["a_sell_ag"], pct, "거의 그대로 (조금 좁아짐)"),
+        ("안전", "최대 보유일", "a_hold_sf", P["sf_hold"], P["a_hold_sf"], day, "출렁일수록 더 오래 들고 기다림"),
+        ("공세", "최대 보유일", "a_hold_ag", P["ag_hold"], P["a_hold_ag"], day, "거의 그대로 (조금 짧아짐) · 위험 달에는 3일로 고정"),
+    ]
+    rb = ""
+    for mode, what, key, base, a, fmt, memo in rows:
+        b = f"{base * 100:+.2f}%" if fmt is pct else f"{int(base)}일"
+        rb += (f"<tr><td class='k'>{mode} · {what}</td><td class='k'><code>{key}</code></td><td>{a:+.2f}</td><td>{b}</td>"
+               + "".join(f"<td>{fmt(base, a, x)}</td>" for _, x in cols) + f"<td class='l'>{memo}</td></tr>")
+
+    def shares(s0, sv, x, div):
+        sl = s0 + sv * np.log(x)
+        w = [max(1.0 + sl * (2.0 * k / (div - 1) - 1.0), 0.05) for k in range(div)]
+        return sl, [q / sum(w) * 100 for q in w]
+
+    div = int(P["sf_div"])
+    tb = ""
+    for mode, k0, kv in (("안전", "s_sf", "sv_sf"), ("공세", "s_ag", "sv_ag")):
+        for n, x in cols:
+            sl, sh = shares(P[k0], P[kv], x, div)
+            tb += (f"<tr><td class='k'>{mode} · {n} <small>(v {x:.2f})</small></td><td>{sl:+.2f}</td>"
+                   + "".join(f"<td>{q:.1f}%</td>" for q in sh) + "</tr>")
+    base = [("분할 수 (안전 · 공세 공통)", f"{div}분할"), ("안전 매수 / 매도 / 보유", f"+{P['sf_buy'] * 100:.2f}% / +{P['sf_sell'] * 100:.2f}% / {int(P['sf_hold'])}일"),
+            ("공세 매수 / 매도 / 보유", f"+{P['ag_buy'] * 100:.2f}% / +{P['ag_sell'] * 100:.2f}% / {int(P['ag_hold'])}일"),
+            ("투자금 갱신 주기", f"{int(P['renew'])}거래일"), ("이익복리율 / 손실복리율", f"{P['pcr'] * 100:.0f}% / {P['lcr'] * 100:.0f}%"),
+            ("위험 달 (변동성 레짐 V)", f"{int(P['risk_div'])}분할 · 공세 보유 {int(P['risk_ag_hold'])}일")]
+    bb = "".join(f"<tr><td class='k'>{a}</td><td>{b}</td></tr>" for a, b in base)
+    return f"""
+<h2 id="knobs">설정값 — 정규화 손잡이 11개</h2>
+<p class="sum">DSS(동파법)의 매수 조건 · 매도 조건 · 보유일 · 티어 비중을 고정값으로 두지 않고, <b>그날의 변동성에 맞춰 매일 다시 계산</b>하는 방식입니다.
+ 변동성을 재는 창 1개 + 조건을 늘리고 줄이는 지수 6개 + 티어 비중 기울기 4개 = <b>11개</b>이고, 여기에 기본값 12개가 더해져 모두 23개를 2011~2025년에 맞췄습니다.</p>
+
+<h3>① 변동성 비율 v <small>손잡이 1개 — <code>win</code> = {win}일</small></h3>
+<p class="sum"><b>v = (전일까지 {win}거래일의 일간 수익률 표준편차) ÷ {S.REF * 100:.1f}%</b>. 당일 종가는 쓰지 않습니다(전일까지만).
+ v = 1 이면 SOXL 이 하루 {S.REF * 100:.1f}%쯤 출렁이는 상태, 2 면 그 두 배입니다.
+ 2011년 이후 v 는 하위 10% <b>{qs[0]:.2f}</b> · 중앙값 <b>{qs[1]:.2f}</b> · 상위 10% <b>{qs[2]:.2f}</b> (최소 {v.min():.2f} · 최대 {v.max():.2f}) 이고, 기말 값은 <b>{vn:.2f}</b> 입니다.
+ 창은 10 · 20 · 40 · 60일 중에서 60일이 골라졌습니다.</p>
+
+<h3>② 조건을 늘리고 줄이는 지수 <small>손잡이 6개 — 실제 값 = 기본값 × v<sup>지수</sup></small></h3>
+<p class="sum">지수가 <b>+</b> 면 출렁일수록 값이 커지고, <b>−</b> 면 작아지고, 0 이면 고정입니다. 매수 · 매도 조건은 기본값의 0.25~4배, 보유일은 1~90일 안에서만 움직입니다.</p>
+<div class="tw"><table class="yt"><thead><tr><th>대상</th><th>손잡이</th><th>지수</th><th>기본값<br><small>v = 1</small></th>{th}<th class="l">뜻</th></tr></thead><tbody>{rb}</tbody></table></div>
+<p class="cap">매수 주문가 = 전일 종가 × (1 + 매수 조건) 을 센트 아래 버림, 종가가 그 이하면 종가에 체결 · 매도 목표가 = 매수한 종가 × (1 + 매도 조건) · 조건은 매수하는 날의 v 로 정해져 그 칸에 고정됩니다.</p>
+
+<h3>③ 티어 비중 기울기 <small>손잡이 4개 — 기울기 s = s0 + sv × ln(v)</small></h3>
+<p class="sum">칸마다 돈을 똑같이 나누지 않고 <b>비중 = 1 + s × (2u − 1)</b>, u = (티어 − 1) ÷ (분할 수 − 1) 로 기울입니다(최소 0.05). s 가 + 면 뒤 티어(더 내려갔을 때 사는 칸)에 돈을 더 싣고, − 면 앞 티어에 더 싣습니다.
+ s0 는 평소 기울기, sv 는 변동성에 따라 기울기가 바뀌는 정도입니다. 티어는 '장 시작 때 보유 칸 수 + 1' 이고, 1회 매수 금액 = 투자금 × 그 티어 비중 ÷ 비중 합계입니다.</p>
+<div class="tw"><table class="yt"><thead><tr><th>손잡이</th><th>안전</th><th>공세</th><th class="l">뜻</th></tr></thead><tbody>
+<tr><td class="k">평소 기울기 <code>s_sf</code> · <code>s_ag</code></td><td>{P['s_sf']:+.2f}</td><td>{P['s_ag']:+.2f}</td><td class="l">두 모드 모두 뒤 티어를 더 크게</td></tr>
+<tr><td class="k">변동성 반응 <code>sv_sf</code> · <code>sv_ag</code></td><td>{P['sv_sf']:+.2f}</td><td>{P['sv_ag']:+.2f}</td><td class="l">안전은 출렁일수록 뒤 티어 쏠림이 커지고, 공세는 반대로 평평해짐</td></tr>
+</tbody></table></div>
+<div class="tw"><table class="yt"><thead><tr><th>{div}분할일 때 티어별 비중</th><th>기울기 s</th>{''.join(f'<th>{k + 1}티어</th>' for k in range(div))}</tr></thead><tbody>{tb}</tbody></table></div>
+<p class="cap">균등 분할이면 칸마다 {100 / div:.1f}% · 위험 달의 12분할에도 같은 식을 씁니다(u 가 0~1 이라 분할 수가 달라도 모양이 같음).</p>
+
+<h3>함께 맞춘 기본값 12개</h3>
+<div class="tw"><table class="yt" style="max-width:560px"><tbody>{bb}</tbody></table></div>
+<p class="cap">모드(안전 · 공세) 판정과 위험 달 판정은 공격형V 와 같습니다 — 정규화는 조건 · 보유일 · 수량에만 쓰고, 모드 판정에는 쓰지 않았습니다.
+ 탐색 범위: 지수 −1.0~+1.5 (보유일은 −1.5~+1.0) · 기울기 ±0.9 · 변동성 반응 ±0.8 · 목적은 CAGR − 3 × (MDD 가 42% 를 넘는 만큼).</p>
+"""
+
+
+def build(name, sub, note, s, out, extra=""):
     kp = lambda lab, val, cap, cls="": f"<div class='kp'><span>{lab}</span><b class='{cls}'>{val}</b><small>{cap}</small></div>"
     row = lambda title, cells: f"<div class='band'>{title}</div><div class='kps'>{''.join(cells)}</div>"
     k = "".join([
@@ -140,6 +218,7 @@ tr.avg td{{border-top:1px solid var(--line);font-weight:700}}table.yt{{border-sp
 .chart{{position:relative}}.chart svg{{display:block;width:100%;height:auto}}
 .tip{{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12.5px;line-height:1.5;box-shadow:0 4px 14px rgba(0,0,0,.15);display:none;white-space:nowrap}}
 .sum{{font-size:13.5px;color:var(--ink2)}}.sum b{{color:var(--ink)}}
+td.l,th.l{{text-align:left;white-space:normal;color:var(--ink2)}}th small,td small{{font-weight:400;color:var(--mut)}}code{{font:12px ui-monospace,Consolas,monospace;background:var(--band);padding:1px 5px;border-radius:4px}}
 </style></head><body><main>
 <header><h1>SOXL · {name}</h1><span>전체 기간 백테스트 성과</span></header>
 <p class="meta">{T0} — {s['end']} · {s['n']:,}거래일 · 초기 자산 {money(CAP)} · 2011년부터 이어서 운용 · 종가 기준 · 수수료 0.04% + SEC 0.00278%</p>
@@ -172,6 +251,7 @@ tr.avg td{{border-top:1px solid var(--line);font-weight:700}}table.yt{{border-sp
 
 <h2>거래 요약</h2>
 <p class="sum">매수 <b>{s['buys']:,}회</b> · 매도 <b>{s['sells']:,}회</b> · 칸 승률 <b>{s['twin']:.1f}%</b> · 누적 수수료 <b>{money(s['fees'])}</b></p>
+{extra}
 <p class="cap">과거 종가로 계산한 백테스트입니다. 세금 · 체결 오차 · 호가 영향은 빠져 있어 실전에서 기대할 값이 아닙니다. 배포 엔진은 바꾸지 않은 실험용 시뮬레이터 결과입니다.</p>
 </main>
 <script>
@@ -227,7 +307,8 @@ def main():
     build("정규화 · 2025년까지만 맞춤 ③", "6분할 · 안전 +5.39% / +0.55% / 24일 · 공세 +2.82% / +4.73% / 11일 · 갱신 5일 · 이익복리 100% · 손실복리 16% · V: 위험 달 12분할 · 공세 3일 · 정규화 손잡이 11개 (변동성 60일)",
           f"<div class='note'><b>읽을 때 주의:</b> 이 설정은 2011~2025년 성과가 가장 좋게 나오도록 손잡이 23개를 맞춘 값입니다. 그래서 2011~2025년 숫자는 '맞춘 결과'이고, <b>처음 보는 구간은 2026년 한 해뿐</b>입니다. "
           f"2026년은 {b['yrows'][-1]['ret']:+.1f}% / 연중 MDD {b['yrows'][-1]['mdd']:.1f}% (공격형V {a['yrows'][-1]['ret']:+.1f}% / {a['yrows'][-1]['mdd']:.1f}%)였습니다. "
-          "같은 방법으로 찾은 ①·②는 2026년에 +37% · −40%로 갈렸습니다.</div>", b, "perf_정규화_2025맞춤3.html")
+          "같은 방법으로 찾은 ①·②는 2026년에 +37% · −40%로 갈렸습니다. 손잡이 설명은 <a href='#knobs'>맨 아래 '정규화 손잡이 11개'</a>에 있습니다.</div>", b, "perf_정규화_2025맞춤3.html",
+          extra=knobs_html(ctx, P3))
 
 
 if __name__ == "__main__":
